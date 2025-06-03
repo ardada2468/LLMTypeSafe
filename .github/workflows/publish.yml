@@ -1,13 +1,13 @@
-# This workflow will run tests and publish packages to npm when code is pushed to main branch
-# For more information see: https://docs.github.com/en/actions/publishing-packages/publishing-nodejs-packages
+# This workflow uses semantic-release for automated versioning and publishing
+# It follows industry standard practices for releasing to both npm and GitHub
 
-name: Test and Publish to NPM
+name: Release and Publish
 
 on:
   push:
     branches: [ main ]
   pull_request:
-    # Run tests on all pull requests regardless of target branch
+    branches: [ main ]
 
 jobs:
   test:
@@ -21,19 +21,19 @@ jobs:
       - run: npm run build
       - run: npm test
 
-  publish-npm:
+  release:
     needs: test
     runs-on: ubuntu-latest
-    # Only publish on push to main (not on pull requests)
+    # Only run on push to main (not on pull requests)
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
-      contents: write  # Changed from read to write for creating releases
-      packages: write
+      contents: write
+      issues: write
       pull-requests: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
-          # Fetch full history for proper versioning
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
       
@@ -45,66 +45,20 @@ jobs:
       - run: npm ci
       - run: npm run build
       
-      # Ensure all tests pass before publishing
-      - name: Run tests before publishing
+      # Run tests one more time before release
+      - name: Run tests before release
         run: npm test
       
-      # Configure git for automated commits
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-      
-      # Check for changes and create version/release
-      - name: Check for changes and create release
-        run: |
-          # Install lerna globally for version management
-          npm install -g lerna
-          
-          # Check if there are any changes since last release
-          if lerna changed --loglevel=silent; then
-            echo "Changes detected, proceeding with release..."
-            
-            # Create new version and changelog
-            lerna version --conventional-commits --yes --create-release github
-            
-            # Get the new version from lerna.json
-            NEW_VERSION=$(node -p "require('./lerna.json').version")
-            echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
-            
-            # Publish to NPM
-            echo "Publishing packages to NPM..."
-            for package_dir in packages/*/; do
-              if [ -d "$package_dir" ]; then
-                echo "Processing $package_dir"
-                cd "$package_dir"
-                
-                # Get package name and version
-                PACKAGE_NAME=$(node -p "require('./package.json').name")
-                PACKAGE_VERSION=$(node -p "require('./package.json').version")
-                
-                # Check if this version is already published
-                if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
-                  echo "Version $PACKAGE_VERSION of $PACKAGE_NAME already exists on npm, skipping..."
-                else
-                  echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION to npm..."
-                  npm publish
-                fi
-                
-                cd - > /dev/null
-              fi
-            done
-          else
-            echo "No changes detected since last release, skipping..."
-          fi
+      # Use semantic-release for automated versioning and publishing
+      - name: Release
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npx semantic-release
 
-  # Optional: Publish to GitHub Packages as well
+  # Optional: Also publish to GitHub Packages
   publish-github-packages:
-    needs: test
+    needs: release
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
