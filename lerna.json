@@ -1,19 +1,15 @@
 {
-    "version": "0.1.0",
-    "npmClient": "npm",
-    "command": {
-        "publish": {
-            "conventionalCommits": true,
-            "registry": "https://registry.npmjs.org/"
-        },
-        "bootstrap": {
-            "ignore": "component-*",
-            "npmClientArgs": [
-                "--no-package-lock"
-            ]
-        }
+  "version": "0.1.1",
+  "npmClient": "npm",
+  "command": {
+    "publish": {
+      "conventionalCommits": true,
+      "registry": "https://registry.npmjs.org/"
     },
-    "packages": [
-        "packages/*"
-    ]
+    "bootstrap": {
+      "ignore": "component-*",
+      "npmClientArgs": ["--no-package-lock"]
+    }
+  },
+  "packages": ["packages/*"]
 }
