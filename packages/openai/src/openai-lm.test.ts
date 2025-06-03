@@ -17,7 +17,7 @@ describe('OpenAILM', () => {
 
     describe('constructor', () => {
         it('should initialize with API key and default model', () => {
-            expect(lm.getModel()).toBe('gpt-3.5-turbo');
+            expect(lm.getModel()).toBe('gpt-4');
             // We can't directly access config.apiKey, but we'll test its usage in API calls
         });
 
@@ -69,7 +69,7 @@ describe('OpenAILM', () => {
             expect(options.headers['Authorization']).toBe(`Bearer ${apiKey}`);
             expect(options.headers['Content-Type']).toBe('application/json');
             const body = JSON.parse(options.body);
-            expect(body.model).toBe('gpt-3.5-turbo');
+            expect(body.model).toBe('gpt-4');
             expect(body.messages).toEqual([{ role: 'user', content: prompt }]);
         });
 
