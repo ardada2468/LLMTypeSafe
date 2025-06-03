@@ -1,7 +1,7 @@
 {
     "name": "@ts-dspy/core",
-    "version": "0.1.2",
-    "description": "Core library for building type-safe LLM applications with structured input/output signatures, automatic validation, and reasoning patterns",
+    "version": "0.1.3",
+    "description": "Core library for building type-safe LLM applications with structured input/output signatures, automatic validation, and reasoning patterns within TypeScript",
     "main": "dist/index.js",
     "module": "dist/index.esm.js",
     "types": "dist/index.d.ts",
