@@ -38,6 +38,10 @@ jobs:
       - run: npm ci
       - run: npm run build
       
+      # Ensure all tests pass before publishing
+      - name: Run tests before publishing
+        run: npm test
+      
       # Check if packages have changed before publishing
       - name: Check for changes and publish
         run: |

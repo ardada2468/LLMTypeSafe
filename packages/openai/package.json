@@ -1,6 +1,6 @@
 {
     "name": "@ts-dspy/openai",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "OpenAI ChatGPT integration for TS-DSPy - enables type-safe LLM interactions with GPT-3.5, GPT-4, and other OpenAI models",
     "main": "dist/index.js",
     "module": "dist/index.esm.js",
