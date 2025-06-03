@@ -27,14 +27,21 @@ jobs:
     # Only publish on push to main (not on pull requests)
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
-      contents: read
+      contents: write  # Changed from read to write for creating releases
       packages: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Fetch full history for proper versioning
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org/
+      
       - run: npm ci
       - run: npm run build
       
@@ -42,29 +49,97 @@ jobs:
       - name: Run tests before publishing
         run: npm test
       
-      # Check if packages have changed before publishing
-      - name: Check for changes and publish
+      # Configure git for automated commits
+      - name: Configure Git
         run: |
-          # Navigate to each package and publish if needed
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+      # Check for changes and create version/release
+      - name: Check for changes and create release
+        run: |
+          # Install lerna globally for version management
+          npm install -g lerna
+          
+          # Check if there are any changes since last release
+          if lerna changed --loglevel=silent; then
+            echo "Changes detected, proceeding with release..."
+            
+            # Create new version and changelog
+            lerna version --conventional-commits --yes --create-release github
+            
+            # Get the new version from lerna.json
+            NEW_VERSION=$(node -p "require('./lerna.json').version")
+            echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+            
+            # Publish to NPM
+            echo "Publishing packages to NPM..."
+            for package_dir in packages/*/; do
+              if [ -d "$package_dir" ]; then
+                echo "Processing $package_dir"
+                cd "$package_dir"
+                
+                # Get package name and version
+                PACKAGE_NAME=$(node -p "require('./package.json').name")
+                PACKAGE_VERSION=$(node -p "require('./package.json').version")
+                
+                # Check if this version is already published
+                if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
+                  echo "Version $PACKAGE_VERSION of $PACKAGE_NAME already exists on npm, skipping..."
+                else
+                  echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION to npm..."
+                  npm publish
+                fi
+                
+                cd - > /dev/null
+              fi
+            done
+          else
+            echo "No changes detected since last release, skipping..."
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Optional: Publish to GitHub Packages as well
+  publish-github-packages:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://npm.pkg.github.com/
+      
+      - run: npm ci
+      - run: npm run build
+      
+      - name: Publish to GitHub Packages
+        run: |
           for package_dir in packages/*/; do
             if [ -d "$package_dir" ]; then
-              echo "Processing $package_dir"
+              echo "Processing $package_dir for GitHub Packages"
               cd "$package_dir"
               
               # Get package name and version
               PACKAGE_NAME=$(node -p "require('./package.json').name")
               PACKAGE_VERSION=$(node -p "require('./package.json').version")
               
-              # Check if this version is already published
-              if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
-                echo "Version $PACKAGE_VERSION of $PACKAGE_NAME already exists on npm, skipping..."
-              else
-                echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION to npm..."
+              # Publish to GitHub Packages (only if not already published)
+              if ! npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
+                echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION to GitHub Packages..."
                 npm publish
+              else
+                echo "Version $PACKAGE_VERSION of $PACKAGE_NAME already exists, skipping..."
               fi
               
               cd - > /dev/null
             fi
           done
         env:
-          NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}} 
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
