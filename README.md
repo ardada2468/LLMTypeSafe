@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![npm version](https://badge.fury.io/js/%40ts-dspy%2Fcore.svg)](https://badge.fury.io/js/%40ts-dspy%2Fcore)
+[![npm version](https://badge.fury.io/js/@ts-dspy%2Fcore.svg)](https://badge.fury.io/js/@ts-dspy%2Fcore)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green)](https://nodejs.org/)
