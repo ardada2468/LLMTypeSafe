@@ -1,0 +1,66 @@
+# This workflow will run tests and publish packages to npm when code is pushed to main branch
+# For more information see: https://docs.github.com/en/actions/publishing-packages/publishing-nodejs-packages
+
+name: Test and Publish to NPM
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    # Run tests on all pull requests regardless of target branch
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  publish-npm:
+    needs: test
+    runs-on: ubuntu-latest
+    # Only publish on push to main (not on pull requests)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+      - run: npm ci
+      - run: npm run build
+      
+      # Check if packages have changed before publishing
+      - name: Check for changes and publish
+        run: |
+          # Navigate to each package and publish if needed
+          for package_dir in packages/*/; do
+            if [ -d "$package_dir" ]; then
+              echo "Processing $package_dir"
+              cd "$package_dir"
+              
+              # Get package name and version
+              PACKAGE_NAME=$(node -p "require('./package.json').name")
+              PACKAGE_VERSION=$(node -p "require('./package.json').version")
+              
+              # Check if this version is already published
+              if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
+                echo "Version $PACKAGE_VERSION of $PACKAGE_NAME already exists on npm, skipping..."
+              else
+                echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION to npm..."
+                npm publish
+              fi
+              
+              cd - > /dev/null
+            fi
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}} 
