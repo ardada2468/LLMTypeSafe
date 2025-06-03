@@ -1,0 +1,19 @@
+{
+    "version": "0.1.0",
+    "npmClient": "npm",
+    "command": {
+        "publish": {
+            "conventionalCommits": true,
+            "registry": "https://registry.npmjs.org/"
+        },
+        "bootstrap": {
+            "ignore": "component-*",
+            "npmClientArgs": [
+                "--no-package-lock"
+            ]
+        }
+    },
+    "packages": [
+        "packages/*"
+    ]
+}
