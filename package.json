@@ -1,37 +1,37 @@
 {
-  "name": "ts-dspy-monorepo",
-  "version": "0.2.2",
-  "private": true,
-  "description": "TypeScript framework for building type-safe LLM applications with structured outputs, ReAct reasoning patterns, and automatic validation",
-  "author": "Arnav Dadarya",
-  "workspaces": [
-    "packages/*"
-  ],
-  "scripts": {
-    "build": "npm run build --workspaces",
-    "test": "npm run test --workspaces",
-    "lint": "npm run lint --workspaces",
-    "clean": "npm run clean --workspaces",
-    "dev": "npm run dev --workspaces",
-    "install:all": "npm install",
-    "run:example:openai": "npx ts-node examples/comprehensive-openai-example.ts"
-  },
-  "devDependencies": {
-    "@types/jest": "^29.5.0",
-    "@types/node": "^20.0.0",
-    "@typescript-eslint/eslint-plugin": "^6.0.0",
-    "@typescript-eslint/parser": "^6.0.0",
-    "eslint": "^8.0.0",
-    "jest": "^29.5.0",
-    "lerna": "^7.0.0",
-    "prettier": "^3.0.0",
-    "typescript": "^5.0.0",
-    "@rollup/plugin-typescript": "^11.0.0",
-    "@rollup/plugin-node-resolve": "^15.0.0",
-    "rollup": "^3.0.0",
-    "ts-jest": "^29.0.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+    "name": "ts-dspy-monorepo",
+    "version": "0.2.2",
+    "private": true,
+    "description": "TypeScript framework for building type-safe LLM applications with structured outputs, ReAct reasoning patterns, and automatic validation",
+    "author": "Arnav Dadarya",
+    "workspaces": [
+        "packages/*"
+    ],
+    "scripts": {
+        "build": "npm run build --workspaces",
+        "test": "npm run test --workspaces",
+        "lint": "npm run lint --workspaces",
+        "clean": "npm run clean --workspaces",
+        "dev": "npm run dev --workspaces",
+        "install:all": "npm install",
+        "run:example:openai": "npx ts-node examples/comprehensive-openai-example.ts"
+    },
+    "devDependencies": {
+        "@types/jest": "^29.5.0",
+        "@types/node": "^20.0.0",
+        "@typescript-eslint/eslint-plugin": "^6.0.0",
+        "@typescript-eslint/parser": "^6.0.0",
+        "eslint": "^8.0.0",
+        "jest": "^29.5.0",
+        "lerna": "^7.0.0",
+        "prettier": "^3.0.0",
+        "typescript": "^5.0.0",
+        "@rollup/plugin-typescript": "^11.0.0",
+        "@rollup/plugin-node-resolve": "^15.0.0",
+        "rollup": "^3.0.0",
+        "ts-jest": "^29.0.0"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
 }
