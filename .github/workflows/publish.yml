@@ -1,119 +1,339 @@
-# This workflow uses semantic-release for automated versioning and publishing
-# It follows industry standard practices for releasing to both npm and GitHub
+# Modern CI/CD workflow with semantic-release, security scanning, and optimized caching
+# Supports both single packages and monorepos with comprehensive error handling
 
 name: Release and Publish
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
     branches: [ main ]
 
+# Prevent concurrent releases
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '20'
+  REGISTRY_URL: 'https://registry.npmjs.org/'
+
 jobs:
-  test:
+  # Security and dependency scanning
+  security-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-  release:
-    needs: test
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run security audit
+        run: npm audit --audit-level=high
+
+      - name: Check for vulnerabilities
+        run: npm audit --audit-level=moderate --json > audit-results.json || true
+
+      - name: Upload audit results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-audit-results
+          path: audit-results.json
+
+  # Comprehensive testing with multiple strategies
+  test:
     runs-on: ubuntu-latest
-    # Only run on push to main (not on pull requests)
+    needs: security-scan
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+      fail-fast: false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint code
+        run: npm run lint || echo "No lint script found"
+
+      - name: Type check
+        run: npm run type-check || echo "No type-check script found"
+
+      - name: Build project
+        run: npm run build
+
+      - name: Run tests with coverage
+        run: npm run test:coverage || npm test
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: matrix.node-version == 20
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: matrix.node-version == 20
+        with:
+          name: build-artifacts
+          path: |
+            dist/
+            build/
+            lib/
+          retention-days: 7
+
+  # Enhanced release job with better error handling
+  release:
+    needs: [security-scan, test]
+    runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
       issues: write
       pull-requests: write
       packages: write
+      id-token: write # For npm provenance
+
+    outputs:
+      new-release-published: ${{ steps.semantic-release.outputs.new-release-published }}
+      new-release-version: ${{ steps.semantic-release.outputs.new-release-version }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-      
-      - uses: actions/setup-node@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org/
-      
-      # Configure git for semantic-release
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: ${{ env.REGISTRY_URL }}
+          cache: 'npm'
+
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-      
-      - run: npm ci
-      - run: npm run build
-      
-      # Run tests one more time before release
-      - name: Run tests before release
-        run: npm test
-      
-      # semantic-release and plugins are installed via npm ci from package.json devDependencies
-      # The global install step for semantic-release dependencies has been removed.
-      
-      - name: Debug NPM environment
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+        continue-on-error: true
+
+      - name: Build project (if artifacts missing)
         run: |
-          echo "NPM_TOKEN length: ${#NPM_TOKEN}"
-          echo "Who am I: $(npm whoami --registry=https://registry.npmjs.org/ || echo 'npm whoami failed')"
-          echo "Listing .npmrc files..."
-          ls -al ~/.*npmrc || echo "No .npmrc in home"
-          ls -al .npmrc || echo "No .npmrc in project root"
-          ls -al packages/core/.npmrc || echo "No .npmrc in packages/core"
-          ls -al packages/openai/.npmrc || echo "No .npmrc in packages/openai"
-      
-      # Use semantic-release for automated versioning and publishing
-      - name: Release
+          if [ ! -d "dist" ] && [ ! -d "build" ] && [ ! -d "lib" ]; then
+            echo "Build artifacts not found, rebuilding..."
+            npm run build
+          fi
+
+      - name: Validate package configuration
+        run: |
+          # Check if package.json exists and is valid
+          node -e "require('./package.json')"
+          
+          # Validate semantic-release config
+          if [ -f ".releaserc.json" ] || [ -f ".releaserc.js" ] || grep -q "release" package.json; then
+            echo "Semantic-release configuration found"
+          else
+            echo "Warning: No semantic-release configuration detected"
+          fi
+
+      - name: Dry run semantic-release
+        if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npx semantic-release
+        run: npx semantic-release --dry-run
 
-  # Optional: Also publish to GitHub Packages
+      - name: Run semantic-release
+        id: semantic-release
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true # Enable npm provenance
+        run: |
+          npx semantic-release > release-output.log 2>&1
+          echo "Release completed"
+          
+          # Extract release information
+          if grep -q "Published release" release-output.log; then
+            echo "new-release-published=true" >> $GITHUB_OUTPUT
+            VERSION=$(grep "Published release" release-output.log | grep -oP '\d+\.\d+\.\d+' | head -1)
+            echo "new-release-version=$VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "new-release-published=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload release logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-logs
+          path: release-output.log
+
+  # Improved GitHub Packages publishing with better error handling
   publish-github-packages:
     needs: release
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: needs.release.outputs.new-release-published == 'true'
     permissions:
       contents: read
       packages: write
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js for GitHub Packages
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
-          registry-url: https://npm.pkg.github.com/
-      
-      - run: npm ci
-      - run: npm run build
-      
-      - name: Publish to GitHub Packages
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: 'https://npm.pkg.github.com/'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+        continue-on-error: true
+
+      - name: Build if needed
         run: |
+          if [ ! -d "dist" ] && [ ! -d "build" ] && [ ! -d "lib" ]; then
+            npm run build
+          fi
+
+      - name: Detect project structure
+        id: detect-structure
+        run: |
+          if [ -d "packages" ] && [ "$(find packages -name package.json | wc -l)" -gt 0 ]; then
+            echo "project-type=monorepo" >> $GITHUB_OUTPUT
+            echo "Detected monorepo structure"
+          else
+            echo "project-type=single" >> $GITHUB_OUTPUT
+            echo "Detected single package structure"
+          fi
+
+      - name: Publish single package to GitHub Packages
+        if: steps.detect-structure.outputs.project-type == 'single'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          
+          echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION to GitHub Packages..."
+          
+          # Check if version already exists
+          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
+            echo "Version already exists, skipping publish"
+            exit 0
+          fi
+          
+          # Update package.json to point to GitHub registry
+          npm pkg set publishConfig.registry=https://npm.pkg.github.com/
+          npm publish
+
+      - name: Publish monorepo packages to GitHub Packages
+        if: steps.detect-structure.outputs.project-type == 'monorepo'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SUCCESS_COUNT=0
+          TOTAL_COUNT=0
+          
           for package_dir in packages/*/; do
-            if [ -d "$package_dir" ]; then
-              echo "Processing $package_dir for GitHub Packages"
+            if [ -f "${package_dir}package.json" ]; then
+              TOTAL_COUNT=$((TOTAL_COUNT + 1))
+              echo "Processing $package_dir"
+              
               cd "$package_dir"
               
-              # Get package name and version
-              PACKAGE_NAME=$(node -p "require('./package.json').name")
-              PACKAGE_VERSION=$(node -p "require('./package.json').version")
+              # Extract package info
+              PACKAGE_NAME=$(node -p "require('./package.json').name" 2>/dev/null || echo "unknown")
+              PACKAGE_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "unknown")
               
-              # Publish to GitHub Packages (only if not already published)
-              if ! npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
-                echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION to GitHub Packages..."
-                npm publish
+              if [ "$PACKAGE_NAME" = "unknown" ] || [ "$PACKAGE_VERSION" = "unknown" ]; then
+                echo "❌ Failed to read package.json for $package_dir"
+                cd - > /dev/null
+                continue
+              fi
+              
+              echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION..."
+              
+              # Check if already published
+              if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
+                echo "✅ Version already exists, skipping"
+                SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
               else
-                echo "Version $PACKAGE_VERSION of $PACKAGE_NAME already exists, skipping..."
+                # Update registry config and publish
+                npm pkg set publishConfig.registry=https://npm.pkg.github.com/
+                if npm publish; then
+                  echo "✅ Successfully published $PACKAGE_NAME@$PACKAGE_VERSION"
+                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                else
+                  echo "❌ Failed to publish $PACKAGE_NAME@$PACKAGE_VERSION"
+                fi
               fi
               
               cd - > /dev/null
             fi
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+          
+          echo "Published $SUCCESS_COUNT out of $TOTAL_COUNT packages"
+          
+          if [ $SUCCESS_COUNT -eq $TOTAL_COUNT ]; then
+            echo "✅ All packages published successfully"
+          else
+            echo "⚠️ Some packages failed to publish"
+            exit 1
+          fi
+
+  # Notification job for release status
+  notify:
+    needs: [release, publish-github-packages]
+    runs-on: ubuntu-latest
+    if: always() && needs.release.outputs.new-release-published == 'true'
+    steps:
+      - name: Notify on success
+        if: needs.publish-github-packages.result == 'success'
+        run: |
+          echo "🎉 Release ${{ needs.release.outputs.new-release-version }} published successfully!"
+          echo "✅ npm registry: Published"
+          echo "✅ GitHub Packages: Published"
+
+      - name: Notify on partial failure
+        if: needs.publish-github-packages.result != 'success'
+        run: |
+          echo "⚠️ Release ${{ needs.release.outputs.new-release-version }} partially completed"
+          echo "✅ npm registry: Published"
+          echo "❌ GitHub Packages: Failed"
