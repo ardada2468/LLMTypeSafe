@@ -1,45 +1,45 @@
 {
-  "name": "@ts-dspy/openai",
-  "version": "0.2.3",
-  "description": "OpenAI ChatGPT integration for TS-DSPy - enables type-safe LLM interactions with GPT-3.5, GPT-4, and other OpenAI models for TypeScript",
-  "main": "dist/index.js",
-  "module": "dist/index.esm.js",
-  "types": "dist/index.d.ts",
-  "files": [
-    "dist",
-    "README.md"
-  ],
-  "scripts": {
-    "build": "npm run clean && npm run build:types && rollup -c",
-    "build:types": "tsc --emitDeclarationOnly",
-    "dev": "tsc --watch",
-    "test": "jest",
-    "lint": "eslint src --ext .ts",
-    "clean": "rm -rf dist"
-  },
-  "dependencies": {
-    "@ts-dspy/core": "^0.2.3"
-  },
-  "devDependencies": {
-    "@rollup/plugin-node-resolve": "^15.0.0",
-    "@rollup/plugin-typescript": "^11.0.0",
-    "@types/jest": "^29.5.0",
-    "jest": "^29.5.0",
-    "rollup": "^3.0.0",
-    "ts-jest": "^29.0.0",
-    "typescript": "^5.0.0"
-  },
-  "keywords": [
-    "ai",
-    "openai",
-    "llm",
-    "dspy",
-    "typescript"
-  ],
-  "author": "Arnav Dadarya",
-  "license": "MIT",
-  "publishConfig": {
-    "access": "public"
-  },
-  "gitHead": "64076cea167720968e7fe120aea13046eeda7c6a"
+    "name": "@ts-dspy/openai",
+    "version": "0.2.3",
+    "description": "OpenAI ChatGPT integration for TS-DSPy - enables type-safe LLM interactions with GPT-3.5, GPT-4, and other OpenAI models for TypeScript",
+    "main": "dist/index.js",
+    "module": "dist/index.esm.js",
+    "types": "dist/index.d.ts",
+    "files": [
+        "dist",
+        "README.md"
+    ],
+    "scripts": {
+        "build": "npm run clean && npm run build:types && rollup -c",
+        "build:types": "tsc --emitDeclarationOnly",
+        "dev": "tsc --watch",
+        "test": "jest",
+        "lint": "eslint src --ext .ts",
+        "clean": "rm -rf dist"
+    },
+    "dependencies": {
+        "@ts-dspy/core": "^0.2.3"
+    },
+    "devDependencies": {
+        "@rollup/plugin-node-resolve": "^15.0.0",
+        "@rollup/plugin-typescript": "^11.0.0",
+        "@types/jest": "^29.5.0",
+        "jest": "^29.5.0",
+        "rollup": "^3.0.0",
+        "ts-jest": "^29.0.0",
+        "typescript": "^5.0.0"
+    },
+    "keywords": [
+        "ai",
+        "openai",
+        "llm",
+        "dspy",
+        "typescript"
+    ],
+    "author": "Arnav Dadarya",
+    "license": "MIT",
+    "publishConfig": {
+        "access": "public"
+    },
+    "gitHead": "64076cea167720968e7fe120aea13046eeda7c6a"
 }
