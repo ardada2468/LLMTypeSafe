@@ -1,6 +1,6 @@
 {
   "name": "ts-dspy-monorepo",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "TypeScript framework for building type-safe LLM applications with structured outputs, ReAct reasoning patterns, and automatic validation",
   "author": "Arnav Dadarya",

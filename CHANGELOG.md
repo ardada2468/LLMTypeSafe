@@ -1,3 +1,10 @@
+## [0.2.1](https://github.com/ardada2468/LLMTypeSafe/compare/v0.2.0...v0.2.1) (2025-06-04)
+
+
+### Bug Fixes
+
+* sync version numbers between GitHub releases and NPM packages ([71d34b0](https://github.com/ardada2468/LLMTypeSafe/commit/71d34b079e1543af4203a22c5a0a48dc3ecd5c22))
+
 # [0.2.0](https://github.com/ardada2468/LLMTypeSafe/compare/v0.1.4...v0.2.0) (2025-06-04)
 
 
