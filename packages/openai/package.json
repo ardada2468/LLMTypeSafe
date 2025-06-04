@@ -10,8 +10,9 @@
         "README.md"
     ],
     "scripts": {
-        "build": "npm run clean && npm run build:types && rollup -c",
-        "build:types": "tsc --emitDeclarationOnly",
+        "build": "npm run clean && npm run build:js && npm run build:types",
+        "build:js": "rollup -c",
+        "build:types": "mkdir -p temp && tsc src/index.ts src/openai-lm.ts --declaration --outDir temp --skipLibCheck && cp temp/*.d.ts dist/ && rm -rf temp",
         "dev": "tsc --watch",
         "test": "jest",
         "lint": "eslint src --ext .ts",
