@@ -55,23 +55,23 @@ jobs:
       - name: Run tests before release
         run: npm test
       
-      # Install semantic-release dependencies only in CI environment
+      # Install semantic-release and plugins globally to avoid module resolution issues
       - name: Install semantic-release dependencies
         run: |
-          npm install --no-save semantic-release@^24.0.0
-          npm install --no-save @semantic-release/commit-analyzer@^13.0.0
-          npm install --no-save @semantic-release/release-notes-generator@^14.0.0
-          npm install --no-save @semantic-release/changelog@^6.0.0
-          npm install --no-save @semantic-release/github@^10.0.0
-          npm install --no-save @semantic-release/git@^10.0.0
-          npm install --no-save @semantic-release/exec@^6.0.0
+          npm install -g semantic-release@^24.0.0 \
+            @semantic-release/commit-analyzer@^13.0.0 \
+            @semantic-release/release-notes-generator@^14.0.0 \
+            @semantic-release/changelog@^6.0.0 \
+            @semantic-release/github@^10.0.0 \
+            @semantic-release/git@^10.0.0 \
+            @semantic-release/exec@^6.0.0
       
       # Use semantic-release for automated versioning and publishing
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npx semantic-release
+        run: semantic-release
 
   # Optional: Also publish to GitHub Packages
   publish-github-packages:
