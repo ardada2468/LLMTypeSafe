@@ -1,3 +1,10 @@
+## [0.2.3](https://github.com/ardada2468/LLMTypeSafe/compare/v0.2.2...v0.2.3) (2025-06-04)
+
+
+### Bug Fixes
+
+* update npm publish command to include --access public for scoped packages ([98b2ad6](https://github.com/ardada2468/LLMTypeSafe/commit/98b2ad602353419738e0a2ff53a818deec607fe6))
+
 ## [0.2.2](https://github.com/ardada2468/LLMTypeSafe/compare/v0.2.1...v0.2.2) (2025-06-04)
 
 
