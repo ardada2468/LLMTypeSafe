@@ -35,7 +35,13 @@ packages.forEach(packageName => {
             // Change to package directory and publish
             process.chdir(packagePath);
             console.log(`Publishing ${packageFullName}@${packageVersion} to npm...`);
-            execSync('npm publish', { stdio: 'inherit' });
+
+            // Use --access public for scoped packages
+            const publishCommand = packageFullName.startsWith('@')
+                ? 'npm publish --access public'
+                : 'npm publish';
+
+            execSync(publishCommand, { stdio: 'inherit' });
             console.log(`✅ Successfully published ${packageFullName}@${packageVersion}`);
 
             // Return to root directory
