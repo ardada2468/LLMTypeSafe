@@ -55,23 +55,25 @@ jobs:
       - name: Run tests before release
         run: npm test
       
-      # Install semantic-release and plugins globally to avoid module resolution issues
-      - name: Install semantic-release dependencies
+      # semantic-release and plugins are installed via npm ci from package.json devDependencies
+      # The global install step for semantic-release dependencies has been removed.
+      
+      - name: Debug NPM environment
         run: |
-          npm install -g semantic-release@^24.0.0 \
-            @semantic-release/commit-analyzer@^13.0.0 \
-            @semantic-release/release-notes-generator@^14.0.0 \
-            @semantic-release/changelog@^6.0.0 \
-            @semantic-release/github@^10.0.0 \
-            @semantic-release/git@^10.0.0 \
-            @semantic-release/exec@^6.0.0
+          echo "NPM_TOKEN length: ${#NPM_TOKEN}"
+          echo "Who am I: $(npm whoami --registry=https://registry.npmjs.org/ || echo 'npm whoami failed')"
+          echo "Listing .npmrc files..."
+          ls -al ~/.*npmrc || echo "No .npmrc in home"
+          ls -al .npmrc || echo "No .npmrc in project root"
+          ls -al packages/core/.npmrc || echo "No .npmrc in packages/core"
+          ls -al packages/openai/.npmrc || echo "No .npmrc in packages/openai"
       
       # Use semantic-release for automated versioning and publishing
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: semantic-release
+        run: npx semantic-release
 
   # Optional: Also publish to GitHub Packages
   publish-github-packages:
