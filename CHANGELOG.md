@@ -1,3 +1,10 @@
+## [0.2.2](https://github.com/ardada2468/LLMTypeSafe/compare/v0.2.1...v0.2.2) (2025-06-04)
+
+
+### Bug Fixes
+
+* remove semantic-release dependencies from package to prevent bloat ([462d77e](https://github.com/ardada2468/LLMTypeSafe/commit/462d77ed4caca789fec8b4cfbd43130c7fb756d1))
+
 ## [0.2.1](https://github.com/ardada2468/LLMTypeSafe/compare/v0.2.0...v0.2.1) (2025-06-04)
 
 
