@@ -55,6 +55,17 @@ jobs:
       - name: Run tests before release
         run: npm test
       
+      # Install semantic-release dependencies only in CI environment
+      - name: Install semantic-release dependencies
+        run: |
+          npm install --no-save semantic-release@^24.0.0
+          npm install --no-save @semantic-release/commit-analyzer@^13.0.0
+          npm install --no-save @semantic-release/release-notes-generator@^14.0.0
+          npm install --no-save @semantic-release/changelog@^6.0.0
+          npm install --no-save @semantic-release/github@^10.0.0
+          npm install --no-save @semantic-release/git@^10.0.0
+          npm install --no-save @semantic-release/exec@^6.0.0
+      
       # Use semantic-release for automated versioning and publishing
       - name: Release
         env:

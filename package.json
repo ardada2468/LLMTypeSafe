@@ -1,6 +1,6 @@
 {
   "name": "ts-dspy-monorepo",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "TypeScript framework for building type-safe LLM applications with structured outputs, ReAct reasoning patterns, and automatic validation",
   "author": "Arnav Dadarya",
@@ -29,15 +29,7 @@
     "@rollup/plugin-typescript": "^11.0.0",
     "@rollup/plugin-node-resolve": "^15.0.0",
     "rollup": "^3.0.0",
-    "ts-jest": "^29.0.0",
-    "semantic-release": "^24.0.0",
-    "@semantic-release/commit-analyzer": "^13.0.0",
-    "@semantic-release/release-notes-generator": "^14.0.0",
-    "@semantic-release/changelog": "^6.0.0",
-    "@semantic-release/npm": "^12.0.0",
-    "@semantic-release/github": "^10.0.0",
-    "@semantic-release/git": "^10.0.0",
-    "@semantic-release/exec": "^6.0.0"
+    "ts-jest": "^29.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
