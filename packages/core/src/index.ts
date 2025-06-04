@@ -8,6 +8,7 @@ export { Prediction } from './core/prediction';
 export { Example } from './core/example';
 export { configure, getDefaultLM, isCacheEnabled, isTracingEnabled } from './core/config';
 
+
 // Modules
 export { Predict } from './modules/predict';
 export { ChainOfThought } from './modules/chain-of-thought';
