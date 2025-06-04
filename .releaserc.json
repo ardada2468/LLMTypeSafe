@@ -15,7 +15,7 @@
         [
             "@semantic-release/exec",
             {
-                "publishCmd": "npx lerna publish from-package --yes --no-git-tag-version"
+                "publishCmd": "node scripts/publish-packages.js"
             }
         ],
         [
