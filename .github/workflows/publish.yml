@@ -1,4 +1,4 @@
-# Modern CI/CD workflow with semantic-release, security scanning, and optimized caching
+# Modern CI/CD workflow with manual versioning and publishing
 # Supports both single packages and monorepos with comprehensive error handling
 
 name: Release and Publish
@@ -100,21 +100,112 @@ jobs:
             lib/
           retention-days: 7
 
-  # Enhanced release job with better error handling
-  release:
-    needs: [security-scan, test]
+  # Determine version bump based on conventional commits
+  version-check:
+    needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      should-release: ${{ steps.check-commits.outputs.should-release }}
+      version-type: ${{ steps.check-commits.outputs.version-type }}
+      new-version: ${{ steps.check-commits.outputs.new-version }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Get latest release tag
+        id: latest-tag
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest-tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "Latest tag: $LATEST_TAG"
+
+      - name: Analyze commits for version bump
+        id: check-commits
+        run: |
+          LATEST_TAG="${{ steps.latest-tag.outputs.latest-tag }}"
+          
+          # Get commits since last tag
+          if [ "$LATEST_TAG" = "v0.0.0" ]; then
+            COMMITS=$(git log --pretty=format:"%s" HEAD)
+          else
+            COMMITS=$(git log --pretty=format:"%s" ${LATEST_TAG}..HEAD)
+          fi
+          
+          echo "Commits since $LATEST_TAG:"
+          echo "$COMMITS"
+          
+          # Check for breaking changes (major version)
+          if echo "$COMMITS" | grep -qE "(BREAKING CHANGE|!:)"; then
+            VERSION_TYPE="major"
+            SHOULD_RELEASE="true"
+          # Check for features (minor version)
+          elif echo "$COMMITS" | grep -qE "^feat(\([^)]*\))?:"; then
+            VERSION_TYPE="minor"
+            SHOULD_RELEASE="true"
+          # Check for fixes (patch version)
+          elif echo "$COMMITS" | grep -qE "^fix(\([^)]*\))?:"; then
+            VERSION_TYPE="patch"
+            SHOULD_RELEASE="true"
+          # Check for other commit types that should trigger release
+          elif echo "$COMMITS" | grep -qE "^(perf|refactor)(\([^)]*\))?:"; then
+            VERSION_TYPE="patch"
+            SHOULD_RELEASE="true"
+          else
+            VERSION_TYPE="none"
+            SHOULD_RELEASE="false"
+          fi
+          
+          echo "should-release=$SHOULD_RELEASE" >> $GITHUB_OUTPUT
+          echo "version-type=$VERSION_TYPE" >> $GITHUB_OUTPUT
+          
+          # Calculate new version if release is needed
+          if [ "$SHOULD_RELEASE" = "true" ]; then
+            CURRENT_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
+            echo "Current version: $CURRENT_VERSION"
+            
+            # Parse current version
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+            
+            case $VERSION_TYPE in
+              "major")
+                NEW_VERSION="$((MAJOR + 1)).0.0"
+                ;;
+              "minor")
+                NEW_VERSION="$MAJOR.$((MINOR + 1)).0"
+                ;;
+              "patch")
+                NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+                ;;
+            esac
+            
+            echo "new-version=$NEW_VERSION" >> $GITHUB_OUTPUT
+            echo "New version will be: $NEW_VERSION"
+          else
+            echo "No release needed"
+          fi
+
+  # Release job with manual versioning
+  release:
+    needs: [security-scan, test, version-check]
+    runs-on: ubuntu-latest
+    if: needs.version-check.outputs.should-release == 'true'
     permissions:
       contents: write
-      issues: write
-      pull-requests: write
       packages: write
       id-token: write # For npm provenance
 
     outputs:
-      new-release-published: ${{ steps.semantic-release.outputs.new-release-published }}
-      new-release-version: ${{ steps.semantic-release.outputs.new-release-version }}
+      new-release-published: ${{ steps.publish.outputs.published }}
+      new-release-version: ${{ needs.version-check.outputs.new-version }}
 
     steps:
       - name: Checkout code
@@ -144,62 +235,143 @@ jobs:
           name: build-artifacts
         continue-on-error: true
 
-      - name: Build project (if artifacts missing)
+      - name: Build project
         run: |
           if [ ! -d "dist" ] && [ ! -d "build" ] && [ ! -d "lib" ]; then
             echo "Build artifacts not found, rebuilding..."
             npm run build
           fi
 
-      - name: Validate package configuration
+      - name: Update version and create tag
+        id: version
         run: |
-          # Check if package.json exists and is valid
-          node -e "require('./package.json')"
+          NEW_VERSION="${{ needs.version-check.outputs.new-version }}"
+          VERSION_TYPE="${{ needs.version-check.outputs.version-type }}"
           
-          # Validate semantic-release config
-          if [ -f ".releaserc.json" ] || [ -f ".releaserc.js" ] || grep -q "release" package.json; then
-            echo "Semantic-release configuration found"
-          else
-            echo "Warning: No semantic-release configuration detected"
+          echo "Updating version to $NEW_VERSION (type: $VERSION_TYPE)"
+          
+          # Update package.json version
+          npm version $NEW_VERSION --no-git-tag-version
+          
+          # Update version in monorepo packages if they exist
+          if [ -d "packages" ]; then
+            for package_dir in packages/*/; do
+              if [ -f "${package_dir}package.json" ]; then
+                echo "Updating version in $package_dir"
+                cd "$package_dir"
+                npm version $NEW_VERSION --no-git-tag-version
+                cd - > /dev/null
+              fi
+            done
           fi
+          
+          # Commit version changes
+          git add .
+          git commit -m "chore(release): $NEW_VERSION"
+          
+          # Create and push tag
+          git tag "v$NEW_VERSION"
+          git push origin main
+          git push origin "v$NEW_VERSION"
 
-      - name: Dry run semantic-release
-        if: github.event_name == 'pull_request'
+      - name: Generate changelog
+        id: changelog
+        run: |
+          NEW_VERSION="${{ needs.version-check.outputs.new-version }}"
+          
+          # Get latest tag (previous version)
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+          
+          # Generate changelog content
+          echo "## [$NEW_VERSION] - $(date '+%Y-%m-%d')" > RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          
+          if [ -n "$PREV_TAG" ]; then
+            echo "### Changes since $PREV_TAG:" >> RELEASE_NOTES.md
+            git log --pretty=format:"- %s (%h)" ${PREV_TAG}..HEAD >> RELEASE_NOTES.md
+          else
+            echo "### Changes in this release:" >> RELEASE_NOTES.md
+            git log --pretty=format:"- %s (%h)" HEAD >> RELEASE_NOTES.md
+          fi
+          
+          echo "" >> RELEASE_NOTES.md
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...v${NEW_VERSION}" >> RELEASE_NOTES.md
+          
+          # Show changelog
+          echo "Generated changelog:"
+          cat RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npx semantic-release --dry-run
-
-      - name: Run semantic-release
-        id: semantic-release
-        if: github.event_name == 'push'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: true # Enable npm provenance
-        run: |
-          npx semantic-release > release-output.log 2>&1
-          echo "Release completed"
-          
-          # Extract release information
-          if grep -q "Published release" release-output.log; then
-            echo "new-release-published=true" >> $GITHUB_OUTPUT
-            VERSION=$(grep "Published release" release-output.log | grep -oP '\d+\.\d+\.\d+' | head -1)
-            echo "new-release-version=$VERSION" >> $GITHUB_OUTPUT
-          else
-            echo "new-release-published=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload release logs
-        uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: release-logs
-          path: release-output.log
+          tag_name: v${{ needs.version-check.outputs.new-version }}
+          release_name: Release v${{ needs.version-check.outputs.new-version }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
 
-  # Improved GitHub Packages publishing with better error handling
+      - name: Publish to npm
+        id: publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
+        run: |
+          set +e # Don't exit on failure
+          
+          # Detect project structure
+          if [ -d "packages" ] && [ "$(find packages -name package.json | wc -l)" -gt 0 ]; then
+            echo "Publishing monorepo packages..."
+            
+            SUCCESS_COUNT=0
+            TOTAL_COUNT=0
+            
+            for package_dir in packages/*/; do
+              if [ -f "${package_dir}package.json" ]; then
+                TOTAL_COUNT=$((TOTAL_COUNT + 1))
+                echo "Publishing package in $package_dir"
+                
+                cd "$package_dir"
+                
+                PACKAGE_NAME=$(node -p "require('./package.json').name" 2>/dev/null || echo "unknown")
+                
+                if npm publish; then
+                  echo "✅ Successfully published $PACKAGE_NAME"
+                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                else
+                  echo "❌ Failed to publish $PACKAGE_NAME"
+                fi
+                
+                cd - > /dev/null
+              fi
+            done
+            
+            echo "Published $SUCCESS_COUNT out of $TOTAL_COUNT packages"
+            
+            if [ $SUCCESS_COUNT -gt 0 ]; then
+              echo "published=true" >> $GITHUB_OUTPUT
+            else
+              echo "published=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+          else
+            echo "Publishing single package..."
+            
+            if npm publish; then
+              echo "✅ Package published successfully"
+              echo "published=true" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Failed to publish package"
+              echo "published=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          fi
+
+  # Improved GitHub Packages publishing
   publish-github-packages:
-    needs: release
+    needs: [release, version-check]
     runs-on: ubuntu-latest
     if: needs.release.outputs.new-release-published == 'true'
     permissions:
@@ -232,108 +404,79 @@ jobs:
             npm run build
           fi
 
-      - name: Detect project structure
-        id: detect-structure
+      - name: Publish to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          NEW_VERSION="${{ needs.version-check.outputs.new-version }}"
+          
+          # Detect project structure
           if [ -d "packages" ] && [ "$(find packages -name package.json | wc -l)" -gt 0 ]; then
-            echo "project-type=monorepo" >> $GITHUB_OUTPUT
-            echo "Detected monorepo structure"
-          else
-            echo "project-type=single" >> $GITHUB_OUTPUT
-            echo "Detected single package structure"
-          fi
-
-      - name: Publish single package to GitHub Packages
-        if: steps.detect-structure.outputs.project-type == 'single'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PACKAGE_NAME=$(node -p "require('./package.json').name")
-          PACKAGE_VERSION=$(node -p "require('./package.json').version")
-          
-          echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION to GitHub Packages..."
-          
-          # Check if version already exists
-          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
-            echo "Version already exists, skipping publish"
-            exit 0
-          fi
-          
-          # Update package.json to point to GitHub registry
-          npm pkg set publishConfig.registry=https://npm.pkg.github.com/
-          npm publish
-
-      - name: Publish monorepo packages to GitHub Packages
-        if: steps.detect-structure.outputs.project-type == 'monorepo'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          SUCCESS_COUNT=0
-          TOTAL_COUNT=0
-          
-          for package_dir in packages/*/; do
-            if [ -f "${package_dir}package.json" ]; then
-              TOTAL_COUNT=$((TOTAL_COUNT + 1))
-              echo "Processing $package_dir"
-              
-              cd "$package_dir"
-              
-              # Extract package info
-              PACKAGE_NAME=$(node -p "require('./package.json').name" 2>/dev/null || echo "unknown")
-              PACKAGE_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "unknown")
-              
-              if [ "$PACKAGE_NAME" = "unknown" ] || [ "$PACKAGE_VERSION" = "unknown" ]; then
-                echo "❌ Failed to read package.json for $package_dir"
-                cd - > /dev/null
-                continue
-              fi
-              
-              echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION..."
-              
-              # Check if already published
-              if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
-                echo "✅ Version already exists, skipping"
-                SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-              else
-                # Update registry config and publish
-                npm pkg set publishConfig.registry=https://npm.pkg.github.com/
-                if npm publish; then
-                  echo "✅ Successfully published $PACKAGE_NAME@$PACKAGE_VERSION"
-                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-                else
-                  echo "❌ Failed to publish $PACKAGE_NAME@$PACKAGE_VERSION"
+            echo "Publishing monorepo packages to GitHub Packages..."
+            
+            for package_dir in packages/*/; do
+              if [ -f "${package_dir}package.json" ]; then
+                echo "Processing $package_dir"
+                
+                cd "$package_dir"
+                
+                PACKAGE_NAME=$(node -p "require('./package.json').name" 2>/dev/null || echo "unknown")
+                
+                if [ "$PACKAGE_NAME" != "unknown" ]; then
+                  # Update registry in package.json
+                  npm pkg set publishConfig.registry=https://npm.pkg.github.com/
+                  
+                  if npm publish; then
+                    echo "✅ Published $PACKAGE_NAME to GitHub Packages"
+                  else
+                    echo "❌ Failed to publish $PACKAGE_NAME to GitHub Packages"
+                  fi
                 fi
+                
+                cd - > /dev/null
               fi
-              
-              cd - > /dev/null
-            fi
-          done
-          
-          echo "Published $SUCCESS_COUNT out of $TOTAL_COUNT packages"
-          
-          if [ $SUCCESS_COUNT -eq $TOTAL_COUNT ]; then
-            echo "✅ All packages published successfully"
+            done
+            
           else
-            echo "⚠️ Some packages failed to publish"
-            exit 1
+            echo "Publishing single package to GitHub Packages..."
+            
+            # Update registry in package.json
+            npm pkg set publishConfig.registry=https://npm.pkg.github.com/
+            
+            if npm publish; then
+              echo "✅ Published to GitHub Packages"
+            else
+              echo "❌ Failed to publish to GitHub Packages"
+            fi
           fi
 
   # Notification job for release status
   notify:
-    needs: [release, publish-github-packages]
+    needs: [release, publish-github-packages, version-check]
     runs-on: ubuntu-latest
-    if: always() && needs.release.outputs.new-release-published == 'true'
+    if: always() && needs.version-check.outputs.should-release == 'true'
     steps:
       - name: Notify on success
         if: needs.publish-github-packages.result == 'success'
         run: |
-          echo "🎉 Release ${{ needs.release.outputs.new-release-version }} published successfully!"
+          echo "🎉 Release v${{ needs.version-check.outputs.new-version }} published successfully!"
           echo "✅ npm registry: Published"
           echo "✅ GitHub Packages: Published"
+          echo "🔖 GitHub Release: Created"
 
       - name: Notify on partial failure
         if: needs.publish-github-packages.result != 'success'
         run: |
-          echo "⚠️ Release ${{ needs.release.outputs.new-release-version }} partially completed"
+          echo "⚠️ Release v${{ needs.version-check.outputs.new-version }} partially completed"
           echo "✅ npm registry: Published"
           echo "❌ GitHub Packages: Failed"
+          echo "🔖 GitHub Release: Created"
+
+      - name: Notify no release
+        if: needs.version-check.outputs.should-release == 'false'
+        run: |
+          echo "ℹ️ No release triggered - no conventional commits found"
+          echo "💡 To trigger a release, use conventional commit messages:"
+          echo "   feat: new feature (minor version bump)"
+          echo "   fix: bug fix (patch version bump)"
+          echo "   feat!: breaking change (major version bump)"

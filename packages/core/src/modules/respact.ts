@@ -2,6 +2,7 @@ import { Module } from '../core/module';
 import { Prediction } from '../core/prediction';
 import { Signature } from '../core/signature';
 import { SignatureOutput } from '../types/signature';
+import { parseOutput as utilParseOutput } from '../utils/parsing';
 
 export interface ToolFunction {
     (...args: any[]): Promise<any> | any;
@@ -141,7 +142,6 @@ export class RespAct<TSignature extends typeof Signature = typeof Signature> ext
             outputText = JSON.stringify(rawOutput);
         }
 
-        const { parseOutput: utilParseOutput } = require('../utils/parsing');
         return utilParseOutput(this.signature, outputText);
     }
 
