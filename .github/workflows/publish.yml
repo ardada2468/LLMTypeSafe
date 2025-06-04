@@ -42,6 +42,12 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org/
       
+      # Configure git for semantic-release
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
       - run: npm ci
       - run: npm run build
       
