@@ -1,6 +1,6 @@
 {
   "name": "@ts-dspy/gemini",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Gemini API integration for TS-DSPy - enables type-safe LLM interactions with Gemini models for TypeScript",
   "main": "dist/index.js",
   "module": "dist/index.esm.js",
