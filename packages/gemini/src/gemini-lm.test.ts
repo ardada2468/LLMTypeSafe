@@ -44,7 +44,7 @@ describe('GeminiLM', () => {
 
     describe('constructor', () => {
         it('should initialize with API key and default model', () => {
-            expect(lm.getModel()).toBe('gemini-pro');
+            expect(lm.getModel()).toBe('gemini-2.0-flash');
             expect(mockGoogleGenerativeAI).toHaveBeenCalledWith(apiKey);
         });
 
