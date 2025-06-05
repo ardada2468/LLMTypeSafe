@@ -1,46 +1,50 @@
 {
-    "name": "@ts-dspy/gemini",
-    "version": "0.3.2",
-    "description": "Gemini API integration for TS-DSPy - enables type-safe LLM interactions with Gemini models for TypeScript",
-    "main": "dist/index.js",
-    "module": "dist/index.esm.js",
-    "types": "dist/index.d.ts",
-    "files": [
-        "dist",
-        "README.md"
-    ],
-    "scripts": {
-        "build": "npm run clean && npm run build:js && npm run build:types",
-        "build:js": "rollup -c",
-        "build:types": "mkdir -p temp && tsc src/index.ts src/gemini-lm.ts --declaration --outDir temp --skipLibCheck && cp temp/*.d.ts dist/ && rm -rf temp",
-        "dev": "tsc --watch",
-        "test": "jest",
-        "lint": "eslint src --ext .ts",
-        "clean": "rm -rf dist"
-    },
-    "dependencies": {
-        "@google/generative-ai": "^0.2.1",
-        "@ts-dspy/core": "^0.2.5"
-    },
-    "devDependencies": {
-        "@rollup/plugin-node-resolve": "^15.0.0",
-        "@rollup/plugin-typescript": "^11.0.0",
-        "@types/jest": "^29.5.0",
-        "jest": "^29.5.0",
-        "rollup": "^3.0.0",
-        "ts-jest": "^29.0.0",
-        "typescript": "^5.0.0"
-    },
-    "keywords": [
-        "ai",
-        "gemini",
-        "llm",
-        "dspy",
-        "typescript"
-    ],
-    "author": "Arnav Dadarya",
-    "license": "MIT",
-    "publishConfig": {
-        "access": "public"
-    }
+  "name": "@ts-dspy/gemini",
+  "version": "0.3.0",
+  "description": "Gemini API integration for TS-DSPy - enables type-safe LLM interactions with Gemini models for TypeScript",
+  "main": "dist/index.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run clean && npm run build:js && npm run build:types",
+    "build:js": "rollup -c",
+    "build:types": "mkdir -p temp && tsc src/index.ts src/gemini-lm.ts --declaration --outDir temp --skipLibCheck && cp temp/*.d.ts dist/ && rm -rf temp",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "lint": "eslint src --ext .ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.2.1",
+    "@ts-dspy/core": "^0.2.5"
+  },
+  "devDependencies": {
+    "@rollup/plugin-node-resolve": "^15.0.0",
+    "@rollup/plugin-typescript": "^11.0.0",
+    "@types/jest": "^29.5.0",
+    "jest": "^29.5.0",
+    "rollup": "^3.0.0",
+    "ts-jest": "^29.0.0",
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "ai",
+    "gemini",
+    "llm",
+    "dspy",
+    "typescript"
+  ],
+  "author": "Arnav Dadarya",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ardada2468/LLMTypeSafe.git"
+  }
 }
