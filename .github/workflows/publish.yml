@@ -244,7 +244,14 @@ jobs:
               if [ -f "${package_dir}package.json" ]; then
                 echo "Updating version in $package_dir"
                 cd "$package_dir"
-                npm version $NEW_VERSION --no-git-tag-version
+                
+                CURRENT_PKG_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
+                if [ "$CURRENT_PKG_VERSION" != "$NEW_VERSION" ]; then
+                  npm version $NEW_VERSION --no-git-tag-version
+                else
+                  echo "Package already at version $NEW_VERSION, skipping"
+                fi
+                
                 cd - > /dev/null
               fi
             done
