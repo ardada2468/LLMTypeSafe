@@ -1,5 +1,5 @@
-import { configure, RespAct } from '../packages/core/src/index';
-import { OpenAILM } from '../packages/openai/src/index';
+import { configure, RespAct } from '@ts-dspy/core';
+import { OpenAILM } from '@ts-dspy/openai';
 
 // Configure with your API key
 configure({

@@ -1,10 +1,10 @@
-import { configure, Predict, ChainOfThought, RespAct, Signature, InputField, OutputField } from '../packages/core/src/index';
-import { OpenAILM } from '../packages/openai/src/index';
+import { configure, Predict, ChainOfThought, RespAct, Signature, InputField, OutputField } from '@ts-dspy/core';
+import { OpenAILM } from '@ts-dspy/openai';
 
 // Setup - configure global LM
 configure({
     lm: new OpenAILM({
-        apiKey: process.env.OPENAI_API_KEY || 'OPENAPI KEY'
+        apiKey: process.env.OPENAI_API_KEY || '***REDACTED*** '
     })
 });
 
@@ -332,7 +332,7 @@ async function usageStatsExample() {
     console.log('\n=== Usage Statistics Example ===');
 
     const lm = new OpenAILM({
-        apiKey: process.env.OPENAI_API_KEY || 'OPENAPI KEY',
+        apiKey: process.env.OPENAI_API_KEY || '***REDACTED*** ',
         model: 'gpt-3.5-turbo'
     });
 

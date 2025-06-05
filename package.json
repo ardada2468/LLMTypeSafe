@@ -14,7 +14,8 @@
     "clean": "npm run clean --workspaces",
     "dev": "npm run dev --workspaces",
     "install:all": "npm install",
-    "run:example:openai": "npx ts-node examples/comprehensive-openai-example.ts"
+    "run:example:openai": "npx ts-node --project examples/tsconfig.json examples/basic-usage.ts",
+    "run:example:gemini": "npx ts-node --project examples/tsconfig.json examples/basic-gemini-example.ts"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",

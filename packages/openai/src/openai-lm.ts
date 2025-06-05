@@ -1,4 +1,28 @@
-import { ILanguageModel, LLMCallOptions, ChatMessage, UsageStats } from '@ts-dspy/core';
+import { ILanguageModel, LLMCallOptions, ChatMessage, UsageStats, ModelCapabilities } from '@ts-dspy/core';
+
+interface OpenAIChatChoice {
+    message: {
+        role: string;
+        content: string;
+    };
+}
+
+interface OpenAIUsage {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+}
+
+interface OpenAIChatResponse {
+    choices: OpenAIChatChoice[];
+    usage?: OpenAIUsage;
+}
+
+interface OpenAIErrorResponse {
+    error?: {
+        message: string;
+    };
+}
 
 export interface OpenAIConfig {
     apiKey: string;
@@ -78,7 +102,7 @@ export class OpenAILM implements ILanguageModel {
         if (!response.ok) {
             let errorMessage = `OpenAI API Error: ${response.status} ${response.statusText}`;
             try {
-                const error = await response.json();
+                const error = await response.json() as OpenAIErrorResponse;
                 errorMessage = `OpenAI API Error: ${error.error?.message || response.statusText}`;
             } catch {
                 // Use the default error message if JSON parsing fails
@@ -86,7 +110,7 @@ export class OpenAILM implements ILanguageModel {
             throw new Error(errorMessage);
         }
 
-        const data = await response.json();
+        const data = await response.json() as OpenAIChatResponse;
 
         // Update usage statistics
         if (data.usage) {
@@ -127,5 +151,20 @@ export class OpenAILM implements ILanguageModel {
 
     setBaseURL(baseURL: string): void {
         this.config.baseURL = baseURL;
+    }
+
+    getModelName(): string {
+        return this.config.model;
+    }
+
+    getCapabilities(): ModelCapabilities {
+        return {
+            supportsStreaming: false,
+            supportsStructuredOutput: true,
+            supportsFunctionCalling: false,
+            supportsVision: false,
+            maxContextLength: 4096,
+            supportedFormats: ['json_object'],
+        };
     }
 } 

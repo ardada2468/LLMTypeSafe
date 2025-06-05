@@ -1,0 +1,26 @@
+{
+    "extends": "../tsconfig.json",
+    "compilerOptions": {
+        "composite": false,
+        "declaration": false,
+        "declarationMap": false,
+        "sourceMap": true,
+        "outDir": "./dist-examples", // Avoid conflicting with package builds
+        "rootDir": "..",
+        "paths": {
+            "@ts-dspy/core": [
+                "./packages/core/src"
+            ],
+            "@ts-dspy/openai": [
+                "./packages/openai/src"
+            ],
+            "@ts-dspy/gemini": [
+                "./packages/gemini/src"
+            ]
+        },
+        "baseUrl": ".."
+    },
+    "include": [
+        "./**/*.ts"
+    ]
+}

@@ -25,8 +25,8 @@ TS-DSPy brings the powerful paradigms of [Stanford's DSPy framework](https://git
 - **🔒 Type-Safe Signatures**: Define input/output schemas with automatic validation and TypeScript inference
 - **🧠 ReAct Pattern**: Built-in Reasoning and Acting with intelligent tool integration
 - **🛠️ Enhanced Tool Descriptions**: Provide detailed tool descriptions for better AI decision-making
-- **🔌 Multiple LLM Support**: Currently supports OpenAI with extensible architecture for other providers
-- **⚡ Automatic Parsing**: Convert raw LLM outputs to structured TypeScript objects
+- **🔌 Multiple LLM Support**: Supports OpenAI and Gemini with an extensible architecture for other providers
+- **⚡ Automatic Parsing**: Converts raw LLM outputs to structured TypeScript objects
 - **🛡️ Robust Error Handling**: Comprehensive validation with automatic retries and fallbacks
 - **📊 Usage Tracking**: Built-in token usage and cost monitoring
 - **🎯 Zero Config**: Works out of the box with minimal setup
@@ -42,6 +42,9 @@ npm install @ts-dspy/core
 
 # OpenAI integration
 npm install @ts-dspy/openai
+
+# Gemini integration
+npm install @ts-dspy/gemini
 ```
 
 **Requirements:**

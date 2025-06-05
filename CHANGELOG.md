@@ -1,3 +1,10 @@
+# [0.3.0](https://github.com/ardada2468/LLMTypeSafe/compare/v0.2.3...v0.3.0) (2025-06-05)
+
+### Features
+
+* **packages:** add gemini package for Google Gemini API integration ([<commit-hash>](https://github.com/ardada2468/LLMTypeSafe/commit/<commit-hash>))
+* **version:** bump all packages to 0.3.0 ([<commit-hash>](https://github.com/ardada2468/LLMTypeSafe/commit/<commit-hash>))
+
 ## [0.2.3](https://github.com/ardada2468/LLMTypeSafe/compare/v0.2.2...v0.2.3) (2025-06-04)
 
 
