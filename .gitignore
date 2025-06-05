@@ -328,3 +328,4 @@ clinic_*
 # Profiling data
 isolate-*-v8.log
 *.cpuprofile
+expressions.txt
