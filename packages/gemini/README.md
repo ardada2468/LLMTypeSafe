@@ -361,7 +361,7 @@ console.log('Note: Detailed token usage not yet available in Gemini API');
 | **Context Length** | 32k+ tokens | 8k-128k tokens |
 | **Structured Output** | ✅ Native JSON | ✅ JSON mode |
 | **Streaming** | ❌ Not yet supported | ✅ Full support |
-| **Function Calling** | ❌ Not in this SDK | ✅ Full support |
+| **Function Calling** |  ✅ Full support | ✅ Full support |
 | **Safety Filtering** | ✅ Built-in | ⚠️ Moderation API |
 | **Cost** | Generally lower | Higher for advanced models |
 | **Speed** | Very fast (Flash model) | Variable by model |
