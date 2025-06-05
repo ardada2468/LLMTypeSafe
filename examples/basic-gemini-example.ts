@@ -75,7 +75,7 @@ async function chainOfThoughtExample() {
     console.log('Answer:', result.answer);
 }
 
-// Example 4.5: Simple Enhanced Tools Demo (Guaranteed to work)
+// Example 4.5: Simple Enhanced Tools Demo 
 async function simpleToolsDemo() {
     console.log('\n=== Simple Enhanced Tools Demo ===');
     console.log('🆕 Testing enhanced tools with clear descriptions\n');
