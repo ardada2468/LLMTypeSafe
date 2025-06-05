@@ -19,7 +19,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@ts-dspy/core": "^0.2.5"
+    "@ts-dspy/core": "^0.3.0"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^15.0.0",
