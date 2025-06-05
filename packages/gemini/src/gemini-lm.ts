@@ -1,5 +1,14 @@
-import { ILanguageModel, LLMCallOptions, ChatMessage, UsageStats, ModelCapabilities } from '@ts-dspy/core';
+import { ILanguageModel, LLMCallOptions, ChatMessage, UsageStats } from '@ts-dspy/core';
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
+
+export interface ModelCapabilities {
+    supportsStreaming: boolean;
+    supportsStructuredOutput: boolean;
+    supportsFunctionCalling: boolean;
+    supportsVision: boolean;
+    maxContextLength: number;
+    supportedFormats: string[];
+}
 
 export interface GeminiConfig {
     apiKey: string;

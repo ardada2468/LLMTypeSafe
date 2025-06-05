@@ -1,6 +1,6 @@
 {
   "name": "@ts-dspy/gemini",
-  "version": "0.3.1",
+  "version": "0.3.0",
   "description": "Gemini API integration for TS-DSPy - enables type-safe LLM interactions with Gemini models for TypeScript",
   "main": "dist/index.js",
   "module": "dist/index.esm.js",
@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.2.1",
-    "@ts-dspy/core": "^0.3.1"
+    "@ts-dspy/core": "^0.3.0"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^15.0.0",
