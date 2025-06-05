@@ -20,6 +20,20 @@ This package provides seamless integration between TS-DSPy and OpenAI's language
 
 ```bash
 npm install @ts-dspy/openai @ts-dspy/core
+
+# Install ts-node for proper execution (recommended)
+npm install -g ts-node
+```
+
+**⚠️ Important: Use `ts-node` to run TypeScript files directly. Transpiling to JavaScript may cause issues with decorators and type information.**
+
+```bash
+# Run your scripts with ts-node
+npx ts-node your-script.ts
+
+# Or install globally and use directly
+npm install -g ts-node
+ts-node your-script.ts
 ```
 
 ## 🔑 Setup

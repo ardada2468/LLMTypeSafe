@@ -25,7 +25,7 @@ TS-DSPy brings the powerful paradigms of [Stanford's DSPy framework](https://git
 - **🔒 Type-Safe Signatures**: Define input/output schemas with automatic validation and TypeScript inference
 - **🧠 ReAct Pattern**: Built-in Reasoning and Acting with intelligent tool integration
 - **🛠️ Enhanced Tool Descriptions**: Provide detailed tool descriptions for better AI decision-making
-- **🔌 Multiple LLM Support**: Supports OpenAI and Gemini with an extensible architecture for other providers
+- **🔌 Multiple LLM Support**: Supports OpenAI and Google Gemini with an extensible architecture for other providers
 - **⚡ Automatic Parsing**: Converts raw LLM outputs to structured TypeScript objects
 - **🛡️ Robust Error Handling**: Comprehensive validation with automatic retries and fallbacks
 - **📊 Usage Tracking**: Built-in token usage and cost monitoring
@@ -55,13 +55,26 @@ npm install @ts-dspy/gemini
 
 ## 🚀 Quick Start
 
-Look ./examples/basic-usage.ts to test this package as well as the examples below
+**⚠️ Important: Use `ts-node` to run TypeScript files directly. Transpiling to JavaScript may cause issues with decorators and type information.**
+
+```bash
+# Run examples with ts-node
+npx ts-node examples/basic-usage.ts
+npx ts-node examples/basic-gemini-example.ts
+
+# Or install globally  
+npm install -g ts-node
+ts-node your-script.ts
+```
+
+Look at `./examples/basic-usage.ts` and `./examples/basic-gemini-example.ts` to test this package as well as the examples below
 
 ### Basic Prediction
 
 ```typescript
 import { configure, Predict } from '@ts-dspy/core';
 import { OpenAILM } from '@ts-dspy/openai';
+// or import { GeminiLM } from '@ts-dspy/gemini';
 
 // Configure your LLM provider
 configure({
@@ -69,6 +82,11 @@ configure({
         apiKey: process.env.OPENAI_API_KEY,
         model: 'gpt-4'
     })
+    // or 
+    // lm: new GeminiLM({
+    //     apiKey: process.env.GEMINI_API_KEY,
+    //     model: 'gemini-2.0-flash'
+    // })
 });
 
 // Simple question-answering
@@ -277,9 +295,12 @@ traces.forEach(trace => {
 ### Multiple LLM Providers
 
 ```typescript
-const fastLM = new OpenAILM({ 
-    apiKey: process.env.OPENAI_API_KEY,
-    model: 'gpt-3.5-turbo'  // Fast for simple tasks
+import { OpenAILM } from '@ts-dspy/openai';
+import { GeminiLM } from '@ts-dspy/gemini';
+
+const fastLM = new GeminiLM({ 
+    apiKey: process.env.GEMINI_API_KEY,
+    model: 'gemini-2.0-flash'  // Fast and cost-effective
 });
 
 const smartLM = new OpenAILM({ 
@@ -392,6 +413,10 @@ TS-DSPy follows a clean, modular architecture:
 │   ├── models/            # OpenAI language model implementation
 │   └── utils/             # OpenAI-specific utilities
 │
+├── gemini/                # Google Gemini integration
+│   ├── models/            # Gemini language model implementation
+│   └── utils/             # Gemini-specific utilities
+│
 └── [future providers]/    # Anthropic, Cohere, etc. (coming soon)
 ```
 
@@ -423,8 +448,13 @@ npm run test:coverage
 # Test specific package
 cd packages/core && npm test
 
-# Run examples
+# Run examples (use ts-node for proper execution)
 npm run run:example:openai
+npm run run:example:gemini
+
+# Or run directly with ts-node
+npx ts-node examples/basic-usage.ts
+npx ts-node examples/basic-gemini-example.ts
 ```
 
 ---
@@ -545,10 +575,12 @@ This package is published to NPM as a scoped monorepo:
 
 - **Core Package**: `@ts-dspy/core`
 - **OpenAI Integration**: `@ts-dspy/openai`
+- **Google Gemini Integration**: `@ts-dspy/gemini`
 - **License**: MIT
 - **Author**: Arnav Dadarya
 - **Node.js**: 18+ required
 - **TypeScript**: 5.0+ required
+- **⚠️ Execution**: Use `ts-node` instead of transpiling to JavaScript
 
 ### Installation
 
@@ -556,8 +588,17 @@ This package is published to NPM as a scoped monorepo:
 # For most users (core + OpenAI)
 npm install @ts-dspy/core @ts-dspy/openai
 
+# With Gemini support
+npm install @ts-dspy/core @ts-dspy/gemini
+
+# All providers
+npm install @ts-dspy/core @ts-dspy/openai @ts-dspy/gemini
+
 # Just the core framework
 npm install @ts-dspy/core
+
+# Install ts-node for proper execution
+npm install -g ts-node
 
 # Specific version
 npm install @ts-dspy/core@^0.1.0

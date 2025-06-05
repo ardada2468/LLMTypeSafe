@@ -20,11 +20,32 @@ TS-DSPy brings the power of [DSPy](https://github.com/stanfordnlp/dspy) to TypeS
 
 ```bash
 npm install @ts-dspy/core
+
+# Install ts-node for proper execution (recommended)
+npm install -g ts-node
 ```
 
-For OpenAI integration:
+**⚠️ Important: Use `ts-node` to run TypeScript files directly. Transpiling to JavaScript may cause issues with decorators and type information.**
+
 ```bash
+# Run your scripts with ts-node
+npx ts-node your-script.ts
+
+# Or install globally and use directly
+npm install -g ts-node
+ts-node your-script.ts
+```
+
+For LLM provider integrations:
+```bash
+# OpenAI integration
 npm install @ts-dspy/core @ts-dspy/openai
+
+# Google Gemini integration
+npm install @ts-dspy/core @ts-dspy/gemini
+
+# Both providers
+npm install @ts-dspy/core @ts-dspy/openai @ts-dspy/gemini
 ```
 
 ## 🎯 Quick Start
@@ -56,6 +77,7 @@ class QuestionAnswering extends Signature {
 ```typescript
 import { Predict, configure } from '@ts-dspy/core';
 import { OpenAILM } from '@ts-dspy/openai';
+// or import { GeminiLM } from '@ts-dspy/gemini';
 
 // Configure your language model
 configure({
@@ -63,6 +85,11 @@ configure({
         apiKey: process.env.OPENAI_API_KEY,
         model: 'gpt-4'
     })
+    // Or use Gemini:
+    // lm: new GeminiLM({
+    //     apiKey: process.env.GEMINI_API_KEY,
+    //     model: 'gemini-2.0-flash'
+    // })
 });
 
 // Create a prediction module
