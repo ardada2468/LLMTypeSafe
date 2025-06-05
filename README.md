@@ -52,6 +52,8 @@ npm install @ts-dspy/openai
 
 ## 🚀 Quick Start
 
+Look ./examples/basic-usage.ts to test this package as well as the examples below
+
 ### Basic Prediction
 
 ```typescript
