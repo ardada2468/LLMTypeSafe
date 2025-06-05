@@ -20,7 +20,7 @@
     },
     "dependencies": {
         "@google/generative-ai": "^0.2.1",
-        "@ts-dspy/core": "workspace:*"
+        "@ts-dspy/core": "^0.2.5"
     },
     "devDependencies": {
         "@rollup/plugin-node-resolve": "^15.0.0",
