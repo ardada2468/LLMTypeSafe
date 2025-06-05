@@ -36,10 +36,8 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
-      - name: Install dependencies
-        run: |
-          rm -f package-lock.json
-          npm install
+      - name: Install dependencies with Lerna
+        run: npx lerna bootstrap
 
       - name: Lint code
         run: npm run lint || echo "No lint script found"
@@ -178,10 +176,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Install dependencies
-        run: |
-          rm -f package-lock.json
-          npm install
+      - name: Install dependencies with Lerna
+        run: npx lerna bootstrap
 
       - name: Build project
         run: npm run build
@@ -377,10 +373,8 @@ jobs:
           registry-url: 'https://npm.pkg.github.com/'
           cache: 'npm'
 
-      - name: Install dependencies
-        run: |
-          rm -f package-lock.json
-          npm install
+      - name: Install dependencies with Lerna
+        run: npx lerna bootstrap
 
       - name: Build project
         run: npm run build
