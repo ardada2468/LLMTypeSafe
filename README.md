@@ -642,15 +642,6 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 ---
 
-## 🔗 Links & Resources
-
-- **[Examples](./examples/)** - Comprehensive usage examples
-- **[Issues](https://github.com/your-username/ts-dspy/issues)** - Bug reports and feature requests  
-- **[Discussions](https://github.com/your-username/ts-dspy/discussions)** - Community discussions
-- **[Changelog](https://github.com/your-username/ts-dspy/releases)** - Release notes
-
----
-
 <div align="center">
 
 **Star ⭐ the repo if TS-DSPy helped you build better LLM applications!**
