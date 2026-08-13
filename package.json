@@ -20,6 +20,7 @@
     "format:check": "prettier --check \"**/*.{ts,js,json,md}\"",
     "clean": "npm run clean --workspaces",
     "release": "npm run build --workspaces && changeset publish",
+    "chart:downloads": "node scripts/generate-downloads-chart.js",
     "example:openai": "tsx examples/basic-usage.ts",
     "example:gemini": "tsx examples/basic-gemini-example.ts",
     "example:anthropic": "tsx examples/basic-anthropic-example.ts"

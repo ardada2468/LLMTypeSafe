@@ -40,5 +40,21 @@ export default tseslint.config(
             'no-console': 'off',
             '@typescript-eslint/no-explicit-any': 'off',
         },
+    },
+    {
+        // Repo scripts run under Node and print to the terminal.
+        files: ['scripts/**/*.js'],
+        languageOptions: {
+            globals: {
+                console: 'readonly',
+                fetch: 'readonly',
+                process: 'readonly',
+                URL: 'readonly',
+                setTimeout: 'readonly',
+            },
+        },
+        rules: {
+            'no-console': 'off',
+        },
     }
 );

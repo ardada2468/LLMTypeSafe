@@ -57,6 +57,22 @@ model for that vendor; pass `model` to pin one yourself.
 
 Requires Node.js 22 or newer. Packages ship both ESM and CommonJS builds.
 
+## Downloads
+
+[![total downloads](https://img.shields.io/npm/dt/@ts-dspy/core?label=total%20downloads&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/core)
+[![@ts-dspy/core](https://img.shields.io/npm/dm/@ts-dspy/core?label=%40ts-dspy%2Fcore&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/core)
+[![@ts-dspy/openai](https://img.shields.io/npm/dm/@ts-dspy/openai?label=%40ts-dspy%2Fopenai&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/openai)
+[![@ts-dspy/gemini](https://img.shields.io/npm/dm/@ts-dspy/gemini?label=%40ts-dspy%2Fgemini&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/gemini)
+[![@ts-dspy/anthropic](https://img.shields.io/npm/dm/@ts-dspy/anthropic?label=%40ts-dspy%2Fanthropic&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/anthropic)
+
+<img src="assets/npm-downloads.svg" alt="Monthly npm downloads for @ts-dspy/core" width="840">
+
+The chart is regenerated from the
+[public npm downloads API](https://github.com/npm/registry/blob/main/docs/download-counts.md)
+on the 2nd of each month by
+[`.github/workflows/npm-downloads-chart.yml`](.github/workflows/npm-downloads-chart.yml).
+To refresh it by hand: `npm run chart:downloads`.
+
 ## Concepts
 
 ### Signatures

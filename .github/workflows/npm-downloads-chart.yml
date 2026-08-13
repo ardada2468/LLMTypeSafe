@@ -1,0 +1,49 @@
+# Keeps the npm downloads chart in the README current.
+# Regenerates assets/npm-downloads.svg from the public npm downloads API and
+# commits it when the numbers change.
+
+name: Update npm downloads chart
+
+on:
+  schedule:
+    # 06:00 UTC on the 2nd of each month — the chart shows complete months, so
+    # it only changes once the previous month has closed out.
+    - cron: '0 6 2 * *'
+  workflow_dispatch:
+
+concurrency:
+  group: npm-downloads-chart
+  cancel-in-progress: false
+
+jobs:
+  update-chart:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Regenerate chart
+        run: node scripts/generate-downloads-chart.js
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- assets/npm-downloads.svg; then
+            echo "Chart unchanged, nothing to commit"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/npm-downloads.svg
+          # Releases are driven by changesets, so a commit carrying none is a
+          # no-op for the release workflow no matter how it is worded.
+          git commit -m "chore(docs): update npm downloads chart"
+          git push
