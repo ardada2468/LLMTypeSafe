@@ -14,6 +14,7 @@
     "clean": "npm run clean --workspaces",
     "dev": "npm run dev --workspaces",
     "install:all": "npm install",
+    "chart:downloads": "node scripts/generate-downloads-chart.js",
     "run:example:openai": "npx ts-node --project examples/tsconfig.json examples/basic-usage.ts",
     "run:example:gemini": "npx ts-node --project examples/tsconfig.json examples/basic-gemini-example.ts"
   },
