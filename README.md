@@ -53,6 +53,26 @@ npm install @ts-dspy/gemini
 
 ---
 
+## 📈 Downloads
+
+<div align="center">
+
+[![npm downloads](https://img.shields.io/npm/dm/@ts-dspy/core?label=%40ts-dspy%2Fcore&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/core)
+[![npm downloads](https://img.shields.io/npm/dm/@ts-dspy/openai?label=%40ts-dspy%2Fopenai&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/openai)
+[![npm downloads](https://img.shields.io/npm/dm/@ts-dspy/gemini?label=%40ts-dspy%2Fgemini&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/gemini)
+
+<img src="assets/npm-downloads.svg" alt="Monthly npm downloads for @ts-dspy/core" width="840">
+
+</div>
+
+The chart is regenerated from the [public npm downloads API](https://github.com/npm/registry/blob/main/docs/download-counts.md) on the 2nd of each month by [`.github/workflows/npm-downloads-chart.yml`](.github/workflows/npm-downloads-chart.yml). To refresh it by hand:
+
+```bash
+node scripts/generate-downloads-chart.js
+```
+
+---
+
 ## 🚀 Quick Start
 
 **⚠️ Important: Use `ts-node` to run TypeScript files directly. Transpiling to JavaScript may cause issues with decorators and type information.**

@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 310" width="840" height="310" role="img" aria-label="Monthly npm downloads of @ts-dspy/core: Aug 33, Sep 525, Oct 827, Nov 2182, Dec 577, Jan ’26 324, Feb 115, Mar 45, Apr 617, May 350, Jun 839, Jul 702">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .title { font-size: 15px; font-weight: 600; fill: #0b0b0b; }
+    .subtitle { font-size: 12px; fill: #52514e; }
+    .axis { font-size: 11px; fill: #52514e; }
+    .value { font-size: 11px; font-weight: 600; fill: #0b0b0b; }
+    .grid { stroke: #d8d7d2; stroke-width: 1; }
+    .bar { fill: #2a78d6; }
+    @media (prefers-color-scheme: dark) {
+      .title { fill: #f0f6fc; }
+      .subtitle, .axis { fill: #b0afa5; }
+      .value { fill: #f0f6fc; }
+      .grid { stroke: #3a3a38; }
+      .bar { fill: #3987e5; }
+    }
+  </style>
+  <text class="title" x="12" y="24">npm downloads per month — @ts-dspy/core</text>
+  <text class="subtitle" x="12" y="40">Aug 2025 – Jul 2026 · 7,136 downloads over 12 months</text>
+    <line class="grid" x1="52" y1="264.0" x2="820.0" y2="264.0" />
+    <text class="axis" x="42" y="268.0" text-anchor="end">0</text>
+    <line class="grid" x1="52" y1="163.0" x2="820.0" y2="163.0" />
+    <text class="axis" x="42" y="167.0" text-anchor="end">1.3k</text>
+    <line class="grid" x1="52" y1="62.0" x2="820.0" y2="62.0" />
+    <text class="axis" x="42" y="66.0" text-anchor="end">2.5k</text>
+    <rect class="bar" x="62.0" y="261.3" width="44.0" height="2.7" rx="1.3" ry="1.3"><title>Aug 2025: 33 downloads</title></rect>
+    <text class="axis" x="84.0" y="284.0" text-anchor="middle">Aug</text>
+    <rect class="bar" x="126.0" y="221.6" width="44.0" height="42.4" rx="4.0" ry="4.0"><title>Sep 2025: 525 downloads</title></rect>
+    <text class="axis" x="148.0" y="284.0" text-anchor="middle">Sep</text>
+    <rect class="bar" x="190.0" y="197.2" width="44.0" height="66.8" rx="4.0" ry="4.0"><title>Oct 2025: 827 downloads</title></rect>
+    <text class="axis" x="212.0" y="284.0" text-anchor="middle">Oct</text>
+    <rect class="bar" x="254.0" y="87.7" width="44.0" height="176.3" rx="4.0" ry="4.0"><title>Nov 2025: 2,182 downloads</title></rect>
+    <text class="value" x="276.0" y="80.7" text-anchor="middle">2,182</text>
+    <text class="axis" x="276.0" y="284.0" text-anchor="middle">Nov</text>
+    <rect class="bar" x="318.0" y="217.4" width="44.0" height="46.6" rx="4.0" ry="4.0"><title>Dec 2025: 577 downloads</title></rect>
+    <text class="axis" x="340.0" y="284.0" text-anchor="middle">Dec</text>
+    <rect class="bar" x="382.0" y="237.8" width="44.0" height="26.2" rx="4.0" ry="4.0"><title>Jan ’26 2026: 324 downloads</title></rect>
+    <text class="axis" x="404.0" y="284.0" text-anchor="middle">Jan ’26</text>
+    <rect class="bar" x="446.0" y="254.7" width="44.0" height="9.3" rx="4.0" ry="4.0"><title>Feb 2026: 115 downloads</title></rect>
+    <text class="axis" x="468.0" y="284.0" text-anchor="middle">Feb</text>
+    <rect class="bar" x="510.0" y="260.4" width="44.0" height="3.6" rx="1.8" ry="1.8"><title>Mar 2026: 45 downloads</title></rect>
+    <text class="axis" x="532.0" y="284.0" text-anchor="middle">Mar</text>
+    <rect class="bar" x="574.0" y="214.1" width="44.0" height="49.9" rx="4.0" ry="4.0"><title>Apr 2026: 617 downloads</title></rect>
+    <text class="axis" x="596.0" y="284.0" text-anchor="middle">Apr</text>
+    <rect class="bar" x="638.0" y="235.7" width="44.0" height="28.3" rx="4.0" ry="4.0"><title>May 2026: 350 downloads</title></rect>
+    <text class="axis" x="660.0" y="284.0" text-anchor="middle">May</text>
+    <rect class="bar" x="702.0" y="196.2" width="44.0" height="67.8" rx="4.0" ry="4.0"><title>Jun 2026: 839 downloads</title></rect>
+    <text class="axis" x="724.0" y="284.0" text-anchor="middle">Jun</text>
+    <rect class="bar" x="766.0" y="207.3" width="44.0" height="56.7" rx="4.0" ry="4.0"><title>Jul 2026: 702 downloads</title></rect>
+    <text class="value" x="788.0" y="200.3" text-anchor="middle">702</text>
+    <text class="axis" x="788.0" y="284.0" text-anchor="middle">Jul</text>
+</svg>
