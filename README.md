@@ -57,6 +57,7 @@ npm install @ts-dspy/gemini
 
 <div align="center">
 
+[![total npm downloads](https://img.shields.io/npm/dt/@ts-dspy/core?label=total%20downloads&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/core)
 [![npm downloads](https://img.shields.io/npm/dm/@ts-dspy/core?label=%40ts-dspy%2Fcore&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/core)
 [![npm downloads](https://img.shields.io/npm/dm/@ts-dspy/openai?label=%40ts-dspy%2Fopenai&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/openai)
 [![npm downloads](https://img.shields.io/npm/dm/@ts-dspy/gemini?label=%40ts-dspy%2Fgemini&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/gemini)
