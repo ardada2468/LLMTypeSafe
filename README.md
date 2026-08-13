@@ -225,6 +225,9 @@ with `npx changeset` when you change a published package, or
 `npx changeset --empty` for a change that intentionally ships no release. CI
 fails a pull request that changes a published package without one.
 
+Publishing uses npm trusted publishing, so there is no npm token to hold or
+rotate. See [RELEASING.md](RELEASING.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
