@@ -1,4 +1,3 @@
-import 'reflect-metadata';
 import { Signature, InputField, OutputField } from './signature';
 
 describe('Signature', () => {
@@ -12,7 +11,9 @@ describe('Signature', () => {
         });
 
         it('should parse typed string signature', () => {
-            const result = Signature.parseStringSignature('question, context -> answer: string, confidence: float');
+            const result = Signature.parseStringSignature(
+                'question, context -> answer: string, confidence: float'
+            );
             expect(result.inputs).toEqual(['question', 'context']);
             expect(result.outputs).toEqual(['answer', 'confidence']);
             expect(result.types.question).toBe('string');
@@ -22,7 +23,9 @@ describe('Signature', () => {
         });
 
         it('should handle whitespace in string signature', () => {
-            const result = Signature.parseStringSignature('  input1 , input2  ->  output1: int , output2  ');
+            const result = Signature.parseStringSignature(
+                '  input1 , input2  ->  output1: int , output2  '
+            );
             expect(result.inputs).toEqual(['input1', 'input2']);
             expect(result.outputs).toEqual(['output1', 'output2']);
             expect(result.types.output1).toBe('int');
@@ -83,7 +86,7 @@ describe('Signature', () => {
 
     describe('Class-based signatures', () => {
         it('should handle empty fields gracefully', () => {
-            class EmptySignature extends Signature { }
+            class EmptySignature extends Signature {}
 
             const inputFields = EmptySignature.getInputFields();
             const outputFields = EmptySignature.getOutputFields();
@@ -109,5 +112,42 @@ describe('Signature', () => {
             expect(inputFields.question.prefix).toBe('Query:');
             expect(outputFields.answer.prefix).toBe('Response:');
         });
+
+        it('does not let a subclass pollute its parent’s fields', () => {
+            class Base extends Signature {
+                @InputField({ description: 'shared input' })
+                question!: string;
+
+                @OutputField({ description: 'base answer' })
+                answer!: string;
+            }
+
+            class Extended extends Base {
+                @OutputField({ description: 'extra field', type: 'number' })
+                score!: number;
+            }
+
+            // Extended inherits Base's fields and adds its own...
+            expect(Object.keys(Extended.getOutputFields()).sort()).toEqual(['answer', 'score']);
+            // ...without writing into the map Base reads from.
+            expect(Object.keys(Base.getOutputFields())).toEqual(['answer']);
+            expect(Object.keys(Extended.getInputFields())).toEqual(['question']);
+        });
     });
-}); 
+
+    describe('decorator mode', () => {
+        it('explains what to change when legacy decorators are disabled', () => {
+            // Under TC39 stage-3 decorators a field decorator is called with
+            // `undefined` in place of the prototype, which used to surface as
+            // "Cannot read properties of undefined (reading 'constructor')".
+            const decorate = OutputField({ description: 'x' });
+
+            expect(() => decorate(undefined, { name: 'score', kind: 'field' })).toThrow(
+                /experimentalDecorators/
+            );
+            expect(() => decorate(undefined, { name: 'score', kind: 'field' })).toThrow(
+                /score/
+            );
+        });
+    });
+});

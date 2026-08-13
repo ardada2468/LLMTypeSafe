@@ -1,4 +1,4 @@
-import { ILanguageModel } from '../types/language-model';
+import { type ILanguageModel } from '../types/language-model';
 
 class DSPyConfig {
     private static instance: DSPyConfig;
@@ -6,7 +6,7 @@ class DSPyConfig {
     private _cache: boolean = true;
     private _tracing: boolean = false;
 
-    private constructor() { }
+    private constructor() {}
 
     static getInstance(): DSPyConfig {
         if (!DSPyConfig.instance) {
@@ -48,4 +48,4 @@ class DSPyConfig {
 export const configure = DSPyConfig.configure;
 export const getDefaultLM = DSPyConfig.getDefaultLM;
 export const isCacheEnabled = DSPyConfig.isCacheEnabled;
-export const isTracingEnabled = DSPyConfig.isTracingEnabled; 
+export const isTracingEnabled = DSPyConfig.isTracingEnabled;

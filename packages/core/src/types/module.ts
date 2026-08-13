@@ -1,11 +1,4 @@
-import { ILanguageModel, UsageStats } from './language-model';
-
-export interface ModuleConfig {
-    lm?: ILanguageModel;
-    signature?: string | any;
-    maxRetries?: number;
-    temperature?: number;
-}
+import type { UsageStats } from './language-model';
 
 export interface TraceEntry {
     moduleId: string;
@@ -17,14 +10,3 @@ export interface TraceEntry {
     rawLMOutput: string;
     usage: UsageStats;
 }
-
-export interface MetricFunction {
-    (prediction: any, example: any, trace?: TraceEntry): boolean | number;
-}
-
-export interface OptimizerOptions {
-    maxBootstrapExamples?: number;
-    maxEvaluationExamples?: number;
-    temperature?: number;
-    numTrials?: number;
-} 

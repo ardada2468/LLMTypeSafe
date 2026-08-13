@@ -1,8 +1,10 @@
 import { Module } from '../core/module';
 import { Prediction } from '../core/prediction';
-import { Signature } from '../core/signature';
-import { SignatureOutput } from '../types/signature';
+import { type Signature } from '../core/signature';
+import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
+import type { SignatureOutput } from '../types/signature';
 import { parseOutput as utilParseOutput } from '../utils/parsing';
+import { ValidationError } from '../core/errors';
 
 export interface ToolFunction {
     (...args: any[]): Promise<any> | any;
@@ -15,228 +17,199 @@ export interface ToolWithDescription {
 
 export type ToolDefinition = ToolFunction | ToolWithDescription;
 
+/** Events emitted as the reasoning loop runs, for logging or debugging. */
+export type RespActEvent =
+    | { type: 'thought'; step: number; text: string }
+    | { type: 'tool_call'; step: number; tool: string; input: string }
+    | { type: 'tool_result'; step: number; tool: string; output: string }
+    | { type: 'tool_error'; step: number; tool: string; error: unknown }
+    | { type: 'repeated_tool_call'; step: number; tool: string; input: string }
+    | { type: 'parse_failed'; step: number; error: unknown };
+
+export interface RespActOptions {
+    tools: Record<string, ToolDefinition>;
+    maxSteps?: number;
+    /** Language model to use. Defaults to the globally configured one. */
+    lm?: ILanguageModel;
+    /** Observe the reasoning loop. Replaces the previous console logging. */
+    onEvent?: (event: RespActEvent) => void;
+}
+
 export class RespAct<TSignature extends typeof Signature = typeof Signature> extends Module {
     private tools: Record<string, ToolWithDescription>;
     private maxSteps: number;
+    private onEvent?: (event: RespActEvent) => void;
 
-    constructor(
-        signature: string | TSignature,
-        options: {
-            tools: Record<string, ToolDefinition>;
-            maxSteps?: number;
-        }
-    ) {
-        super(signature);
-        // Normalize tools to always have descriptions
+    constructor(signature: string | TSignature, options: RespActOptions) {
+        super(signature, options.lm);
+
         this.tools = {};
         for (const [name, tool] of Object.entries(options.tools)) {
-            if (typeof tool === 'function') {
-                // Legacy support: function without description
-                this.tools[name] = {
-                    description: `Tool: ${name}`,
-                    function: tool
-                };
-            } else {
-                // New format: tool with description
-                this.tools[name] = tool;
-            }
+            this.tools[name] =
+                typeof tool === 'function'
+                    ? { description: `Tool: ${name}`, function: tool }
+                    : tool;
         }
-        this.maxSteps = options.maxSteps || 6;
+        this.maxSteps = options.maxSteps ?? 6;
+        this.onEvent = options.onEvent;
     }
 
     async forward(
-        inputs: Record<string, any>
-    ): Promise<Prediction<SignatureOutput<TSignature> & { steps: number }> & SignatureOutput<TSignature> & { steps: number }> {
+        inputs: Record<string, any>,
+        options?: LLMCallOptions
+    ): Promise<
+        Prediction<SignatureOutput<TSignature> & { steps: number }> &
+            SignatureOutput<TSignature> & { steps: number }
+    > {
         let conversation = this.buildInitialPrompt(inputs);
-        let finalAnswerData: SignatureOutput<TSignature> = {} as SignatureOutput<TSignature>;
-        let previousToolCalls: string[] = []; // Track previous tool calls to avoid loops
+        const previousToolCalls = new Set<string>();
 
         for (let step = 0; step < this.maxSteps; step++) {
-            const response = await this.lm.generate(conversation + '\n\nThought:');
+            const response = await this.lm.generate(conversation + '\n\nThought:', options);
             conversation += `\n\nThought: ${response}`;
+            this.emit({ type: 'thought', step, text: response });
 
-            // Check for tool usage FIRST (before checking for final answer)
+            // Tool use takes priority: a response can mention both an action and a
+            // premature final answer, and the action is what advances the loop.
             const toolCall = this.extractToolCall(response);
             if (toolCall) {
-                // Check for repeated tool calls to prevent loops
                 const toolCallKey = `${toolCall.tool}:${toolCall.input}`;
-                if (previousToolCalls.includes(toolCallKey)) {
-                    console.warn('🔄 WARNING: Detected repeated tool call, encouraging final answer...');
-                    conversation += `\n\nObservation: You have already made this tool call. Please move to the next step.`;
+                if (previousToolCalls.has(toolCallKey)) {
+                    this.emit({
+                        type: 'repeated_tool_call',
+                        step,
+                        tool: toolCall.tool,
+                        input: toolCall.input,
+                    });
+                    conversation +=
+                        '\n\nObservation: You have already made this tool call. Please move to the next step.';
                     continue;
                 }
-                previousToolCalls.push(toolCallKey);
+                previousToolCalls.add(toolCallKey);
+                this.emit({
+                    type: 'tool_call',
+                    step,
+                    tool: toolCall.tool,
+                    input: toolCall.input,
+                });
 
-                try {
-                    const observation = await this.executeTool(toolCall.tool, toolCall.input);
-                    conversation += `\n\nObservation: ${observation}`;
-                    continue; // Continue to next step after tool execution
-                } catch (error) {
-                    conversation += `\n\nObservation: Error - ${error}`;
-                    continue; // Continue even after error
-                }
+                const observation = await this.executeTool(toolCall.tool, toolCall.input, step);
+                conversation += `\n\nObservation: ${observation}`;
+                continue;
             }
 
-            // Check for final answer only if no tool call was found
-            if (response.toLowerCase().includes('final answer:')) {
-                const rawAnswer = this.extractFinalAnswer(response);
-                let parsedFromSignature: SignatureOutput<TSignature> = {} as SignatureOutput<TSignature>;
-
-                try {
-                    parsedFromSignature = this.parseOutput(rawAnswer) as SignatureOutput<TSignature>;
-                } catch (error) {
-                    console.warn('Failed to parse output from signature, using raw answer:', error);
-                    parsedFromSignature = {} as SignatureOutput<TSignature>;
-                }
-
-                // For structured signatures, check if we have all required fields
-                if (typeof this.signature !== 'string' && this.signature) {
-                    const outputFields = this.signature.getOutputFields();
-                    const requiredFields = Object.keys(outputFields);
-                    const providedFields = Object.keys(parsedFromSignature).filter(key =>
-                        parsedFromSignature[key] !== null && parsedFromSignature[key] !== undefined
-                    );
-
-                    // Temporarily relaxed validation - accept if we have at least some structured data
-                    if (providedFields.length === 0) {
-                        conversation += `\n\nObservation: Your Final Answer needs to include structured fields: ${requiredFields.join(', ')}. Please provide a Final Answer with the required format.`;
-                        continue;
-                    }
-                }
-
-                // Ensure we have meaningful output
-                const parsedKeys = Object.keys(parsedFromSignature);
-                const hasValidParsedData = parsedKeys.some(key => parsedFromSignature[key] !== null && parsedFromSignature[key] !== undefined);
-
-                if (!hasValidParsedData || parsedKeys.length === 0) {
-                    // If parsing failed or returned empty, create answer from raw
-                    finalAnswerData = { answer: rawAnswer } as unknown as SignatureOutput<TSignature>;
-                } else {
-                    // If we have parsed data but missing answer field, add it
-                    if (!('answer' in parsedFromSignature) && rawAnswer !== null) {
-                        finalAnswerData = { ...parsedFromSignature, answer: rawAnswer } as unknown as SignatureOutput<TSignature>;
-                    } else {
-                        finalAnswerData = parsedFromSignature;
-                    }
-                }
-
-                const combinedOutput = { ...finalAnswerData, steps: step + 1 };
-                return new Prediction(combinedOutput) as Prediction<SignatureOutput<TSignature> & { steps: number }> & SignatureOutput<TSignature> & { steps: number };
+            if (!/final answer:/i.test(response)) {
+                continue;
             }
+
+            const rawAnswer = this.extractFinalAnswer(response);
+            let parsed: Record<string, any> | null = null;
+            try {
+                parsed = this.parseOutput(rawAnswer);
+            } catch (error) {
+                this.emit({ type: 'parse_failed', step, error });
+                // A malformed final answer is recoverable: tell the model what
+                // shape it owes us and let it try again on the next step.
+                if (error instanceof ValidationError && step < this.maxSteps - 1) {
+                    const fieldList = error.issues.map((issue) => issue.field).join(', ');
+                    conversation += `\n\nObservation: Your Final Answer was missing or malformed for: ${fieldList}. Provide a Final Answer with every required field on its own "field: value" line.`;
+                    continue;
+                }
+                throw error;
+            }
+
+            const combinedOutput = { ...parsed, steps: step + 1 };
+            return new Prediction(combinedOutput) as Prediction<
+                SignatureOutput<TSignature> & { steps: number }
+            > &
+                SignatureOutput<TSignature> & { steps: number };
         }
 
-        throw new Error(`RespAct exceeded maximum steps (${this.maxSteps}) without finding answer`);
+        throw new Error(
+            `RespAct exceeded maximum steps (${this.maxSteps}) without producing a valid final answer`
+        );
     }
 
-    protected parseOutput(rawOutput: any): Record<string, any> {
+    protected parseOutput(rawOutput: unknown): Record<string, any> {
         if (!this.signature) {
             throw new Error('No signature provided for RespAct parsing');
         }
-
-        // Ensure rawOutput is a string for parsing
-        let outputText: string;
-        if (typeof rawOutput === 'string') {
-            outputText = rawOutput;
-        } else {
-            // Convert non-string values to string for parsing
-            outputText = JSON.stringify(rawOutput);
-        }
-
+        const outputText =
+            typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput);
         return utilParseOutput(this.signature, outputText);
     }
 
+    private emit(event: RespActEvent): void {
+        this.onEvent?.(event);
+    }
+
     private buildInitialPrompt(inputs: Record<string, any>): string {
-        // Build tool descriptions
         const toolDescriptions = Object.entries(this.tools)
             .map(([name, tool]) => `- ${name}: ${tool.description}`)
             .join('\n');
 
-        // Check if we have a structured signature
         let outputFormatInstruction = '';
         if (typeof this.signature !== 'string' && this.signature) {
-            const outputFields = this.signature.getOutputFields();
-            const fieldNames = Object.keys(outputFields);
+            const fieldNames = Object.keys(this.signature.getOutputFields());
             if (fieldNames.length > 0) {
-                outputFormatInstruction = `\n\nIMPORTANT: When providing your Final Answer, you MUST provide ALL the following fields in this EXACT format:\n\n`;
-                fieldNames.forEach(field => {
+                outputFormatInstruction =
+                    '\n\nWhen providing your Final Answer, include all of the following fields, each on its own line:\n\n';
+                for (const field of fieldNames) {
                     outputFormatInstruction += `${field}: [your response for ${field}]\n`;
-                });
+                }
             }
         }
 
         return `You have access to the following tools:
 ${toolDescriptions}
 
-Question: ${inputs.question || JSON.stringify(inputs)}
+Question: ${inputs.question ?? JSON.stringify(inputs)}
 
-IMPORTANT: You MUST use the available tools to solve this question. Do not attempt to answer directly without using tools when tools are available for the task.
+Use the available tools to gather what you need before answering.
 
-CRITICAL: Take ONE action at a time. After each action, you will receive an observation. Do NOT plan multiple actions in advance.
+Take one action at a time. After each action you will receive an observation; do not plan several actions ahead and do not write the Observation line yourself.
 
-Work systematically:
-1. Gather all necessary data using tools
-2. Perform calculations if needed 
-3. When you have ALL the information needed to answer the question completely, provide your Final Answer
-
-Use this EXACT format (DO NOT generate the Observation line - it will be provided automatically):
+Use this format:
 Thought: [your reasoning about what to do next]
 Action: [tool name]
 Action Input: [input to the tool]
 
-After you receive the Observation, you can then decide your next action. 
+When you have everything you need, respond with:
+Thought: [why you now have enough]
+Final Answer: [complete answer to the original question]${outputFormatInstruction}
 
-When you have gathered ALL necessary information through tool usage, provide:
-Thought: [reasoning that you now have everything needed]
-Final Answer: [complete answer to the original question using all gathered information]${outputFormatInstruction}
-
-Begin! Remember: ONE action at a time, then decide if you need more information or can provide the final answer.`;
+Begin.`;
     }
 
     private extractToolCall(response: string): { tool: string; input: string } | null {
-        // Look for Action and Action Input patterns, handling multiline responses
         const actionMatch = response.match(/Action:\s*(.+?)(?=\n|$)/m);
         const inputMatch = response.match(/Action Input:\s*(.+?)(?=\n|$)/m);
 
         if (actionMatch && inputMatch) {
-            return {
-                tool: actionMatch[1].trim(),
-                input: inputMatch[1].trim()
-            };
+            return { tool: actionMatch[1].trim(), input: inputMatch[1].trim() };
         }
-
         return null;
     }
 
-    private async executeTool(toolName: string, input: string): Promise<string> {
+    private async executeTool(toolName: string, input: string, step: number): Promise<string> {
         if (!(toolName in this.tools)) {
             return `Error: Tool '${toolName}' not found. Available tools: ${Object.keys(this.tools).join(', ')}`;
         }
 
         try {
             const result = await this.tools[toolName].function(input);
-            return String(result);
+            const output = String(result);
+            this.emit({ type: 'tool_result', step, tool: toolName, output });
+            return output;
         } catch (error) {
-            return `Error executing ${toolName}: ${error}`;
+            this.emit({ type: 'tool_error', step, tool: toolName, error });
+            return `Error executing ${toolName}: ${error instanceof Error ? error.message : String(error)}`;
         }
     }
 
-    private extractFinalAnswer(response: string): any {
-        const match = response.match(/Final Answer:\s*(.+?)$/m);
-        if (match) {
-            const answer = match[1].trim();
-
-            // Try to parse as number
-            const num = Number(answer);
-            if (!isNaN(num)) return num;
-
-            // Try to parse as JSON
-            try {
-                return JSON.parse(answer);
-            } catch {
-                return answer;
-            }
-        }
-
-        return null;
+    private extractFinalAnswer(response: string): string {
+        // Keep everything after the marker: multi-field answers span lines.
+        const match = response.match(/Final Answer:\s*([\s\S]*)$/i);
+        return match ? match[1].trim() : '';
     }
-} 
+}

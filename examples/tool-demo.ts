@@ -1,96 +1,108 @@
-import { configure, RespAct } from '@ts-dspy/core';
+/**
+ * RespAct: reason-and-act loops with tools.
+ *
+ *   export OPENAI_API_KEY="sk-..."
+ *   npx tsx examples/tool-demo.ts
+ */
+import { Signature, InputField, OutputField, RespAct, configure } from '@ts-dspy/core';
 import { OpenAILM } from '@ts-dspy/openai';
+import { evaluateArithmetic, requireEnv, section } from './utils';
 
-// Configure with your API key
-configure({
-    lm: new OpenAILM({
-        apiKey: process.env.OPENAI_API_KEY || 'OPENAPI KEY'
-    })
-});
+class ResearchQuestion extends Signature {
+    static description = 'Answer a question using the available tools.';
 
-async function demonstrateToolUsage() {
-    console.log('=== Tool Usage Demonstration ===\n');
+    @InputField({ description: 'the question to answer' })
+    question!: string;
 
-    // Create an agent with multiple tools
-    const agent = new RespAct("question -> answer", {
-        tools: {
-            calculate: (expression: string) => {
-                console.log('🔧 TOOL CALLED: calculate(' + expression + ')');
-                try {
-                    const result = eval(expression);
-                    console.log('   ✅ Calculation result:', result);
-                    return result;
-                } catch (error) {
-                    console.log('   ❌ Calculation error:', error);
-                    return `Error: ${error}`;
-                }
-            },
+    @OutputField({ description: 'the final answer' })
+    answer!: string;
 
-            fetchStockPrice: (symbol: string) => {
-                console.log('🔧 TOOL CALLED: fetchStockPrice(' + symbol + ')');
-                // Mock stock prices
-                const prices: Record<string, number> = {
-                    'AAPL': 150.25,
-                    'GOOGL': 2800.50,
-                    'TSLA': 245.80,
-                    'MSFT': 320.15
-                };
-                const price = prices[symbol.toUpperCase()] || 100;
-                console.log(`   ✅ ${symbol} price: $${price}`);
-                return price;
-            },
-
-            convertCurrency: (amount: number, from: string, to: string) => {
-                console.log(`🔧 TOOL CALLED: convertCurrency(${amount}, ${from}, ${to})`);
-                // Mock exchange rates
-                const rates: Record<string, number> = {
-                    'USD_EUR': 0.85,
-                    'USD_GBP': 0.73
-                };
-                const rate = rates[`${from}_${to}`] || 1.0;
-                const converted = amount * rate;
-                console.log(`   ✅ ${amount} ${from} = ${converted.toFixed(2)} ${to}`);
-                return converted.toFixed(2);
-            }
-        },
-        maxSteps: 6
-    });
-
-    console.log('🤖 How the LLM knows what tools are available:');
-    console.log('1. Tool names are listed in the prompt: calculate, fetchStockPrice, convertCurrency');
-    console.log('2. The LLM is instructed to use this format:');
-    console.log('   Action: [tool name]');
-    console.log('   Action Input: [parameters]');
-    console.log('3. RespAct extracts these patterns and calls the actual functions');
-    console.log('4. The tool results are fed back to the LLM as "Observation:"\n');
-
-    // Example 1: Simple calculation
-    console.log('--- Example 1: Simple Calculation ---');
-    const question1 = "What is 15 * 8 + 32?";
-    console.log('Question:', question1);
-
-    try {
-        const result1 = await agent.forward({ question: question1 });
-        console.log('Final Answer:', result1.answer);
-        console.log('Steps taken:', result1.steps);
-    } catch (error: any) {
-        console.log('Error:', error.message);
-    }
-
-    console.log('\n--- Example 2: Multi-step with tools ---');
-    const question2 = "Get the current price of AAPL stock, then calculate what 100 shares would cost in EUR.";
-    console.log('Question:', question2);
-
-    try {
-        const result2 = await agent.forward({ question: question2 });
-        console.log('Final Answer:', result2.answer);
-        console.log('Steps taken:', result2.steps);
-    } catch (error: any) {
-        console.log('Error:', error.message);
-    }
+    @OutputField({ description: 'confidence between 0 and 1', type: 'number' })
+    confidence!: number;
 }
 
-// Run the demonstration
-if (require.main === module) {
-    demonstrateToolUsage().catch(console.error);
-} 
+// A small stand-in for a real data source.
+const POPULATION: Record<string, number> = {
+    tokyo: 37_000_000,
+    delhi: 34_000_000,
+    shanghai: 30_000_000,
+    paris: 11_000_000,
+};
+
+async function main(): Promise<void> {
+    configure({ lm: new OpenAILM({ apiKey: requireEnv('OPENAI_API_KEY') }) });
+
+    // Tool descriptions are what the model uses to decide when to call each one,
+    // so they are worth writing carefully.
+    const tools = {
+        calculator: {
+            description:
+                'Evaluate an arithmetic expression. Input: an expression using + - * / % ^ and parentheses, e.g. "37000000 / 11000000". Returns the numeric result.',
+            // Never eval() model output — this is a bounded arithmetic parser.
+            function: (expression: string) => evaluateArithmetic(expression),
+        },
+        population: {
+            description:
+                'Look up a city\'s metro-area population. Input: a city name, e.g. "Tokyo". Returns the population as a number, or an error if the city is unknown.',
+            function: (city: string) => {
+                const value = POPULATION[city.trim().toLowerCase()];
+                if (value === undefined) {
+                    throw new Error(
+                        `Unknown city. Known cities: ${Object.keys(POPULATION).join(', ')}`
+                    );
+                }
+                return value;
+            },
+        },
+    };
+
+    section('RespAct with tools');
+
+    const agent = new RespAct(ResearchQuestion, {
+        tools,
+        maxSteps: 8,
+        // Replaces the console logging the loop used to do internally.
+        onEvent: (event) => {
+            switch (event.type) {
+                case 'tool_call':
+                    console.log(`  [step ${event.step}] ${event.tool}(${event.input})`);
+                    break;
+                case 'tool_result':
+                    console.log(`  [step ${event.step}] -> ${event.output}`);
+                    break;
+                case 'tool_error':
+                    console.log(`  [step ${event.step}] tool failed: ${event.error}`);
+                    break;
+                case 'repeated_tool_call':
+                    console.log(`  [step ${event.step}] skipped repeated call`);
+                    break;
+                default:
+                    break;
+            }
+        },
+    });
+
+    const result = await agent.forward({
+        question: 'How many times larger is the population of Tokyo than that of Paris?',
+    });
+
+    console.log(`\nanswer:     ${result.answer}`);
+    console.log(`confidence: ${result.confidence}`);
+    console.log(`steps:      ${result.steps}`);
+
+    // Bare functions still work; they just get a generated description.
+    section('Tools as plain functions');
+
+    const simple = new RespAct('question -> answer', {
+        tools: { calculator: (expression: string) => evaluateArithmetic(expression) },
+        maxSteps: 5,
+    });
+
+    const sum = await simple.forward({ question: 'What is 1234 * 5678?' });
+    console.log(`answer: ${sum.answer}`);
+}
+
+main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+});

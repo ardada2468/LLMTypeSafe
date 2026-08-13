@@ -1,135 +1,280 @@
-import { ILanguageModel, LLMCallOptions, ChatMessage, UsageStats } from '@ts-dspy/core';
-import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
+import {
+    BaseLM,
+    LMError,
+    type ChatMessage,
+    type LLMCallOptions,
+    type ModelCapabilities,
+    type StreamChunk,
+} from '@ts-dspy/core';
+import {
+    GoogleGenAI,
+    HarmBlockThreshold,
+    HarmCategory,
+    type Content,
+    type GenerateContentConfig,
+    type GenerateContentResponse,
+    type SafetySetting,
+} from '@google/genai';
 
-export interface ModelCapabilities {
-    supportsStreaming: boolean;
-    supportsStructuredOutput: boolean;
-    supportsFunctionCalling: boolean;
-    supportsVision: boolean;
-    maxContextLength: number;
-    supportedFormats: string[];
-}
+/** Current default. Gemini 2.x models have reached end of life. */
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash';
 
 export interface GeminiConfig {
-    apiKey: string;
+    /** Gemini API key. Not required when `vertexai` is true and ADC is configured. */
+    apiKey?: string;
     model?: string;
+    /** Route through Vertex AI instead of the Gemini API. */
+    vertexai?: boolean;
+    /** GCP project, for Vertex AI. */
+    project?: string;
+    /** GCP location, for Vertex AI. */
+    location?: string;
+    /** Override the API endpoint, e.g. for a proxy. */
+    baseUrl?: string;
+    /**
+     * Safety thresholds. Defaults to `BLOCK_MEDIUM_AND_ABOVE` across all four
+     * harm categories — the previous implementation configured only harassment
+     * and silently left the rest at their service defaults.
+     */
+    safetySettings?: SafetySetting[];
 }
 
-export class GeminiLM implements ILanguageModel {
-    private client: GoogleGenerativeAI;
-    private config: Required<GeminiConfig>;
-    private usage: UsageStats = {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        totalCost: 0,
-    };
+const DEFAULT_SAFETY_SETTINGS: SafetySetting[] = [
+    HarmCategory.HARM_CATEGORY_HARASSMENT,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+].map((category) => ({ category, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE }));
 
-    constructor(config: GeminiConfig) {
-        this.config = {
-            model: 'gemini-2.0-flash',
-            ...config,
-        };
-        this.client = new GoogleGenerativeAI(this.config.apiKey);
-    }
+/** Context windows by model family; the 1M default matches current Gemini models. */
+function contextLengthFor(model: string): number {
+    if (model.includes('flash-lite')) return 1_000_000;
+    if (model.includes('flash')) return 1_000_000;
+    if (model.includes('pro')) return 1_000_000;
+    return 1_000_000;
+}
 
-    async generate(prompt: string, options?: LLMCallOptions): Promise<string> {
-        const messages: ChatMessage[] = [{ role: 'user', content: prompt }];
-        return this.chat(messages, options);
-    }
+export class GeminiLM extends BaseLM {
+    private readonly client: GoogleGenAI;
+    private readonly safetySettings: SafetySetting[];
 
-    async generateStructured<T>(prompt: string, schema: any, options?: LLMCallOptions): Promise<T> {
-        const structuredPrompt = `${prompt}\n\nRespond with valid JSON matching this schema:\n${JSON.stringify(
-            schema,
-            null,
-            2
-        )}`;
-        const response = await this.generate(structuredPrompt, options);
+    constructor(config: GeminiConfig = {}) {
+        super('gemini', config.model ?? DEFAULT_GEMINI_MODEL);
 
-        try {
-            return JSON.parse(response) as T;
-        } catch (error) {
-            throw new Error(`Failed to parse structured output: ${error}`);
-        }
+        this.client = new GoogleGenAI({
+            apiKey: config.apiKey,
+            vertexai: config.vertexai,
+            project: config.project,
+            location: config.location,
+            ...(config.baseUrl ? { httpOptions: { baseUrl: config.baseUrl } } : {}),
+        });
+        this.safetySettings = config.safetySettings ?? DEFAULT_SAFETY_SETTINGS;
     }
 
     async chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string> {
-        const model = this.client.getGenerativeModel({
-            model: this.config.model,
-        });
-        const lastMessage = messages.pop();
-        if (!lastMessage) {
-            return '';
-        }
+        const { contents, systemInstruction } = toGeminiContents(messages);
+        const response = await this.send(contents, systemInstruction, options);
+        return response.text ?? '';
+    }
 
-        const chat = model.startChat({
-            history: messages.map((msg) => ({
-                role: msg.role === 'assistant' ? 'model' : msg.role,
-                parts: [{ text: msg.content }],
-            })),
-            generationConfig: {
-                maxOutputTokens: options?.maxTokens,
-                temperature: options?.temperature,
-                topP: options?.topP,
-                stopSequences: options?.stopSequences,
-            },
-            safetySettings: [
-                {
-                    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-                    threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                },
-            ],
+    async generateStructured<T>(
+        prompt: string,
+        schema: unknown,
+        options?: LLMCallOptions
+    ): Promise<T> {
+        const { contents, systemInstruction } = toGeminiContents([
+            { role: 'user', content: prompt },
+        ]);
+
+        const response = await this.send(contents, systemInstruction, options, {
+            responseMimeType: 'application/json',
+            responseJsonSchema: schema,
         });
 
-        const result = await chat.sendMessage(lastMessage.content);
+        const text = response.text ?? '';
+        try {
+            return JSON.parse(text) as T;
+        } catch (cause) {
+            throw new LMError('gemini', `Structured response was not valid JSON: ${text}`, {
+                cause,
+            });
+        }
+    }
 
-        const response = result.response;
-        const responseText = response.text();
+    async *generateStream(
+        prompt: string,
+        options?: LLMCallOptions
+    ): AsyncGenerator<StreamChunk, void, unknown> {
+        yield* this.chatStream([{ role: 'user', content: prompt }], options);
+    }
 
-        if (result.response.promptFeedback?.blockReason) {
-            throw new Error(`Gemini API Error: ${result.response.promptFeedback.blockReason}`);
+    async *chatStream(
+        messages: ChatMessage[],
+        options?: LLMCallOptions
+    ): AsyncGenerator<StreamChunk, void, unknown> {
+        const { contents, systemInstruction } = toGeminiContents(messages);
+        const startedAt = Date.now();
+
+        let stream;
+        try {
+            stream = await this.client.models.generateContentStream({
+                model: options?.model ?? this.model,
+                contents,
+                config: this.buildConfig(systemInstruction, options),
+            });
+        } catch (error) {
+            this.recordError();
+            throw toLMError(error);
         }
 
-        // Unfortunately, the new Gemini API does not provide token usage stats yet.
-        // We will have to manually estimate or leave it as 0.
+        let last: GenerateContentResponse | undefined;
+        for await (const chunk of stream) {
+            last = chunk;
+            const text = chunk.text;
+            if (text) {
+                yield { content: text, done: false };
+            }
+        }
 
-        return responseText;
-    }
-
-    getUsage(): UsageStats {
-        console.log('Gemini does not provide token usage stats yet.');
-        return { ...this.usage };
-    }
-
-    resetUsage(): void {
-        this.usage = {
-            promptTokens: 0,
-            completionTokens: 0,
-            totalTokens: 0,
-            totalCost: 0,
-        };
-    }
-
-    setModel(model: string): void {
-        this.config.model = model;
-    }
-
-    getModel(): string {
-        return this.config.model;
-    }
-
-    getModelName(): string {
-        return this.config.model;
+        this.recordUsageFrom(last, startedAt);
+        yield { content: '', done: true, usage: usageFrom(last) };
     }
 
     getCapabilities(): ModelCapabilities {
         return {
-            supportsStreaming: false,
+            supportsStreaming: true,
             supportsStructuredOutput: true,
-            supportsFunctionCalling: false,
-            supportsVision: false,
-            maxContextLength: 32768, // Gemini 1.0 Pro has a 32k context window
-            supportedFormats: ['json_object'],
+            supportsFunctionCalling: true,
+            supportsVision: true,
+            maxContextLength: contextLengthFor(this.model),
+            supportedFormats: ['text', 'json_object', 'json_schema'],
         };
     }
-} 
+
+    /** @deprecated Use {@link getModelName}. */
+    getModel(): string {
+        return this.model;
+    }
+
+    private async send(
+        contents: Content[],
+        systemInstruction: string | undefined,
+        options?: LLMCallOptions,
+        extraConfig?: Partial<GenerateContentConfig>
+    ): Promise<GenerateContentResponse> {
+        const startedAt = Date.now();
+
+        let response: GenerateContentResponse;
+        try {
+            response = await this.client.models.generateContent({
+                model: options?.model ?? this.model,
+                contents,
+                config: { ...this.buildConfig(systemInstruction, options), ...extraConfig },
+            });
+        } catch (error) {
+            this.recordError();
+            throw toLMError(error);
+        }
+
+        // Check the block reason before touching `text`. The previous
+        // implementation read `response.text()` first, which threw on blocked
+        // responses and made this branch unreachable.
+        const blockReason = response.promptFeedback?.blockReason;
+        if (blockReason) {
+            this.recordError();
+            throw new LMError('gemini', `Request blocked by safety filters: ${blockReason}`);
+        }
+
+        this.recordUsageFrom(response, startedAt);
+        return response;
+    }
+
+    private buildConfig(
+        systemInstruction: string | undefined,
+        options?: LLMCallOptions
+    ): GenerateContentConfig {
+        const config: GenerateContentConfig = {
+            safetySettings: this.safetySettings,
+        };
+
+        if (systemInstruction) config.systemInstruction = systemInstruction;
+        if (options?.maxTokens !== undefined) config.maxOutputTokens = options.maxTokens;
+        if (options?.temperature !== undefined) config.temperature = options.temperature;
+        if (options?.topP !== undefined) config.topP = options.topP;
+        if (options?.stopSequences) config.stopSequences = options.stopSequences;
+        if (options?.frequencyPenalty !== undefined) {
+            config.frequencyPenalty = options.frequencyPenalty;
+        }
+        if (options?.presencePenalty !== undefined) {
+            config.presencePenalty = options.presencePenalty;
+        }
+        if (options?.timeout !== undefined) {
+            config.abortSignal = AbortSignal.timeout(options.timeout);
+        }
+
+        return config;
+    }
+
+    private recordUsageFrom(
+        response: GenerateContentResponse | undefined,
+        startedAt: number
+    ): void {
+        const usage = response?.usageMetadata;
+        this.recordUsage({
+            promptTokens: usage?.promptTokenCount ?? 0,
+            completionTokens: usage?.candidatesTokenCount ?? 0,
+            latencyMs: Date.now() - startedAt,
+        });
+    }
+}
+
+function usageFrom(response: GenerateContentResponse | undefined) {
+    const usage = response?.usageMetadata;
+    return {
+        promptTokens: usage?.promptTokenCount ?? 0,
+        completionTokens: usage?.candidatesTokenCount ?? 0,
+        totalTokens: usage?.totalTokenCount ?? 0,
+    };
+}
+
+/**
+ * Convert ts-dspy messages to Gemini contents.
+ *
+ * System messages become a separate `systemInstruction`, since Gemini has no
+ * system role in `contents`. This does not mutate the caller's array — the
+ * previous implementation called `messages.pop()`, destroying the last turn of
+ * any array a caller reused.
+ */
+export function toGeminiContents(messages: ChatMessage[]): {
+    contents: Content[];
+    systemInstruction?: string;
+} {
+    const systemParts: string[] = [];
+    const contents: Content[] = [];
+
+    for (const message of messages) {
+        if (message.role === 'system') {
+            systemParts.push(message.content);
+            continue;
+        }
+        contents.push({
+            role: message.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: message.content }],
+        });
+    }
+
+    return {
+        contents,
+        systemInstruction: systemParts.length > 0 ? systemParts.join('\n\n') : undefined,
+    };
+}
+
+function toLMError(error: unknown): LMError {
+    if (error instanceof LMError) return error;
+    const message = error instanceof Error ? error.message : String(error);
+    const status =
+        typeof error === 'object' && error !== null && 'status' in error
+            ? Number((error as { status: unknown }).status)
+            : undefined;
+    return new LMError('gemini', message, { cause: error, status });
+}
