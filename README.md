@@ -202,14 +202,28 @@ See [`examples/`](examples) for OpenAI, Gemini, Anthropic, and tool-use programs
 
 ```bash
 npm install
-npm run build       # tsup, per package
-npm test            # vitest
+npm run build              # tsup, per package (core first — providers need its types)
+npm test                   # vitest
 npm run lint
-npm run typecheck
+npm run typecheck          # packages and examples
+npm run format:check
+npm run verify:packaging   # pack, install, and import as a real consumer would
 ```
 
+Every one of these runs in CI on each pull request, across Node 22, 24, and 26.
+The release workflow runs the same set before it can publish, so the release path
+cannot drift from the path changes are reviewed through.
+
+`verify:packaging` is the one worth knowing about: it packs the tarballs,
+installs them into a throwaway project, and imports them from both ESM and
+CommonJS. Builds, type checks, and unit tests all run against workspace symlinks,
+so none of them can see a wrong dependency range — which is how 0.4.2 shipped
+providers depending on a version of `@ts-dspy/core` that release did not satisfy.
+
 Releases run on [changesets](https://github.com/changesets/changesets): add one
-with `npx changeset` when you change a published package.
+with `npx changeset` when you change a published package, or
+`npx changeset --empty` for a change that intentionally ships no release. CI
+fails a pull request that changes a published package without one.
 
 ## License
 

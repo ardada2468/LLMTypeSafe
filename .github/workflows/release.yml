@@ -12,8 +12,14 @@ permissions:
   contents: read
 
 jobs:
+  # Run the full pull-request gate set before anything can be published, so the
+  # release path cannot drift from the path changes are reviewed through.
+  verify:
+    uses: ./.github/workflows/ci.yml
+
   release:
     name: Version or publish
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -33,7 +39,6 @@ jobs:
 
       - run: npm ci
       - run: npm run build
-      - run: npm test
 
       # Opens a "Version Packages" PR when changesets are pending; publishes to
       # npm when that PR is merged.
