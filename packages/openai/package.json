@@ -1,6 +1,6 @@
 {
   "name": "@ts-dspy/openai",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "OpenAI provider for TS-DSPy - type-safe LLM interactions with structured outputs, streaming, and tool calling",
   "type": "module",
   "sideEffects": false,
@@ -34,7 +34,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@ts-dspy/core": "^0.4.2",
+    "@ts-dspy/core": "^0.5.0",
     "openai": "^6.9.0"
   },
   "keywords": [

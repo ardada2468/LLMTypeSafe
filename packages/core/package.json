@@ -1,6 +1,6 @@
 {
   "name": "@ts-dspy/core",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Core library for building type-safe LLM applications with structured input/output signatures, runtime validation, and reasoning patterns in TypeScript",
   "type": "module",
   "sideEffects": false,
