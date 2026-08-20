@@ -1,672 +1,233 @@
-# TS-DSPy: TypeScript-First LLM Framework
+# TS-DSPy
 
-<div align="center">
+[![CI](https://github.com/ardada2468/LLMTypeSafe/actions/workflows/ci.yml/badge.svg)](https://github.com/ardada2468/LLMTypeSafe/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@ts-dspy/core.svg)](https://www.npmjs.com/package/@ts-dspy/core)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[![npm version](https://badge.fury.io/js/@ts-dspy%2Fcore.svg)](https://badge.fury.io/js/@ts-dspy%2Fcore)
-[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green)](https://nodejs.org/)
+Build LLM applications in TypeScript by declaring the shape of the input and
+output you want, instead of hand-writing prompts and parsing replies. Inspired by
+[DSPy](https://github.com/stanfordnlp/dspy).
 
-**A production-ready TypeScript framework for building reliable, type-safe LLM applications with structured outputs, reasoning patterns, and intelligent tool integration.**
-
-[Quick Start](#-quick-start) • [Examples](#-examples) • [API Reference](#-api-reference) • [Contributing](#-contributing)
-
-</div>
-
----
-
-## 🌟 Why TS-DSPy?
-
-TS-DSPy brings the powerful paradigms of [Stanford's DSPy framework](https://github.com/stanfordnlp/dspy) to the TypeScript ecosystem with full type safety, modern tooling, and production-grade features. Whether you're building AI chatbots, data processing pipelines, or intelligent agents, TS-DSPy provides the abstractions you need.
-
-
-### ✨ Key Features
-
-- **🔒 Type-Safe Signatures**: Define input/output schemas with automatic validation and TypeScript inference
-- **🧠 ReAct Pattern**: Built-in Reasoning and Acting with intelligent tool integration
-- **🛠️ Enhanced Tool Descriptions**: Provide detailed tool descriptions for better AI decision-making
-- **🔌 Multiple LLM Support**: Supports OpenAI and Google Gemini with an extensible architecture for other providers
-- **⚡ Automatic Parsing**: Converts raw LLM outputs to structured TypeScript objects
-- **🛡️ Robust Error Handling**: Comprehensive validation with automatic retries and fallbacks
-- **📊 Usage Tracking**: Built-in token usage and cost monitoring
-- **🎯 Zero Config**: Works out of the box with minimal setup
-- **📦 Modular Design**: Pluggable architecture for LLM providers and custom modules
-
----
-
-## 📦 Installation
+Model output is **validated at runtime** against the shape you declared. If a
+field you declared as a number comes back as prose, you get a `ValidationError`
+naming the field — not a string masquerading as a number.
 
 ```bash
-# Core framework
-npm install @ts-dspy/core
-
-# OpenAI integration
-npm install @ts-dspy/openai
-
-# Gemini integration
-npm install @ts-dspy/gemini
+npm install @ts-dspy/core @ts-dspy/openai
 ```
 
-**Requirements:**
-- Node.js 18+
-- TypeScript 5.0+
-
----
-
-## 📈 Downloads
-
-<div align="center">
-
-[![total npm downloads](https://img.shields.io/npm/dt/@ts-dspy/core?label=total%20downloads&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/core)
-[![npm downloads](https://img.shields.io/npm/dm/@ts-dspy/core?label=%40ts-dspy%2Fcore&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/core)
-[![npm downloads](https://img.shields.io/npm/dm/@ts-dspy/openai?label=%40ts-dspy%2Fopenai&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/openai)
-[![npm downloads](https://img.shields.io/npm/dm/@ts-dspy/gemini?label=%40ts-dspy%2Fgemini&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/gemini)
-
-<img src="assets/npm-downloads.svg" alt="Monthly npm downloads for @ts-dspy/core" width="840">
-
-</div>
-
-The chart is regenerated from the [public npm downloads API](https://github.com/npm/registry/blob/main/docs/download-counts.md) on the 2nd of each month by [`.github/workflows/npm-downloads-chart.yml`](.github/workflows/npm-downloads-chart.yml). To refresh it by hand:
-
-```bash
-node scripts/generate-downloads-chart.js
-```
-
----
-
-## 🚀 Quick Start
-
-**⚠️ Important: Use `ts-node` to run TypeScript files directly. Transpiling to JavaScript may cause issues with decorators and type information.**
-
-```bash
-# Run examples with ts-node
-npx ts-node examples/basic-usage.ts
-npx ts-node examples/basic-gemini-example.ts
-
-# Or install globally  
-npm install -g ts-node
-ts-node your-script.ts
-```
-
-Look at `./examples/basic-usage.ts` and `./examples/basic-gemini-example.ts` to test this package as well as the examples below
-
-### Basic Prediction
-
-```typescript
-import { configure, Predict } from '@ts-dspy/core';
+```ts
+import { Signature, InputField, OutputField, Predict, configure } from '@ts-dspy/core';
 import { OpenAILM } from '@ts-dspy/openai';
-// or import { GeminiLM } from '@ts-dspy/gemini';
 
-// Configure your LLM provider
-configure({
-    lm: new OpenAILM({ 
-        apiKey: process.env.OPENAI_API_KEY,
-        model: 'gpt-4'
-    })
-    // or 
-    // lm: new GeminiLM({
-    //     apiKey: process.env.GEMINI_API_KEY,
-    //     model: 'gemini-2.0-flash'
-    // })
-});
+class AnswerQuestion extends Signature {
+  static description = 'Answer a factual question concisely.';
 
-// Simple question-answering
-const qa = new Predict("question -> answer");
-const result = await qa.forward({ 
-    question: "What is the capital of France?" 
+  @InputField({ description: 'the question to answer' })
+  question!: string;
+
+  @OutputField({ description: 'a concise answer' })
+  answer!: string;
+
+  @OutputField({ description: 'confidence between 0 and 1', type: 'number' })
+  confidence!: number;
+}
+
+configure({ lm: new OpenAILM({ apiKey: process.env.OPENAI_API_KEY }) });
+
+const result = await new Predict(AnswerQuestion).forward({
+  question: 'What is the capital of France?',
 });
 
 console.log(result.answer); // "Paris"
+console.log(result.confidence); // 0.98 — a number, verified at runtime
 ```
 
-### Type-Safe Signatures
+## Packages
 
-```typescript
-import { Signature, InputField, OutputField } from '@ts-dspy/core';
+| Package                                    | Provider                                                     |
+| ------------------------------------------ | ------------------------------------------------------------ |
+| [`@ts-dspy/core`](packages/core)           | Signatures, modules, validation. No provider.                |
+| [`@ts-dspy/openai`](packages/openai)       | OpenAI, via the official `openai` SDK                        |
+| [`@ts-dspy/gemini`](packages/gemini)       | Google Gemini, via `@google/genai` (Gemini API or Vertex AI) |
+| [`@ts-dspy/anthropic`](packages/anthropic) | Anthropic Claude, via `@anthropic-ai/sdk`                    |
 
-class SentimentAnalysis extends Signature {
-    @InputField({ description: "Text to analyze for sentiment" })
-    text!: string;
+Install core plus whichever providers you use. Each provider defaults to a current
+model for that vendor; pass `model` to pin one yourself.
 
-    @OutputField({ description: "Sentiment classification" })
-    sentiment!: 'positive' | 'negative' | 'neutral';
+Requires Node.js 22 or newer. Packages ship both ESM and CommonJS builds.
 
-    @OutputField({ description: "Confidence score between 0 and 1" })
-    confidence!: number;
+## Downloads
 
-    static description = "Analyze the sentiment of the given text";
-}
+[![total downloads](https://img.shields.io/npm/dt/@ts-dspy/core?label=total%20downloads&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/core)
+[![@ts-dspy/core](https://img.shields.io/npm/dm/@ts-dspy/core?label=%40ts-dspy%2Fcore&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/core)
+[![@ts-dspy/openai](https://img.shields.io/npm/dm/@ts-dspy/openai?label=%40ts-dspy%2Fopenai&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/openai)
+[![@ts-dspy/gemini](https://img.shields.io/npm/dm/@ts-dspy/gemini?label=%40ts-dspy%2Fgemini&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/gemini)
+[![@ts-dspy/anthropic](https://img.shields.io/npm/dm/@ts-dspy/anthropic?label=%40ts-dspy%2Fanthropic&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/anthropic)
 
-const classifier = new Predict(SentimentAnalysis);
-const result = await classifier.forward({ 
-    text: "I love this framework!" 
-});
+<img src="assets/npm-downloads.svg" alt="Monthly npm downloads for @ts-dspy/core" width="840">
 
-// Full TypeScript autocomplete and type safety
-console.log(result.sentiment);   // Type: 'positive' | 'negative' | 'neutral'
-console.log(result.confidence);  // Type: number
-```
+The chart is regenerated from the
+[public npm downloads API](https://github.com/npm/registry/blob/main/docs/download-counts.md)
+on the 2nd of each month by
+[`.github/workflows/npm-downloads-chart.yml`](.github/workflows/npm-downloads-chart.yml).
+To refresh it by hand: `npm run chart:downloads`.
 
----
+## Concepts
 
-## 🎯 Core Concepts
+### Signatures
 
-### 1. Signatures: Define Your Interface
+A signature declares a task's inputs and outputs. Use a class with decorators when
+you want descriptions and types:
 
-Signatures are the foundation of TS-DSPy, defining the input/output structure for your LLM interactions.
+```ts
+class AnalyzeReview extends Signature {
+  static description = 'Analyze a product review.';
 
-#### String Signatures (Quick & Simple)
-```typescript
-// Basic signature
-const qa = new Predict("question -> answer");
+  @InputField({ description: 'the review text' })
+  review!: string;
 
-// Multi-output with types
-const analyzer = new Predict("text -> sentiment: string, score: float, summary");
-```
+  @OutputField({ description: 'positive, negative, or neutral' })
+  sentiment!: string;
 
-#### Class-Based Signatures (Type-Safe & Structured)
-```typescript
-class DataExtraction extends Signature {
-    @InputField({ description: "Raw text to extract data from" })
-    text!: string;
+  @OutputField({ description: 'rating from 1 to 5', type: 'int' })
+  rating!: number;
 
-    @OutputField({ description: "Extracted person names" })
-    names!: string[];
+  @OutputField({ description: 'key themes', type: 'string[]' })
+  themes!: string[];
 
-    @OutputField({ description: "Extracted dates in ISO format" })
-    dates!: string[];
-
-    @OutputField({ description: "Confidence level" })
-    confidence!: number;
+  @OutputField({ description: 'follow-up question', required: false })
+  followUp?: string;
 }
 ```
 
-### 2. Modules: Pre-Built Reasoning Patterns
+Or a string, for quick work: `'question -> answer: string, confidence: float'`.
 
-#### Predict: Basic LLM Prediction
-```typescript
-const predictor = new Predict("context, question -> answer");
-const result = await predictor.forward({
-    context: "The sky is blue because of Rayleigh scattering.",
-    question: "Why is the sky blue?"
-});
+Field types: `string` (default), `number`/`float`, `int`/`integer`,
+`boolean`/`bool`, `string[]`, `number[]`, `array`/`list`, `object`/`json`.
+Set `required: false` to make a field optional.
+
+Class signatures need `experimentalDecorators` in your `tsconfig.json`.
+
+### Modules
+
+- **`Predict`** — one call, validated against the signature.
+- **`ChainOfThought`** — reasons in free text first, then answers; the result adds a `reasoning` field.
+- **`RespAct`** — a reason-and-act loop that calls the tools you provide until it can answer.
+
+All three accept per-call options that are passed through to the provider SDK:
+
+```ts
+await predict.forward({ question: '...' }, { temperature: 0, timeout: 30_000, retries: 2 });
 ```
 
-#### ChainOfThought: Step-by-Step Reasoning
-```typescript
-const reasoner = new ChainOfThought("problem -> solution: int");
-const result = await reasoner.forward({
-    problem: "If I have 3 apples and buy 5 more, then eat 2, how many do I have?"
-});
+When a provider supports native structured output, `Predict` and `ChainOfThought`
+use it — the model is constrained to your schema rather than merely asked for it —
+and fall back to parsing labelled text otherwise.
 
-console.log(result.reasoning); // "First I have 3 apples..."
-console.log(result.solution);  // 6
-```
+### Validation
 
-#### RespAct: Tool-Using Agents
-```typescript
-const agent = new RespAct("question -> answer", {
-    tools: {
-        calculate: {
-            description: "Performs mathematical calculations",
-            function: (expr: string) => eval(expr)
-        },
-        search: {
-            description: "Searches for information online",
-            function: async (query: string) => await searchWeb(query)
-        }
-    },
-    maxSteps: 5
-});
-```
+```ts
+import { ValidationError } from '@ts-dspy/core';
 
----
-
-## 🛠️ Enhanced Tool Integration
-
-TS-DSPy features an advanced tool system with intelligent descriptions that help LLMs make better decisions about when and how to use tools.
-
-### Enhanced Tool Format
-
-```typescript
-const financialAgent = new RespAct("question -> answer", {
-    tools: {
-        fetchStockPrice: {
-            description: "Retrieves current stock price for a ticker symbol (e.g., AAPL, GOOGL). Returns price in USD. Use when you need current market data.",
-            function: async (symbol: string) => {
-                const response = await fetch(`/api/stocks/${symbol}`);
-                return response.json();
-            }
-        },
-        
-        calculatePortfolioValue: {
-            description: "Calculates total portfolio value given holdings. Takes array of {symbol, shares} objects. Use for portfolio analysis.",
-            function: (holdings: Array<{symbol: string, shares: number}>) => {
-                return holdings.reduce((total, holding) => 
-                    total + (getStockPrice(holding.symbol) * holding.shares), 0
-                );
-            }
-        },
-
-        convertCurrency: {
-            description: "Converts amounts between currencies using live rates. Params: amount (number), from (currency code), to (currency code).",
-            function: (amount: number, from: string, to: string) => {
-                return convertCurrency(amount, from, to);
-            }
-        }
+try {
+  const result = await predict.forward({ question: '...' });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    for (const issue of error.issues) {
+      console.error(`${issue.field} (${issue.expected}): ${issue.message}`);
     }
-});
-
-// The LLM now has context about when and how to use each tool
-const result = await financialAgent.forward({
-    question: "I own 100 AAPL shares and 50 TSLA shares. What's my portfolio worth in EUR?"
-});
-```
-
-### Benefits of Tool Descriptions
-
-- **🎯 Better Tool Selection**: LLMs make more intelligent decisions about which tools to use
-- **📝 Self-Documenting**: Your code becomes more readable and maintainable  
-- **🔧 Improved Parameters**: Descriptions guide proper parameter formatting
-- **⚡ Reduced Errors**: Clear descriptions prevent tool misuse
-- **🔄 Backward Compatible**: Legacy function-only tools still work
-
----
-
-## 📊 Advanced Features
-
-### Usage Tracking & Cost Monitoring
-
-```typescript
-const lm = new OpenAILM({ apiKey: process.env.OPENAI_API_KEY });
-const module = new Predict("question -> answer", lm);
-
-await module.forward({ question: "Hello world!" });
-
-// Get detailed usage statistics
-const usage = lm.getUsage();
-console.log(`Tokens: ${usage.totalTokens}`);
-console.log(`Cost: $${usage.totalCost}`);
-console.log(`Requests: ${usage.requestCount}`);
-```
-
-### Configuration & Tracing
-
-```typescript
-import { configure, getTraceHistory } from '@ts-dspy/core';
-
-configure({
-    lm: new OpenAILM({ apiKey: process.env.OPENAI_API_KEY }),
-    cache: true,        // Enable response caching
-    tracing: true,      // Record all interactions
-    maxRetries: 3,      // Auto-retry failed requests
-    timeout: 30000      // Request timeout in ms
-});
-
-// After running modules, analyze performance
-const traces = getTraceHistory();
-traces.forEach(trace => {
-    console.log(`Module: ${trace.moduleId}`);
-    console.log(`Duration: ${trace.duration}ms`);
-    console.log(`Tokens: ${trace.usage.totalTokens}`);
-    console.log(`Cost: $${trace.usage.totalCost}`);
-});
-```
-
-### Multiple LLM Providers
-
-```typescript
-import { OpenAILM } from '@ts-dspy/openai';
-import { GeminiLM } from '@ts-dspy/gemini';
-
-const fastLM = new GeminiLM({ 
-    apiKey: process.env.GEMINI_API_KEY,
-    model: 'gemini-2.0-flash'  // Fast and cost-effective
-});
-
-const smartLM = new OpenAILM({ 
-    apiKey: process.env.OPENAI_API_KEY,
-    model: 'gpt-4'  // Powerful for complex reasoning
-});
-
-// Use different LLMs for different tasks
-const quickQA = new Predict("question -> answer", fastLM);
-const complexReasoner = new ChainOfThought("problem -> solution", smartLM);
-```
-
----
-
-## 📚 Examples
-
-### 1. Content Analysis Pipeline
-
-```typescript
-class ContentAnalysis extends Signature {
-    @InputField({ description: "Article text to analyze" })
-    article!: string;
-
-    @OutputField({ description: "Main topics covered" })
-    topics!: string[];
-
-    @OutputField({ description: "Article sentiment" })
-    sentiment!: 'positive' | 'negative' | 'neutral';
-
-    @OutputField({ description: "Reading difficulty (1-10)" })
-    difficulty!: number;
-
-    @OutputField({ description: "Key takeaways" })
-    takeaways!: string[];
+    console.error('raw model output:', error.rawOutput);
+  }
 }
-
-const analyzer = new Predict(ContentAnalysis);
-const result = await analyzer.forward({
-    article: "Your article text here..."
-});
 ```
 
-### 2. Research Assistant Agent
+Coercion is deliberately lenient — models emit text, so `"42"` satisfies a
+`number` field and `"a, b, c"` satisfies a `string[]`. What is not lenient is
+failure: anything that cannot be coerced throws rather than silently passing
+through.
 
-```typescript
-const researcher = new RespAct("research_query -> comprehensive_answer", {
-    tools: {
-        searchAcademic: {
-            description: "Searches academic papers and journals. Use for scholarly research and citations.",
-            function: async (query: string) => await searchScholar(query)
-        },
-        
-        searchWeb: {
-            description: "Searches general web content. Use for current events and general information.",
-            function: async (query: string) => await searchGoogle(query)
-        },
-        
-        summarizeText: {
-            description: "Summarizes long text into key points. Use when you have lengthy content to process.",
-            function: (text: string) => summarizeContent(text)
-        }
+### Output types
+
+Decorators record fields at runtime, so TypeScript cannot infer per-field types
+from the class. Results are therefore typed loosely by default. Name the shape
+when you want precise types:
+
+```ts
+type ReviewAnalysis = { sentiment: string; rating: number; themes: string[] };
+
+const analysis = await new Predict<typeof AnalyzeReview, ReviewAnalysis>(AnalyzeReview).forward(
+  { review }
+);
+
+analysis.themes.join(', '); // typed as string[]
+```
+
+Runtime validation comes from the signature either way.
+
+### Tools
+
+```ts
+const agent = new RespAct(AnswerQuestion, {
+  tools: {
+    search: {
+      description: 'Search the web. Input: a query string. Returns snippets.',
+      function: async (query: string) => search(query),
     },
-    maxSteps: 8
-});
-
-const result = await researcher.forward({
-    research_query: "What are the latest developments in quantum computing algorithms?"
+  },
+  maxSteps: 8,
+  onEvent: (event) => console.log(event),
 });
 ```
 
-### 3. Data Processing Chain
+Tool descriptions are what the model uses to decide when to call each tool, so
+they earn the detail. Never pass model output to `eval()` — see
+[`examples/utils.ts`](examples/utils.ts) for a bounded arithmetic evaluator.
 
-```typescript
-// Multi-step data processing with type safety
-class DataProcessor extends Signature {
-    @InputField({ description: "Raw CSV data string" })
-    csvData!: string;
-
-    @OutputField({ description: "Processed and cleaned data" })
-    cleanedData!: Array<Record<string, any>>;
-
-    @OutputField({ description: "Data quality issues found" })
-    issues!: string[];
-
-    @OutputField({ description: "Suggested improvements" })
-    improvements!: string[];
-}
-
-const processor = new ChainOfThought(DataProcessor);
-const result = await processor.forward({
-    csvData: "name,age,email\nJohn,25,john@example.com\n..."
-});
-```
-
----
-
-## 🏗️ Architecture
-
-TS-DSPy follows a clean, modular architecture:
-
-```
-@ts-dspy/
-├── core/                   # Core framework
-│   ├── types/             # TypeScript interfaces & types
-│   ├── core/              # Base classes (Signature, Module, Prediction)
-│   ├── modules/           # Built-in modules (Predict, ChainOfThought, RespAct)
-│   └── utils/             # Utilities (parsing, caching, validation)
-│
-├── openai/                # OpenAI integration
-│   ├── models/            # OpenAI language model implementation
-│   └── utils/             # OpenAI-specific utilities
-│
-├── gemini/                # Google Gemini integration
-│   ├── models/            # Gemini language model implementation
-│   └── utils/             # Gemini-specific utilities
-│
-└── [future providers]/    # Anthropic, Cohere, etc. (coming soon)
-```
-
-### Core Classes
-
-- **`Signature`**: Abstract base for defining input/output schemas
-- **`Module`**: Abstract base for all LLM modules  
-- **`Prediction`**: Type-safe container for module outputs
-- **`Example`**: Container for training/evaluation examples
-
-### Decorators
-
-- **`@InputField(config)`**: Mark class properties as input fields
-- **`@OutputField(config)`**: Mark class properties as output fields
-
----
-
-## 🧪 Testing
-
-Run the comprehensive test suite:
+## Examples
 
 ```bash
-# Run all tests
-npm test
-
-# Run with coverage
-npm run test:coverage
-
-# Test specific package
-cd packages/core && npm test
-
-# Run examples (use ts-node for proper execution)
-npm run run:example:openai
-npm run run:example:gemini
-
-# Or run directly with ts-node
-npx ts-node examples/basic-usage.ts
-npx ts-node examples/basic-gemini-example.ts
-```
-
----
-
-## 🔧 Development
-
-### Setting Up Development Environment
-
-```bash
-# Clone the repository
-git clone https://github.com/your-username/ts-dspy.git
-cd ts-dspy
-
-# Install dependencies
+git clone https://github.com/ardada2468/LLMTypeSafe.git
+cd LLMTypeSafe
 npm install
-
-# Build all packages
 npm run build
 
-# Run tests
-npm test
-
-# Start development mode
-npm run dev
+export OPENAI_API_KEY="sk-..."
+npm run example:openai
 ```
 
-### Creating Custom LLM Providers
+See [`examples/`](examples) for OpenAI, Gemini, Anthropic, and tool-use programs.
 
-Implement the `ILanguageModel` interface:
-
-```typescript
-import { ILanguageModel, LLMCallOptions, ChatMessage } from '@ts-dspy/core';
-
-export class CustomLM implements ILanguageModel {
-    async generate(prompt: string, options?: LLMCallOptions): Promise<string> {
-        // Your implementation
-    }
-    
-    async chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string> {
-        // Your implementation  
-    }
-    
-    getUsage() {
-        // Return usage statistics
-    }
-}
-```
-
-### Contributing Custom Modules
-
-Extend the `Module` base class:
-
-```typescript
-import { Module, Signature, Prediction } from '@ts-dspy/core';
-
-export class CustomModule extends Module {
-    constructor(signature: string | typeof Signature, lm?: ILanguageModel) {
-        super(signature, lm);
-    }
-
-    async forward(inputs: Record<string, any>): Promise<Prediction> {
-        // Your module implementation
-    }
-}
-```
-
----
-
-## 📋 API Reference
-
-### Configuration
-
-```typescript
-// Global configuration
-configure({
-    lm: new OpenAILM({ apiKey: 'your-key' }),
-    cache: boolean,
-    tracing: boolean,
-    maxRetries: number,
-    timeout: number
-});
-
-// Get current configuration
-const config = getDefaultLM();
-```
-
-### Core Modules
-
-```typescript
-// Basic prediction
-const predict = new Predict("input -> output");
-
-// Reasoning with chain of thought
-const reasoner = new ChainOfThought("problem -> solution");
-
-// Tool-using agent
-const agent = new RespAct("question -> answer", { 
-    tools: { /* your tools */ },
-    maxSteps: 5 
-});
-```
-
-### Utilities
-
-```typescript
-// Manual prompt building
-const prompt = buildPrompt(signature, inputs, examples);
-
-// Parse LLM output
-const parsed = parseOutput(rawOutput, signature);
-```
-
----
-
-## 📦 Publishing Information
-
-This package is published to NPM as a scoped monorepo:
-
-- **Core Package**: `@ts-dspy/core`
-- **OpenAI Integration**: `@ts-dspy/openai`
-- **Google Gemini Integration**: `@ts-dspy/gemini`
-- **License**: MIT
-- **Author**: Arnav Dadarya
-- **Node.js**: 18+ required
-- **TypeScript**: 5.0+ required
-- **⚠️ Execution**: Use `ts-node` instead of transpiling to JavaScript
-
-### Installation
+## Development
 
 ```bash
-# For most users (core + OpenAI)
-npm install @ts-dspy/core @ts-dspy/openai
-
-# With Gemini support
-npm install @ts-dspy/core @ts-dspy/gemini
-
-# All providers
-npm install @ts-dspy/core @ts-dspy/openai @ts-dspy/gemini
-
-# Just the core framework
-npm install @ts-dspy/core
-
-# Install ts-node for proper execution
-npm install -g ts-node
-
-# Specific version
-npm install @ts-dspy/core@^0.1.0
+npm install
+npm run build              # tsup, per package (core first — providers need its types)
+npm test                   # vitest
+npm run lint
+npm run typecheck          # packages and examples
+npm run format:check
+npm run verify:packaging   # pack, install, and import as a real consumer would
 ```
 
----
+Every one of these runs in CI on each pull request, across Node 22, 24, and 26.
+The release workflow runs the same set before it can publish, so the release path
+cannot drift from the path changes are reviewed through.
 
-## 🤝 Contributing
+`verify:packaging` is the one worth knowing about: it packs the tarballs,
+installs them into a throwaway project, and imports them from both ESM and
+CommonJS. Builds, type checks, and unit tests all run against workspace symlinks,
+so none of them can see a wrong dependency range — which is how 0.4.2 shipped
+providers depending on a version of `@ts-dspy/core` that release did not satisfy.
 
-We welcome contributions! Here's how to get started:
+Releases run on [changesets](https://github.com/changesets/changesets): add one
+with `npx changeset` when you change a published package, or
+`npx changeset --empty` for a change that intentionally ships no release. CI
+fails a pull request that changes a published package without one.
 
-1. **Fork the repository**
-2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
-3. **Make your changes** with tests
-4. **Run the test suite**: `npm test`
-5. **Submit a pull request**
+Publishing uses npm trusted publishing, so there is no npm token to hold or
+rotate. See [RELEASING.md](RELEASING.md).
 
-### Contribution Guidelines
+## License
 
-- Follow TypeScript best practices
-- Add tests for new features
-- Update documentation as needed
-- Ensure all CI checks pass
-- Follow conventional commit format
-
----
-
-## 📄 License
-
-This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
-
-**Copyright (c) 2024 Arnav Dadarya**
-
----
-
-## 🙏 Acknowledgments
-
-- Inspired by [Stanford's DSPy framework](https://github.com/stanfordnlp/dspy)
-- Built with ❤️ for the TypeScript community
-- Thanks to all contributors and early adopters
-
----
-
-<div align="center">
-
-**Star ⭐ the repo if TS-DSPy helped you build better LLM applications!**
-
-Made with TypeScript • Powered by AI • Built for Developers
-
-</div> 
+MIT — see [LICENSE](LICENSE).

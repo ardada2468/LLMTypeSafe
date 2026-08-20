@@ -28,7 +28,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Regenerate chart
         run: node scripts/generate-downloads-chart.js
@@ -43,7 +43,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add assets/npm-downloads.svg
-          # `chore(docs)` deliberately does not match the release workflow's
-          # conventional-commit triggers, so this never cuts a release.
+          # Releases are driven by changesets, so a commit carrying none is a
+          # no-op for the release workflow no matter how it is worded.
           git commit -m "chore(docs): update npm downloads chart"
           git push

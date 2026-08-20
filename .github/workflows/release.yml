@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Run the full pull-request gate set before anything can be published, so the
+  # release path cannot drift from the path changes are reviewed through.
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Version or publish
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      # Lets the runner mint the OIDC token npm exchanges for a short-lived,
+      # job-scoped publish credential. Without this, publishing fails.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Publishing uses npm trusted publishing (OIDC): npm mints a short-lived
+      # credential from the runner's identity, so there is no NPM_TOKEN here and
+      # nothing to rotate. Requires npm >= 11.5.1 — pinned rather than inherited
+      # so a runner image change cannot silently drop below it. See RELEASING.md
+      # for the one-time per-package setup on npmjs.com.
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - run: npm ci
+      - run: npm run build
+
+      # Opens a "Version Packages" PR when changesets are pending; publishes to
+      # npm when that PR is merged. Provenance attestations are emitted
+      # automatically under trusted publishing — no --provenance flag needed.
+      - uses: changesets/action@v1
+        with:
+          version: npx changeset version
+          publish: npm run release
+          commit: 'chore(release): version packages'
+          title: 'chore(release): version packages'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

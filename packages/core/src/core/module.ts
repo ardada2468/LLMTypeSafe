@@ -1,48 +1,29 @@
-import { Signature } from './signature';
-import { Prediction } from './prediction';
-import { ILanguageModel } from '../types/language-model';
+import { type Signature } from './signature';
+import { type Prediction } from './prediction';
+import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
 import { getDefaultLM } from './config';
-import * as fs from 'fs';
 
 export abstract class Module {
     protected lm: ILanguageModel;
     protected signature?: typeof Signature | string;
-    protected _compiled: boolean = false;
 
     constructor(signature?: typeof Signature | string, lm?: ILanguageModel) {
         this.signature = signature;
         this.lm = lm || getDefaultLM();
     }
 
-    abstract forward(inputs: Record<string, any>): Promise<Prediction>;
+    abstract forward(
+        inputs: Record<string, any>,
+        options?: LLMCallOptions
+    ): Promise<Prediction>;
 
-    // Make modules callable like functions
-    async __call__(inputs: Record<string, any>): Promise<Prediction> {
-        return this.forward(inputs);
+    /** Alias for {@link forward}, so modules read like function calls. */
+    async call(inputs: Record<string, any>, options?: LLMCallOptions): Promise<Prediction> {
+        return this.forward(inputs, options);
     }
 
-    // Enable direct call syntax
-    async call(inputs: Record<string, any>): Promise<Prediction> {
-        return this.forward(inputs);
+    /** Alias for {@link forward}, mirroring DSPy's Python naming. */
+    async __call__(inputs: Record<string, any>, options?: LLMCallOptions): Promise<Prediction> {
+        return this.forward(inputs, options);
     }
-
-    async save(path: string): Promise<void> {
-        const serialized = {
-            type: this.constructor.name,
-            signature: this.signature,
-            compiled: this._compiled,
-            // Add any module-specific state here
-        };
-        await fs.promises.writeFile(path, JSON.stringify(serialized, null, 2));
-    }
-
-    static async load(path: string): Promise<Module> {
-        const data = JSON.parse(await fs.promises.readFile(path, 'utf-8'));
-        // Implementation depends on module registry
-        throw new Error('Module loading not implemented yet');
-    }
-
-    get compiled(): boolean {
-        return this._compiled;
-    }
-} 
+}

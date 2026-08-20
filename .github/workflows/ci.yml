@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Called by release.yml so a publish runs the same gates a pull request does.
+  workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, typecheck, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Build first: the providers typecheck against core's emitted
+      # declarations. Every step below must be able to fail the job — the
+      # workflow this replaced hid lint and typecheck behind `|| echo`.
+      - run: npm run build
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run format:check
+
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the oldest LTS still receiving support (Node 20 reached EOL in
+        # April 2026), 24 is active LTS, 26 is current and becomes LTS in
+        # October 2026.
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  packaging:
+    name: Packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      # The 0.4.2 release shipped providers depending on @ts-dspy/core@^0.3.0 —
+      # a range that release did not satisfy — so installs silently resolved a
+      # stale core. Builds, types, and unit tests all run against workspace
+      # symlinks and cannot see that; this installs the real tarballs.
+      - name: Install tarballs and import as a consumer
+        run: npm run verify:packaging
+
+      - name: Validate publish metadata
+        run: |
+          for pkg in core openai gemini anthropic; do
+            echo "::group::publint @ts-dspy/$pkg"
+            npx --yes publint@latest "packages/$pkg"
+            echo "::endgroup::"
+          done
+
+      - name: Validate type resolution
+        run: |
+          for pkg in core openai gemini anthropic; do
+            echo "::group::attw @ts-dspy/$pkg"
+            (cd "packages/$pkg" && npx --yes @arethetypeswrong/cli@latest --pack . --profile node16)
+            echo "::endgroup::"
+          done
+
+  changeset:
+    name: Changeset
+    # A push to main is either the release PR merging or a docs commit; the
+    # changeset requirement is a pull-request concern.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Fails when a published package changed without a changeset, which would
+      # otherwise merge and release nothing. Add one with `npx changeset`, or
+      # `npx changeset --empty` for a change that intentionally ships no release.
+      - name: Require a changeset for published-package changes
+        run: npx changeset status --since=origin/${{ github.base_ref }}

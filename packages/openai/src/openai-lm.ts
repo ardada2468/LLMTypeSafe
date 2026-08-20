@@ -1,170 +1,283 @@
-import { ILanguageModel, LLMCallOptions, ChatMessage, UsageStats, ModelCapabilities } from '@ts-dspy/core';
+import {
+    BaseLM,
+    LMError,
+    type ChatMessage,
+    type LLMCallOptions,
+    type ModelCapabilities,
+    type StreamChunk,
+} from '@ts-dspy/core';
+import OpenAI, { APIError } from 'openai';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
-interface OpenAIChatChoice {
-    message: {
-        role: string;
-        content: string;
-    };
-}
-
-interface OpenAIUsage {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-}
-
-interface OpenAIChatResponse {
-    choices: OpenAIChatChoice[];
-    usage?: OpenAIUsage;
-}
-
-interface OpenAIErrorResponse {
-    error?: {
-        message: string;
-    };
-}
+/**
+ * Current default. Confirm against `client.models.list()` if you need a specific
+ * tier — model identifiers move faster than release cycles.
+ */
+export const DEFAULT_OPENAI_MODEL = 'gpt-5.2';
 
 export interface OpenAIConfig {
-    apiKey: string;
+    apiKey?: string;
     model?: string;
     organization?: string;
+    project?: string;
+    /** Override for Azure, a proxy, or any OpenAI-compatible endpoint. */
     baseURL?: string;
+    /** Default per-request timeout in milliseconds. */
+    timeout?: number;
+    /** Default retry count. The SDK honours `retry-after` headers. */
+    maxRetries?: number;
 }
 
-export class OpenAILM implements ILanguageModel {
-    private config: Required<OpenAIConfig>;
-    private usage: UsageStats = {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        totalCost: 0
-    };
+/** Context windows by model family, longest-prefix first. */
+const CONTEXT_LENGTHS: Array<[prefix: string, length: number]> = [
+    ['gpt-5', 400_000],
+    ['o4', 200_000],
+    ['o3', 200_000],
+    ['o1', 200_000],
+    ['gpt-4.1', 1_047_576],
+    ['gpt-4o', 128_000],
+    ['gpt-4-turbo', 128_000],
+    ['gpt-4', 8_192],
+    ['gpt-3.5', 16_385],
+];
 
-    constructor(config: OpenAIConfig) {
-        this.config = {
-            model: 'gpt-4',
-            organization: '',
-            baseURL: 'https://api.openai.com/v1',
-            ...config
-        };
+function contextLengthFor(model: string): number {
+    for (const [prefix, length] of CONTEXT_LENGTHS) {
+        if (model.startsWith(prefix)) return length;
     }
+    return 128_000;
+}
 
-    async generate(prompt: string, options?: LLMCallOptions): Promise<string> {
-        const messages: ChatMessage[] = [{ role: 'user', content: prompt }];
-        return this.chat(messages, options);
-    }
+export class OpenAILM extends BaseLM {
+    private readonly client: OpenAI;
 
-    async generateStructured<T>(prompt: string, schema: any, options?: LLMCallOptions): Promise<T> {
-        const structuredPrompt = `${prompt}\n\nRespond with valid JSON matching this schema:\n${JSON.stringify(schema, null, 2)}`;
-        const response = await this.generate(structuredPrompt, options);
+    constructor(config: OpenAIConfig = {}) {
+        super('openai', config.model ?? DEFAULT_OPENAI_MODEL);
 
-        try {
-            return JSON.parse(response) as T;
-        } catch (error) {
-            throw new Error(`Failed to parse structured output: ${error}`);
-        }
+        this.client = new OpenAI({
+            apiKey: config.apiKey,
+            organization: config.organization,
+            project: config.project,
+            baseURL: config.baseURL,
+            timeout: config.timeout,
+            maxRetries: config.maxRetries,
+        });
     }
 
     async chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string> {
-        const headers: Record<string, string> = {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.config.apiKey}`
-        };
+        const startedAt = Date.now();
 
-        if (this.config.organization) {
-            headers['OpenAI-Organization'] = this.config.organization;
+        try {
+            const completion = await this.client.chat.completions.create(
+                {
+                    model: options?.model ?? this.model,
+                    messages: toOpenAIMessages(messages),
+                    ...samplingParams(options),
+                },
+                requestOptions(options)
+            );
+
+            this.recordUsage({
+                promptTokens: completion.usage?.prompt_tokens ?? 0,
+                completionTokens: completion.usage?.completion_tokens ?? 0,
+                latencyMs: Date.now() - startedAt,
+            });
+
+            return completion.choices[0]?.message?.content ?? '';
+        } catch (error) {
+            this.recordError();
+            throw toLMError(error);
         }
+    }
 
-        const body = {
-            model: this.config.model,
-            messages,
-            temperature: options?.temperature ?? 0.7,
-            max_tokens: options?.maxTokens,
-            top_p: options?.topP,
-            frequency_penalty: options?.frequencyPenalty,
-            presence_penalty: options?.presencePenalty,
-            stop: options?.stopSequences
-        };
+    async generateStructured<T>(
+        prompt: string,
+        schema: unknown,
+        options?: LLMCallOptions
+    ): Promise<T> {
+        const startedAt = Date.now();
 
-        // Remove undefined values
-        Object.keys(body).forEach(key => {
-            if ((body as any)[key] === undefined) {
-                delete (body as any)[key];
+        try {
+            const completion = await this.client.chat.completions.create(
+                {
+                    model: options?.model ?? this.model,
+                    messages: toOpenAIMessages([{ role: 'user', content: prompt }]),
+                    ...samplingParams(options),
+                    response_format: {
+                        type: 'json_schema',
+                        json_schema: {
+                            name: 'signature_output',
+                            strict: true,
+                            schema: schema as Record<string, unknown>,
+                        },
+                    },
+                },
+                requestOptions(options)
+            );
+
+            this.recordUsage({
+                promptTokens: completion.usage?.prompt_tokens ?? 0,
+                completionTokens: completion.usage?.completion_tokens ?? 0,
+                latencyMs: Date.now() - startedAt,
+            });
+
+            const choice = completion.choices[0];
+            if (choice?.finish_reason === 'length') {
+                throw new LMError(
+                    'openai',
+                    'Structured response was truncated; raise maxTokens.'
+                );
             }
-        });
 
-        const response = await fetch(`${this.config.baseURL}/chat/completions`, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(body)
-        });
-
-        if (!response.ok) {
-            let errorMessage = `OpenAI API Error: ${response.status} ${response.statusText}`;
+            const content = choice?.message?.content ?? '';
             try {
-                const error = await response.json() as OpenAIErrorResponse;
-                errorMessage = `OpenAI API Error: ${error.error?.message || response.statusText}`;
-            } catch {
-                // Use the default error message if JSON parsing fails
+                return JSON.parse(content) as T;
+            } catch (cause) {
+                throw new LMError(
+                    'openai',
+                    `Structured response was not valid JSON: ${content}`,
+                    { cause }
+                );
             }
-            throw new Error(errorMessage);
+        } catch (error) {
+            this.recordError();
+            throw toLMError(error);
         }
-
-        const data = await response.json() as OpenAIChatResponse;
-
-        // Update usage statistics
-        if (data.usage) {
-            this.usage.promptTokens += data.usage.prompt_tokens || 0;
-            this.usage.completionTokens += data.usage.completion_tokens || 0;
-            this.usage.totalTokens += data.usage.total_tokens || 0;
-
-            // Estimate cost (rough pricing for GPT-3.5-turbo)
-            const inputCost = (data.usage.prompt_tokens || 0) * 0.0015 / 1000;
-            const outputCost = (data.usage.completion_tokens || 0) * 0.002 / 1000;
-            this.usage.totalCost = (this.usage.totalCost || 0) + inputCost + outputCost;
-        }
-
-        return data.choices?.[0]?.message?.content || '';
     }
 
-    getUsage(): UsageStats {
-        return { ...this.usage };
+    async *generateStream(
+        prompt: string,
+        options?: LLMCallOptions
+    ): AsyncGenerator<StreamChunk, void, unknown> {
+        yield* this.chatStream([{ role: 'user', content: prompt }], options);
     }
 
-    resetUsage(): void {
-        this.usage = {
-            promptTokens: 0,
-            completionTokens: 0,
-            totalTokens: 0,
-            totalCost: 0
+    async *chatStream(
+        messages: ChatMessage[],
+        options?: LLMCallOptions
+    ): AsyncGenerator<StreamChunk, void, unknown> {
+        const startedAt = Date.now();
+
+        let stream;
+        try {
+            stream = await this.client.chat.completions.create(
+                {
+                    model: options?.model ?? this.model,
+                    messages: toOpenAIMessages(messages),
+                    ...samplingParams(options),
+                    stream: true,
+                    stream_options: { include_usage: true },
+                },
+                requestOptions(options)
+            );
+        } catch (error) {
+            this.recordError();
+            throw toLMError(error);
+        }
+
+        let promptTokens = 0;
+        let completionTokens = 0;
+
+        for await (const chunk of stream) {
+            if (chunk.usage) {
+                promptTokens = chunk.usage.prompt_tokens ?? 0;
+                completionTokens = chunk.usage.completion_tokens ?? 0;
+            }
+            const content = chunk.choices[0]?.delta?.content;
+            if (content) {
+                yield { content, done: false };
+            }
+        }
+
+        this.recordUsage({ promptTokens, completionTokens, latencyMs: Date.now() - startedAt });
+        yield {
+            content: '',
+            done: true,
+            usage: {
+                promptTokens,
+                completionTokens,
+                totalTokens: promptTokens + completionTokens,
+            },
         };
     }
 
-    // Additional utility methods
-    setModel(model: string): void {
-        this.config.model = model;
-    }
-
-    getModel(): string {
-        return this.config.model;
-    }
-
-    setBaseURL(baseURL: string): void {
-        this.config.baseURL = baseURL;
-    }
-
-    getModelName(): string {
-        return this.config.model;
+    async listModels(): Promise<string[]> {
+        const page = await this.client.models.list();
+        return page.data.map((model) => model.id).sort();
     }
 
     getCapabilities(): ModelCapabilities {
         return {
-            supportsStreaming: false,
+            supportsStreaming: true,
             supportsStructuredOutput: true,
-            supportsFunctionCalling: false,
-            supportsVision: false,
-            maxContextLength: 4096,
-            supportedFormats: ['json_object'],
+            supportsFunctionCalling: true,
+            supportsVision: true,
+            maxContextLength: contextLengthFor(this.model),
+            supportedFormats: ['text', 'json_object', 'json_schema'],
         };
     }
-} 
+
+    /** @deprecated Use {@link getModelName}. */
+    getModel(): string {
+        return this.model;
+    }
+}
+
+export function toOpenAIMessages(messages: ChatMessage[]): ChatCompletionMessageParam[] {
+    return messages.map((message) => {
+        switch (message.role) {
+            case 'system':
+                return { role: 'system', content: message.content };
+            case 'assistant':
+                return { role: 'assistant', content: message.content };
+            case 'tool':
+            case 'function':
+                // The core ChatMessage shape has no tool_call_id, so a tool
+                // result is surfaced as user content rather than dropped.
+                return { role: 'user', content: message.content };
+            default:
+                return { role: 'user', content: message.content };
+        }
+    });
+}
+
+/**
+ * Build sampling parameters.
+ *
+ * Only parameters the caller actually set are sent: reasoning models reject
+ * non-default `temperature`/`top_p`, so defaulting them (the previous
+ * implementation always sent `temperature: 0.7`) breaks those models outright.
+ * `max_completion_tokens` replaces the deprecated `max_tokens`, which reasoning
+ * models also reject.
+ */
+function samplingParams(options?: LLMCallOptions): Record<string, unknown> {
+    const params: Record<string, unknown> = {};
+    if (options?.temperature !== undefined) params.temperature = options.temperature;
+    if (options?.topP !== undefined) params.top_p = options.topP;
+    if (options?.maxTokens !== undefined) params.max_completion_tokens = options.maxTokens;
+    if (options?.frequencyPenalty !== undefined) {
+        params.frequency_penalty = options.frequencyPenalty;
+    }
+    if (options?.presencePenalty !== undefined) {
+        params.presence_penalty = options.presencePenalty;
+    }
+    if (options?.stopSequences) params.stop = options.stopSequences;
+    return params;
+}
+
+/** Map ts-dspy call options onto the SDK's per-request options. */
+function requestOptions(options?: LLMCallOptions): { timeout?: number; maxRetries?: number } {
+    const request: { timeout?: number; maxRetries?: number } = {};
+    if (options?.timeout !== undefined) request.timeout = options.timeout;
+    if (options?.retries !== undefined) request.maxRetries = options.retries;
+    return request;
+}
+
+function toLMError(error: unknown): LMError {
+    if (error instanceof LMError) return error;
+    if (error instanceof APIError) {
+        return new LMError('openai', error.message, { cause: error, status: error.status });
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return new LMError('openai', message, { cause: error });
+}

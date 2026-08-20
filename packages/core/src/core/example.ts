@@ -6,12 +6,14 @@ export class Example {
         this._data = { ...data };
 
         // Make all data properties accessible directly
-        Object.keys(data).forEach(key => {
+        Object.keys(data).forEach((key) => {
             Object.defineProperty(this, key, {
                 get: () => this._data[key],
-                set: (value) => { this._data[key] = value; },
+                set: (value) => {
+                    this._data[key] = value;
+                },
                 enumerable: true,
-                configurable: true
+                configurable: true,
             });
         });
     }
@@ -24,9 +26,11 @@ export class Example {
         this._data[key] = value;
         Object.defineProperty(this, key, {
             get: () => this._data[key],
-            set: (val) => { this._data[key] = val; },
+            set: (val) => {
+                this._data[key] = val;
+            },
             enumerable: true,
-            configurable: true
+            configurable: true,
         });
     }
 
@@ -42,7 +46,7 @@ export class Example {
         }
 
         const inputs: Record<string, any> = {};
-        this._inputKeys.forEach(key => {
+        this._inputKeys.forEach((key) => {
             inputs[key] = this._data[key];
         });
         return inputs;
@@ -54,7 +58,7 @@ export class Example {
         }
 
         const outputs: Record<string, any> = {};
-        Object.keys(this._data).forEach(key => {
+        Object.keys(this._data).forEach((key) => {
             if (!this._inputKeys!.includes(key)) {
                 outputs[key] = this._data[key];
             }
@@ -65,4 +69,4 @@ export class Example {
     toObject(): Record<string, any> {
         return { ...this._data };
     }
-} 
+}

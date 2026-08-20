@@ -1,0 +1,65 @@
+{
+  "name": "@ts-dspy/anthropic",
+  "version": "0.4.2",
+  "description": "Anthropic Claude provider for TS-DSPy - type-safe LLM interactions with structured outputs, streaming, and tool calling",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.cts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
+    "@ts-dspy/core": "^0.4.2"
+  },
+  "keywords": [
+    "ai",
+    "anthropic",
+    "claude",
+    "llm",
+    "dspy",
+    "typescript"
+  ],
+  "author": "Arnav Dadarya",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ardada2468/LLMTypeSafe.git",
+    "directory": "packages/anthropic"
+  },
+  "homepage": "https://github.com/ardada2468/LLMTypeSafe#readme",
+  "bugs": {
+    "url": "https://github.com/ardada2468/LLMTypeSafe/issues"
+  }
+}

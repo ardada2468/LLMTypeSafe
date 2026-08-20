@@ -1,11 +1,15 @@
 import { Signature } from '../core/signature';
+import { ValidationError, type FieldValidationIssue } from '../core/errors';
+import { buildOutputSchema, getOutputFieldConfigs } from './schema';
 
-export function buildPrompt(signature: typeof Signature | string, inputs: Record<string, any>): string {
+export function buildPrompt(
+    signature: typeof Signature | string,
+    inputs: Record<string, any>
+): string {
     if (typeof signature === 'string') {
         return buildPromptFromString(signature, inputs);
-    } else {
-        return buildPromptFromClass(signature, inputs);
     }
+    return buildPromptFromClass(signature, inputs);
 }
 
 function buildPromptFromString(signatureStr: string, inputs: Record<string, any>): string {
@@ -13,20 +17,16 @@ function buildPromptFromString(signatureStr: string, inputs: Record<string, any>
 
     let prompt = '';
 
-    // Add input fields
     for (const inputKey of parsed.inputs) {
         if (inputs[inputKey] !== undefined) {
             prompt += `${inputKey}: ${inputs[inputKey]}\n`;
         }
     }
 
-    // Add output format - be more explicit about the format expected
     if (parsed.outputs.length === 1) {
-        // For single output, make it clear the format expected
         const outputKey = parsed.outputs[0];
         prompt += `\nProvide the ${outputKey} in this format:\n${outputKey}: [your response]`;
     } else {
-        // For multiple outputs, be explicit about each field
         prompt += '\nProvide the following fields:\n';
         for (const outputKey of parsed.outputs) {
             const typeInfo = parsed.types[outputKey] ? ` (${parsed.types[outputKey]})` : '';
@@ -37,18 +37,19 @@ function buildPromptFromString(signatureStr: string, inputs: Record<string, any>
     return prompt.trim();
 }
 
-function buildPromptFromClass(signatureClass: typeof Signature, inputs: Record<string, any>): string {
+function buildPromptFromClass(
+    signatureClass: typeof Signature,
+    inputs: Record<string, any>
+): string {
     const inputFields = signatureClass.getInputFields();
     const outputFields = signatureClass.getOutputFields();
 
     let prompt = '';
 
-    // Add description if available
     if (signatureClass.description) {
         prompt += `${signatureClass.description}\n\n`;
     }
 
-    // Add input fields
     Object.entries(inputFields).forEach(([key, config]) => {
         if (inputs[key] !== undefined) {
             const prefix = config.prefix || `${key}:`;
@@ -56,7 +57,6 @@ function buildPromptFromClass(signatureClass: typeof Signature, inputs: Record<s
         }
     });
 
-    // Add output format
     prompt += '\nProvide:\n';
     Object.entries(outputFields).forEach(([key, config]) => {
         const desc = config.description ? ` (${config.description})` : '';
@@ -66,145 +66,110 @@ function buildPromptFromClass(signatureClass: typeof Signature, inputs: Record<s
     return prompt.trim();
 }
 
-export function parseOutput(signature: typeof Signature | string, rawOutput: string): Record<string, any> {
-    if (typeof signature === 'string') {
-        return parseOutputFromString(signature, rawOutput);
-    } else {
-        return parseOutputFromClass(signature, rawOutput);
-    }
-}
+/**
+ * Parse and validate a model's raw text output against a signature.
+ *
+ * Fields are extracted heuristically from the text, then validated against the
+ * signature's declared types.
+ *
+ * @throws {ValidationError} when a required field is missing or a field's value
+ * cannot be coerced to its declared type.
+ */
+export function parseOutput(
+    signature: typeof Signature | string,
+    rawOutput: string
+): Record<string, any> {
+    const fields = getOutputFieldConfigs(signature);
+    const fieldNames = Object.keys(fields);
+    const text = typeof rawOutput === 'string' ? rawOutput : String(rawOutput);
 
-function parseOutputFromString(signatureStr: string, rawOutput: string): Record<string, any> {
-    const parsed = Signature.parseStringSignature(signatureStr);
-    const result: Record<string, any> = {};
-
-    for (const outputKey of parsed.outputs) {
-        const value = extractFieldValue(rawOutput, outputKey, parsed.types[outputKey]);
-        result[outputKey] = value; // Always set the field, even if null
-    }
-
-    return result;
-}
-
-function parseOutputFromClass(signatureClass: typeof Signature, rawOutput: string): Record<string, any> {
-    const outputFields = signatureClass.getOutputFields();
-    const result: Record<string, any> = {};
-
-    Object.entries(outputFields).forEach(([key, config]) => {
-        const value = extractFieldValue(rawOutput, key, config.type);
-        result[key] = value; // Always set the field, even if null
-    });
-
-    return result;
-}
-
-function extractFieldValue(text: string, fieldName: string, fieldType?: string): any {
-    // Ensure text is a string
-    if (typeof text !== 'string') {
-        text = String(text);
-    }
-
-    // If the text is a simple value without field names, and we're looking for "answer", just return the text
-    if (fieldName === 'answer' && !text.includes(':') && !text.includes('\n')) {
-        // Simple single-line response without field names - treat as the answer
-        let value = text.trim();
-        value = value.replace(/^\*+|\*+$/g, ''); // Remove asterisks
-        value = value.replace(/^["']|["']$/g, ''); // Remove quotes
-        if (value) {
-            return convertValue(value, fieldType);
+    const extracted: Record<string, unknown> = {};
+    for (const name of fieldNames) {
+        const value = extractFieldValue(text, name, fieldNames);
+        // Absent rather than null: an optional field should pass validation when
+        // missing, and a required one should fail with a clear message.
+        if (value !== null) {
+            extracted[name] = value;
         }
     }
 
-    // Try multiple patterns for field extraction - more flexible patterns
+    const result = buildOutputSchema(signature).safeParse(extracted);
+    if (result.success) {
+        return result.data as Record<string, any>;
+    }
+
+    const issues: FieldValidationIssue[] = result.error.issues.map((issue) => {
+        const field = String(issue.path[0] ?? '(root)');
+        const declaredType = fields[field]?.type ?? 'string';
+        const received = extracted[field];
+        const message =
+            received === undefined
+                ? 'field not found in model output'
+                : `${issue.message} (received ${JSON.stringify(received)})`;
+        return { field, expected: declaredType, received, message };
+    });
+
+    throw new ValidationError(issues, text);
+}
+
+/** Escape a field name so it can be safely interpolated into a RegExp. */
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function cleanValue(value: string): string {
+    return value
+        .replace(/^\*+|\*+$/g, '')
+        .replace(/^["']|["']$/g, '')
+        .trim();
+}
+
+/**
+ * Pull one field's raw text value out of a model response.
+ *
+ * Returns `null` when the field cannot be located, leaving the decision about
+ * whether that is an error to the validation step.
+ */
+function extractFieldValue(
+    text: string,
+    fieldName: string,
+    allFieldNames: string[]
+): string | null {
+    const escaped = escapeRegExp(fieldName);
+    // Stop at the next known field label so multi-field responses, and values
+    // that legitimately span several lines, don't bleed into one another.
+    const nextLabel = allFieldNames.map(escapeRegExp).join('|');
+
     const patterns = [
-        // Standard format: "fieldName: value"
-        new RegExp(`${fieldName}\\s*:\\s*(.+?)(?=\\n\\s*\\w+\\s*:|$)`, 'is'),
-        // Alternative format: "fieldName = value" or "fieldName value"
-        new RegExp(`${fieldName}\\s*[=:]\\s*(.+?)(?=\\n|$)`, 'is'),
-        // More flexible: field name followed by content
-        new RegExp(`\\b${fieldName}\\b[:\\s=]*([^\\n]+)`, 'i'),
-        // Try to find the value on the same line after the field name
-        new RegExp(`${fieldName}[:\\s]*([^\\n]+?)(?=\\n|$)`, 'i'),
-        // Very loose pattern - just look for anything after the field name
-        new RegExp(`${fieldName}[^\\w]*([\\s\\S]*?)(?=\\n\\s*[A-Z]|$)`, 'i')
+        // "fieldName: value", running to the next known label or end of input.
+        // No `m` flag: `$` must mean end of input, not end of line, or a
+        // multi-line value would be truncated at its first newline.
+        new RegExp(
+            `(?:^|\\n)[ \\t]*${escaped}[ \\t]*[:=][ \\t]*([\\s\\S]*?)(?=\\n[ \\t]*(?:${nextLabel})[ \\t]*[:=]|$)`,
+            'i'
+        ),
+        // Field name appearing mid-line, e.g. "**answer:** 42".
+        new RegExp(`${escaped}\\s*[:=]\\s*(.+)`, 'i'),
     ];
 
     for (const pattern of patterns) {
         const match = text.match(pattern);
-        if (match && match[1]) {
-            let value = match[1].trim();
-
-            // Remove common artifacts
-            value = value.replace(/^\*+|\*+$/g, ''); // Remove asterisks
-            value = value.replace(/^["']|["']$/g, ''); // Remove quotes
-            value = value.trim();
-
-            if (value) {
-                // Type conversion based on field type
-                return convertValue(value, fieldType);
+        if (match?.[1]) {
+            const value = cleanValue(match[1]);
+            if (value !== '') {
+                return value;
             }
         }
+    }
+
+    // A single-output signature answered with a bare value carries no `field:`
+    // marker to match on, so fall back to treating the whole response as the
+    // value. Only after labelled extraction has failed — a field name containing
+    // regex metacharacters still labels its value, and should win.
+    if (allFieldNames.length === 1) {
+        const value = cleanValue(text);
+        return value === '' ? null : value;
     }
 
     return null;
 }
-
-function convertValue(value: string, type?: string): any {
-    if (!type || type === 'string') {
-        // Auto-detect JSON for untyped fields
-        if ((value.startsWith('{') && value.endsWith('}')) ||
-            (value.startsWith('[') && value.endsWith(']'))) {
-            try {
-                return JSON.parse(value);
-            } catch {
-                return value;
-            }
-        }
-        return value;
-    }
-
-    switch (type.toLowerCase()) {
-        case 'number':
-        case 'float':
-            const num = parseFloat(value);
-            return isNaN(num) ? value : num;
-
-        case 'int':
-        case 'integer':
-            const int = parseInt(value);
-            return isNaN(int) ? value : int;
-
-        case 'boolean':
-        case 'bool':
-            return value.toLowerCase() === 'true' || value === '1';
-
-        case 'array':
-        case 'list':
-            try {
-                return JSON.parse(value);
-            } catch {
-                // Try to split by common delimiters
-                return value.split(/[,;\n]/).map(s => s.trim()).filter(s => s);
-            }
-
-        case 'object':
-        case 'json':
-            try {
-                return JSON.parse(value);
-            } catch {
-                return value;
-            }
-
-        default:
-            // Try to auto-detect and parse JSON
-            if ((value.startsWith('{') && value.endsWith('}')) ||
-                (value.startsWith('[') && value.endsWith(']'))) {
-                try {
-                    return JSON.parse(value);
-                } catch {
-                    return value;
-                }
-            }
-            return value;
-    }
-} 
