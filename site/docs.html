@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentation — TS-DSPy</title>
+<meta name="description" content="Install, signatures, modules, providers, validation, streaming, timeouts, testing, and the full API reference for TS-DSPy.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230A0A0A'/><text y='72' x='50' text-anchor='middle' font-size='64' font-family='monospace' fill='white'>&#8866;</text></svg>">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="shell nav-in">
+    <a class="mark" href="index.html">
+      <span class="mark-glyph" aria-hidden="true">&#8866;</span>
+      <span class="mark-text">TS-DSPy</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="docs.html" aria-current="page">Docs</a>
+      <a href="examples.html">Examples</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="https://github.com/ardada2468/LLMTypeSafe">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="pagehead">
+  <div class="shell">
+    <p class="eyebrow">Documentation</p>
+    <h1 class="display">Everything the<br>library does.</h1>
+    <p class="lede">
+      Install it, declare a signature, pick a module, choose a provider. The rest
+      of this page is the detail behind those four steps.
+    </p>
+    <p class="meta">
+      <span>0.5.0</span><span>node &gt;=22</span><span>ESM + CJS</span><span>MIT</span>
+    </p>
+  </div>
+</section>
+
+<div class="shell docs">
+
+  <nav class="toc" aria-label="On this page">
+    <p class="toc-title">Contents</p>
+    <ol>
+      <li><a href="#install">Installation</a></li>
+      <li><a href="#quickstart">Quick start</a></li>
+      <li><a href="#signatures">Signatures</a></li>
+      <li><a href="#types">Field types</a></li>
+      <li><a href="#modules">Modules</a></li>
+      <li><a href="#tools">Tools &amp; RespAct</a></li>
+      <li><a href="#providers">Providers</a></li>
+      <li><a href="#validation">Validation &amp; errors</a></li>
+      <li><a href="#streaming">Streaming</a></li>
+      <li><a href="#reliability">Timeouts &amp; retries</a></li>
+      <li><a href="#testing">Testing</a></li>
+      <li><a href="#api">API reference</a></li>
+      <li><a href="#migration">Migrating to 0.5</a></li>
+    </ol>
+  </nav>
+
+  <div class="doc">
+
+  <section id="install">
+    <p class="anchor">01</p>
+    <h2>Installation</h2>
+    <p>Install core plus the provider you intend to use. Core carries no vendor SDK.</p>
+    <pre class="code"><code>npm install @ts-dspy/core @ts-dspy/anthropic
+npm install @ts-dspy/core @ts-dspy/openai
+npm install @ts-dspy/core @ts-dspy/gemini</code></pre>
+    <p>
+      <strong>Node.js 22 or newer.</strong> Packages ship ESM and CommonJS builds
+      with type declarations for both, so <code>import</code> and
+      <code>require</code> both resolve correctly.
+    </p>
+    <p>
+      Signatures use decorators, so your <code>tsconfig.json</code> needs
+      <code>experimentalDecorators</code>. Everything else works without it &mdash;
+      string signatures are decorator-free.
+    </p>
+    <pre class="code"><code>{
+  <span class="s">"compilerOptions"</span>: {
+    <span class="s">"experimentalDecorators"</span>: <span class="kw">true</span>,
+    <span class="s">"useDefineForClassFields"</span>: <span class="kw">false</span>,
+    <span class="s">"target"</span>: <span class="s">"ES2022"</span>,
+    <span class="s">"module"</span>: <span class="s">"ESNext"</span>,
+    <span class="s">"moduleResolution"</span>: <span class="s">"bundler"</span>
+  }
+}</code></pre>
+    <div class="callout callout-warn">
+      <span class="label">Required</span>
+      <p>
+        <code>useDefineForClassFields</code> must be <code>false</code>. With an
+        <code>ES2022</code> target it defaults to <code>true</code>, which makes
+        class fields overwrite what the decorators recorded and leaves your
+        signature with no fields at all.
+      </p>
+    </div>
+  </section>
+
+  <section id="quickstart">
+    <p class="anchor">02</p>
+    <h2>Quick start</h2>
+    <p>Declare what you want back, then ask for it.</p>
+    <pre class="code"><code><span class="kw">import</span> { Signature, InputField, OutputField, Predict, configure } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+<span class="kw">import</span> { AnthropicLM } <span class="kw">from</span> <span class="s">'@ts-dspy/anthropic'</span>
+
+configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.ANTHROPIC_API_KEY }) })
+
+<span class="kw">class</span> <span class="ty">TriageTicket</span> <span class="kw">extends</span> <span class="ty">Signature</span> {
+  <span class="kw">static</span> description = <span class="s">'Classify a support ticket and rate its urgency.'</span>
+
+  <span class="at">@InputField</span>({ description: <span class="s">'the ticket body'</span> })
+  ticket!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'billing | bug | feature | other'</span> })
+  category!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'urgency from 0 to 1'</span>, type: <span class="s">'number'</span> })
+  urgency!: <span class="ty">number</span>
+}
+
+<span class="kw">const</span> triage = <span class="kw">new</span> Predict(TriageTicket)
+<span class="kw">const</span> { category, urgency } = <span class="kw">await</span> triage.forward({ ticket })
+
+<span class="c">// urgency is a number here, or forward() threw.</span>
+<span class="kw">if</span> (urgency &gt; <span class="s">0.8</span>) escalate(category)</code></pre>
+  </section>
+
+  <section id="signatures">
+    <p class="anchor">03</p>
+    <h2>Signatures</h2>
+    <p>
+      A signature declares the inputs a task takes and the outputs it must
+      return. There are two forms.
+    </p>
+
+    <h3>Class form</h3>
+    <p>
+      Decorated fields, with a description per field and an optional type. The
+      description is sent to the model; the type is what the reply is checked
+      against.
+    </p>
+    <pre class="code"><code><span class="kw">class</span> <span class="ty">Summarize</span> <span class="kw">extends</span> <span class="ty">Signature</span> {
+  <span class="kw">static</span> description = <span class="s">'Summarize an article for a busy reader.'</span>
+
+  <span class="at">@InputField</span>({ description: <span class="s">'full article text'</span> })
+  article!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'three sentences at most'</span> })
+  summary!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'key topics'</span>, type: <span class="s">'string[]'</span> })
+  topics!: <span class="ty">string</span>[]
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'optional caveat'</span>, required: <span class="kw">false</span> })
+  caveat?: <span class="ty">string</span>
+}</code></pre>
+
+    <h3>String form</h3>
+    <p>
+      For short tasks, or when you would rather not use decorators. Types follow
+      a colon.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> rate = <span class="kw">new</span> Predict(<span class="s">'question -&gt; answer, confidence: number'</span>)
+<span class="kw">const</span> out = <span class="kw">await</span> rate.forward({ question: <span class="s">'When did Apollo 11 land?'</span> })</code></pre>
+
+    <div class="callout">
+      <span class="label">Field options</span>
+      <p>
+        <code>description</code> is what the model reads &mdash; write it as an
+        instruction, not a label. <code>type</code> drives validation and defaults
+        to <code>string</code>. <code>required</code> defaults to <code>true</code>;
+        set it <code>false</code> and the field becomes optional in both the schema
+        and the inferred TypeScript type. <code>prefix</code> overrides the label
+        used in the prompt.
+      </p>
+    </div>
+  </section>
+
+  <section id="types">
+    <p class="anchor">04</p>
+    <h2>Field types</h2>
+    <p>
+      Every output field is checked against its declared type. Coercion is
+      lenient, because models emit text &mdash; what is not lenient is failure.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Type</th><th scope="col">Accepts</th><th scope="col">Rejects</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">string</td><td class="note">any text (the default)</td><td class="note">&mdash;</td></tr>
+          <tr><td class="sym">number<br>float</td><td class="note"><code>42</code>, <code>"42"</code>, <code>"3.5"</code>, <code>"1,200"</code>, <code>"87%"</code></td><td class="note"><code>"about forty"</code></td></tr>
+          <tr><td class="sym">int<br>integer</td><td class="note"><code>7</code>, <code>"7"</code></td><td class="note"><code>"7.5"</code>, <code>"seven"</code></td></tr>
+          <tr><td class="sym">boolean<br>bool</td><td class="note"><code>true</code>, <code>"true"</code>, <code>"yes"</code>, <code>"1"</code></td><td class="note"><code>"maybe"</code></td></tr>
+          <tr><td class="sym">string[]<br>array<br>list</td><td class="note">JSON arrays, or <code>"a, b, c"</code></td><td class="note">unparseable text</td></tr>
+          <tr><td class="sym">number[]</td><td class="note"><code>[1,2]</code>, <code>"1, 2, 3"</code></td><td class="note">non-numeric members</td></tr>
+          <tr><td class="sym">object<br>json</td><td class="note">JSON objects, fenced or bare</td><td class="note">invalid JSON</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Commas and a trailing percent sign are stripped before a number is checked,
+      because models write <code>1,200</code> and <code>87%</code> when asked for a
+      figure. That is a deliberate accommodation, not an accident &mdash; and it
+      stops well short of guessing at prose.
+    </p>
+  </section>
+
+  <section id="modules">
+    <p class="anchor">05</p>
+    <h2>Modules</h2>
+    <p>
+      A module is the strategy used to fill a signature. All of them accept an
+      optional <code>ILanguageModel</code> as the second constructor argument;
+      without one they use whatever <code>configure()</code> holds.
+    </p>
+
+    <h3>Predict</h3>
+    <p>One prompt, one completion, one validation. The baseline.</p>
+    <pre class="code"><code><span class="kw">const</span> p = <span class="kw">new</span> Predict(Summarize)
+<span class="kw">const</span> out = <span class="kw">await</span> p.forward({ article })</code></pre>
+
+    <h3>ChainOfThought</h3>
+    <p>
+      Reasons in free text first, then answers with that reasoning in context.
+      Two model calls. The result carries every signature field plus
+      <code>reasoning</code>.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> cot = <span class="kw">new</span> ChainOfThought(SolveProblem)
+<span class="kw">const</span> out = <span class="kw">await</span> cot.forward({ problem })
+console.log(out.reasoning)  <span class="c">// how it got there</span>
+console.log(out.answer)     <span class="c">// validated as declared</span></code></pre>
+
+    <h3>RespAct</h3>
+    <p>
+      A reason&ndash;act&ndash;observe loop over tools you provide. Adds
+      <code>steps</code> to the result. See <a href="#tools">Tools</a> below.
+    </p>
+  </section>
+
+  <section id="tools">
+    <p class="anchor">06</p>
+    <h2>Tools and RespAct</h2>
+    <p>
+      Tools are plain functions taking a string and returning a string, or a
+      promise of one. Give each a description &mdash; the model picks from those
+      descriptions, so write them as instructions.
+    </p>
+
+    <pre class="code"><code><span class="kw">import</span> { RespAct } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> agent = <span class="kw">new</span> RespAct(
+  <span class="s">'question -&gt; answer'</span>,
+  {
+    tools: {
+      lookupOrder: {
+        description: <span class="s">'Look up an order by its ID. Input: the order ID.'</span>,
+        fn: <span class="kw">async</span> (id) =&gt; JSON.stringify(<span class="kw">await</span> db.orders.find(id)),
+      },
+      today: {
+        description: <span class="s">'Return today’s date. Input: ignored.'</span>,
+        fn: () =&gt; <span class="kw">new</span> Date().toISOString().slice(<span class="s">0</span>, <span class="s">10</span>),
+      },
+    },
+    maxSteps: <span class="s">8</span>,
+    onEvent: (e) =&gt; logger.debug(e),
+  }
+)
+
+<span class="kw">const</span> out = <span class="kw">await</span> agent.forward({ question: <span class="s">'Has order A-4182 shipped?'</span> })
+console.log(out.answer, out.steps)</code></pre>
+
+    <div class="callout">
+      <span class="label">Loop behaviour</span>
+      <p>
+        <code>maxSteps</code> defaults to <strong>6</strong>. A repeated tool call
+        is not executed twice &mdash; the loop returns an observation telling the
+        model it already has that result. A final answer that fails validation is
+        fed back with the failing field names so the model can correct it, as long
+        as a step remains. Exhausting the steps throws rather than returning a
+        half-formed answer.
+      </p>
+    </div>
+
+    <p>
+      <code>onEvent</code> receives each thought, tool call, observation, and
+      validation failure. Route it to your logger for a full trace of a run.
+    </p>
+  </section>
+
+  <section id="providers">
+    <p class="anchor">07</p>
+    <h2>Providers</h2>
+    <p>
+      Each provider wraps its vendor's official SDK and reports
+      <code>supportsStructuredOutput: true</code>, so <code>Predict</code> uses the
+      native JSON-schema mode rather than scraping labelled text.
+    </p>
+
+    <h3>Anthropic</h3>
+    <pre class="code"><code><span class="kw">import</span> { AnthropicLM } <span class="kw">from</span> <span class="s">'@ts-dspy/anthropic'</span>
+
+<span class="kw">new</span> AnthropicLM({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+  model: <span class="s">'claude-opus-5'</span>,   <span class="c">// default</span>
+  maxTokens: <span class="s">16000</span>,
+  timeout: <span class="s">60_000</span>,
+  maxRetries: <span class="s">2</span>,
+})</code></pre>
+    <p>
+      A refusal is surfaced as a typed error rather than empty text: the API
+      returns HTTP 200 with <code>stop_reason: "refusal"</code>, which is easy to
+      mistake for a successful empty reply.
+    </p>
+
+    <h3>OpenAI</h3>
+    <pre class="code"><code><span class="kw">import</span> { OpenAILM } <span class="kw">from</span> <span class="s">'@ts-dspy/openai'</span>
+
+<span class="kw">new</span> OpenAILM({
+  apiKey: process.env.OPENAI_API_KEY,
+  model: <span class="s">'gpt-5.2'</span>,        <span class="c">// default</span>
+  baseURL: <span class="s">'https://...'</span>,  <span class="c">// any OpenAI-compatible endpoint</span>
+})</code></pre>
+    <p>
+      Sampling parameters are sent only when you set them, so reasoning models
+      that reject a non-default <code>temperature</code> work untouched.
+    </p>
+
+    <h3>Gemini</h3>
+    <pre class="code"><code><span class="kw">import</span> { GeminiLM } <span class="kw">from</span> <span class="s">'@ts-dspy/gemini'</span>
+
+<span class="kw">new</span> GeminiLM({
+  apiKey: process.env.GEMINI_API_KEY,
+  model: <span class="s">'gemini-3.5-flash'</span>,  <span class="c">// default</span>
+  vertexai: <span class="kw">false</span>,
+})</code></pre>
+
+    <h3>Writing your own</h3>
+    <p>
+      Extend <code>BaseLM</code> and implement <code>chat()</code> and
+      <code>getCapabilities()</code>. Usage accounting,
+      <code>generate()</code> delegation, and a prompt-based
+      <code>generateStructured()</code> fallback come with the base class.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { BaseLM, type ChatMessage, type ModelCapabilities } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">class</span> <span class="ty">LocalLM</span> <span class="kw">extends</span> <span class="ty">BaseLM</span> {
+  <span class="kw">async</span> chat(messages: ChatMessage[]): Promise&lt;<span class="ty">string</span>&gt; {
+    <span class="kw">const</span> res = <span class="kw">await</span> fetch(<span class="s">'http://localhost:11434/api/chat'</span>, { <span class="c">/* ... */</span> })
+    <span class="kw">return</span> (<span class="kw">await</span> res.json()).message.content
+  }
+
+  getCapabilities(): ModelCapabilities {
+    <span class="kw">return</span> { supportsStructuredOutput: <span class="kw">false</span>, supportsStreaming: <span class="kw">false</span>,
+             supportsFunctionCalling: <span class="kw">false</span>, supportsVision: <span class="kw">false</span>,
+             maxContextLength: <span class="s">8192</span>, supportedFormats: [<span class="s">'text'</span>] }
+  }
+}</code></pre>
+  </section>
+
+  <section id="validation">
+    <p class="anchor">08</p>
+    <h2>Validation and errors</h2>
+    <p>
+      Every reply is checked before it reaches you. A field that cannot satisfy
+      its declared type throws <code>ValidationError</code> naming the field,
+      rather than handing back a string where the type says number.
+    </p>
+
+    <pre class="code"><code><span class="kw">import</span> { ValidationError, LMError } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">try</span> {
+  <span class="kw">const</span> out = <span class="kw">await</span> triage.forward({ ticket })
+} <span class="kw">catch</span> (err) {
+  <span class="kw">if</span> (err <span class="kw">instanceof</span> ValidationError) {
+    err.issues     <span class="c">// [{ field, expected, received, message }]</span>
+    err.rawOutput  <span class="c">// exactly what the model said</span>
+    metrics.increment(<span class="s">'llm.validation_failed'</span>, { field: err.issues[<span class="s">0</span>].field })
+  } <span class="kw">else</span> <span class="kw">if</span> (err <span class="kw">instanceof</span> LMError) {
+    err.cause      <span class="c">// the provider SDK's own error</span>
+  }
+}</code></pre>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Error</th><th scope="col">Means</th><th scope="col">Carries</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">ValidationError</td><td class="note">The reply did not match the signature.</td><td class="note"><code>issues[]</code>, <code>rawOutput</code></td></tr>
+          <tr><td class="sym">LMError</td><td class="note">The provider call itself failed.</td><td class="note"><code>cause</code>, <code>provider</code></td></tr>
+          <tr><td class="sym">TsDspyError</td><td class="note">Base class for both.</td><td class="note">&mdash;</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      A validation failure is usually a prompt problem, not a bug. The field
+      description is the lever: <code>'urgency from 0 to 1'</code> gets a number far
+      more reliably than <code>'urgency'</code>.
+    </p>
+  </section>
+
+  <section id="streaming">
+    <p class="anchor">09</p>
+    <h2>Streaming</h2>
+    <p>
+      All three providers stream. Streaming bypasses signature validation by
+      design &mdash; you are consuming tokens as they arrive, before there is a
+      complete reply to check &mdash; so use it for display, and use a module when
+      you need the parsed object.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> lm = <span class="kw">new</span> AnthropicLM({ apiKey })
+
+<span class="kw">for</span> <span class="kw">await</span> (<span class="kw">const</span> chunk <span class="kw">of</span> lm.generateStream(<span class="s">'Explain B-trees.'</span>)) {
+  process.stdout.write(chunk.content)
+  <span class="kw">if</span> (chunk.done) console.log(chunk.usage)
+}</code></pre>
+  </section>
+
+  <section id="reliability">
+    <p class="anchor">10</p>
+    <h2>Timeouts and retries</h2>
+    <p>
+      <code>LLMCallOptions</code> flows from a module through to the provider SDK,
+      which owns retries and honours <code>retry-after</code>. There is no
+      hand-rolled backoff in this library, so you never get two retry loops
+      fighting each other.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> out = <span class="kw">await</span> triage.forward(
+  { ticket },
+  { timeout: <span class="s">30_000</span>, retries: <span class="s">3</span>, maxTokens: <span class="s">2000</span> }
+)</code></pre>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Option</th><th scope="col">Effect</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">timeout</td><td class="note">Per-request deadline in milliseconds.</td></tr>
+          <tr><td class="sym">retries</td><td class="note">Passed to the SDK's own retry policy.</td></tr>
+          <tr><td class="sym">maxTokens</td><td class="note">Output cap for the call.</td></tr>
+          <tr><td class="sym">temperature<br>topP</td><td class="note">Sent only when set, so reasoning models are unaffected.</td></tr>
+          <tr><td class="sym">model</td><td class="note">Override the provider's model for one call.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Usage accounting</h3>
+    <p>Every provider tracks tokens across calls.</p>
+    <pre class="code"><code>lm.getUsage()   <span class="c">// { promptTokens, completionTokens, totalTokens, requestCount }</span>
+lm.resetUsage()</code></pre>
+    <p>
+      There is no cost estimate. Prices change faster than a library can track
+      them, and a stale multiplier is worse than no number &mdash; earlier versions
+      reported figures roughly twenty times off.
+    </p>
+  </section>
+
+  <section id="testing">
+    <p class="anchor">11</p>
+    <h2>Testing</h2>
+    <p>
+      Modules take a language model, so a test needs no network and no API key.
+      Implement <code>ILanguageModel</code>, or extend <code>BaseLM</code> for the
+      shared plumbing.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { BaseLM, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">class</span> <span class="ty">StubLM</span> <span class="kw">extends</span> <span class="ty">BaseLM</span> {
+  <span class="kw">constructor</span>(<span class="kw">private</span> reply: <span class="ty">string</span>) { <span class="kw">super</span>({ model: <span class="s">'stub'</span> }) }
+  <span class="kw">async</span> chat() { <span class="kw">return</span> <span class="kw">this</span>.reply }
+  getCapabilities() {
+    <span class="kw">return</span> { supportsStructuredOutput: <span class="kw">false</span>, supportsStreaming: <span class="kw">false</span>,
+             supportsFunctionCalling: <span class="kw">false</span>, supportsVision: <span class="kw">false</span>,
+             maxContextLength: <span class="s">4096</span>, supportedFormats: [<span class="s">'text'</span>] }
+  }
+}
+
+it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">async</span> () =&gt; {
+  <span class="kw">const</span> lm = <span class="kw">new</span> StubLM(<span class="s">'category: bug\nurgency: very high'</span>)
+  <span class="kw">await</span> expect(<span class="kw">new</span> Predict(TriageTicket, lm).forward({ ticket: <span class="s">'x'</span> }))
+    .rejects.toThrow(ValidationError)
+})</code></pre>
+    <p>
+      Testing the failure path matters more than the happy path. A model that
+      returns the right shape is not the interesting case.
+    </p>
+  </section>
+
+  <section id="api">
+    <p class="anchor">12</p>
+    <h2>API reference</h2>
+
+    <h3>Exports from <code>@ts-dspy/core</code></h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Export</th><th scope="col">Kind</th><th scope="col">Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">Signature</td><td class="path">class</td><td class="note">Base class for declared signatures.</td></tr>
+          <tr><td class="sym">InputField</td><td class="path">decorator</td><td class="note">Marks an input field.</td></tr>
+          <tr><td class="sym">OutputField</td><td class="path">decorator</td><td class="note">Marks an output field and its type.</td></tr>
+          <tr><td class="sym">Module</td><td class="path">class</td><td class="note">Base class for modules.</td></tr>
+          <tr><td class="sym">Predict</td><td class="path">class</td><td class="note">One-shot prediction.</td></tr>
+          <tr><td class="sym">ChainOfThought</td><td class="path">class</td><td class="note">Reason, then answer.</td></tr>
+          <tr><td class="sym">RespAct</td><td class="path">class</td><td class="note">Tool loop.</td></tr>
+          <tr><td class="sym">BaseLM</td><td class="path">class</td><td class="note">Base for providers.</td></tr>
+          <tr><td class="sym">Prediction</td><td class="path">class</td><td class="note">Result wrapper with direct field access.</td></tr>
+          <tr><td class="sym">Example</td><td class="path">class</td><td class="note">Input/output pair for few-shot use.</td></tr>
+          <tr><td class="sym">configure</td><td class="path">function</td><td class="note">Set the default LM and flags.</td></tr>
+          <tr><td class="sym">getDefaultLM</td><td class="path">function</td><td class="note">Read the configured LM.</td></tr>
+          <tr><td class="sym">ValidationError</td><td class="path">class</td><td class="note">Reply did not match the signature.</td></tr>
+          <tr><td class="sym">LMError</td><td class="path">class</td><td class="note">Provider call failed.</td></tr>
+          <tr><td class="sym">TsDspyError</td><td class="path">class</td><td class="note">Base error.</td></tr>
+          <tr><td class="sym">buildPrompt</td><td class="path">function</td><td class="note">Render a prompt from a signature.</td></tr>
+          <tr><td class="sym">parseOutput</td><td class="path">function</td><td class="note">Parse and validate a raw reply.</td></tr>
+          <tr><td class="sym">buildOutputSchema</td><td class="path">function</td><td class="note">Signature &#8594; zod schema.</td></tr>
+          <tr><td class="sym">buildOutputJsonSchema</td><td class="path">function</td><td class="note">Signature &#8594; JSON Schema.</td></tr>
+          <tr><td class="sym">fieldConfigToZod</td><td class="path">function</td><td class="note">One field &#8594; zod schema.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>configure()</h3>
+    <pre class="code"><code>configure({
+  lm: <span class="kw">new</span> AnthropicLM({ apiKey }),
+  cache: <span class="kw">false</span>,
+  tracing: <span class="kw">false</span>,
+})</code></pre>
+  </section>
+
+  <section id="migration">
+    <p class="anchor">13</p>
+    <h2>Migrating to 0.5</h2>
+    <p>
+      0.5.0 makes the type guarantee real, which means code that relied on the
+      old silent behaviour now throws.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Change</th><th scope="col">What to do</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="note"><strong>Parsing throws <code>ValidationError</code></strong> instead of returning <code>null</code> or an uncoerced string.</td>
+            <td class="note">Catch it, or mark the field <code>required: false</code> if the model legitimately may omit it.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong>Node 22+ required.</strong></td>
+            <td class="note">Node 20 reached end of life in April 2026.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong>Packages are ESM-first</strong> with an exports map.</td>
+            <td class="note">Nothing, unless you were reaching into <code>dist/</code> directly.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong><code>Module.save</code>/<code>load</code>/<code>compiled</code> removed.</strong></td>
+            <td class="note">They threw or were never set. Remove the call sites.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong>Cost estimation removed.</strong></td>
+            <td class="note">Compute from <code>getUsage()</code> with prices you control.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong>Provider defaults moved</strong> to current models.</td>
+            <td class="note">Pin <code>model</code> explicitly if you need the old one.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong>Gemini moved to <code>@google/genai</code>.</strong></td>
+            <td class="note">Nothing, unless you constructed the old SDK yourself.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <span class="label">Upgrade order</span>
+      <p>
+        Upgrade core and every provider together. Providers declare
+        <code>@ts-dspy/core@^0.5.0</code>, and a mismatched pair is exactly the bug
+        0.5.0 fixed &mdash; 0.4.2 shipped providers that resolved a stale core.
+      </p>
+    </div>
+  </section>
+
+  </div>
+</div>
+
+</main>
+
+<footer class="foot">
+  <div class="shell foot-in">
+    <div>
+      <p class="foot-mark"><span aria-hidden="true">&#8866;</span> TS-DSPy</p>
+      <p class="foot-note">MIT licensed &#183; <a href="https://github.com/ardada2468/LLMTypeSafe/issues">Report an issue</a></p>
+    </div>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="examples.html">Examples</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="https://www.npmjs.com/package/@ts-dspy/core">npm</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="diagrams.js"></script>
+</body>
+</html>

@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture — TS-DSPy</title>
+<meta name="description" content="How a declared signature drives the prompt, the JSON Schema, and the zod validator — and how the packages meet at ILanguageModel.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230A0A0A'/><text y='72' x='50' text-anchor='middle' font-size='64' font-family='monospace' fill='white'>&#8866;</text></svg>">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="shell nav-in">
+    <a class="mark" href="index.html">
+      <span class="mark-glyph" aria-hidden="true">&#8866;</span>
+      <span class="mark-text">TS-DSPy</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="docs.html">Docs</a>
+      <a href="examples.html">Examples</a>
+      <a href="architecture.html" aria-current="page">Architecture</a>
+      <a href="https://github.com/ardada2468/LLMTypeSafe">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="pagehead">
+  <div class="shell">
+    <p class="eyebrow">Architecture</p>
+    <h1 class="display">One declaration,<br>three consumers.</h1>
+    <p class="lede">
+      A signature drives the prompt, the JSON Schema sent to the provider, and
+      the zod schema every reply is checked against. Everything below follows
+      from that single source.
+    </p>
+    <p class="meta">
+      <span>@ts-dspy/core 0.5.0</span>
+      <span>zod ^4.1.13</span>
+      <span>node &gt;=22</span>
+      <span>ESM + CJS</span>
+      <span>4 packages</span>
+    </p>
+  </div>
+</section>
+
+<div class="shell docs">
+
+  <nav class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol>
+      <li><a href="#lifecycle">Request lifecycle</a></li>
+      <li><a href="#packages">Packages</a></li>
+      <li><a href="#modules">Modules</a></li>
+      <li><a href="#respact">The RespAct loop</a></li>
+      <li><a href="#files">Where things live</a></li>
+    </ol>
+  </nav>
+
+  <div class="doc">
+
+  <!-- ══════════ 1. LIFECYCLE ══════════ -->
+  <section id="lifecycle">
+    <p class="anchor">01</p>
+    <h2>One request, end to end</h2>
+    <p>
+      A signature class records its fields on the constructor at decoration
+      time, so <code>getInputFields()</code> and <code>getOutputFields()</code>
+      work without ever instantiating it. <code>Predict.forward()</code> reads
+      those fields three separate times: once to write the prompt, once to build
+      a JSON Schema for providers that can constrain decoding, and once to build
+      the zod schema that every reply must pass.
+    </p>
+    <p>
+      The fork in the middle is the only place the two paths differ. They rejoin
+      at the same gate, so a model that answers in prose where you declared a
+      number fails identically whichever route it took.
+    </p>
+
+    <figure class="fig" data-anim>
+      <div class="fig-body">
+        <svg viewBox="0 0 780 720" role="img"
+             aria-label="Flow from a decorated Signature class through prompt building, a capability fork into either native structured output or labelled-text parsing, converging on a single zod validation gate that yields either a Prediction or a ValidationError.">
+          <defs>
+            <marker id="mk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+            </marker>
+          </defs>
+
+          <!-- declared-types rail -->
+          <polyline class="e-soft g-edge" points="240,58 26,58 26,552 224,552" marker-end="url(#mk)" style="color:var(--muted)"/>
+          <text class="t t-edge g-lbl" x="18" y="310" text-anchor="middle" transform="rotate(-90 18 310)">declared field types</text>
+
+          <g class="g-node">
+            <rect class="n-fill" x="240" y="24" width="300" height="68"/>
+            <text class="t t-ttl t-inv" x="390" y="52" text-anchor="middle">class AnswerQuestion extends Signature</text>
+            <text class="t t-sub t-inv" x="390" y="74" text-anchor="middle" opacity=".72">@InputField / @OutputField &#8594; static field maps</text>
+          </g>
+
+          <line class="e g-edge" x1="390" y1="92" x2="390" y2="134" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="400" y="118">inputs</text>
+
+          <g class="g-node">
+            <rect class="n" x="240" y="140" width="300" height="60"/>
+            <text class="t t-ttl" x="390" y="166" text-anchor="middle">buildPrompt()</text>
+            <text class="t t-sub" x="390" y="186" text-anchor="middle">description + labelled inputs + field list</text>
+          </g>
+
+          <line class="e g-edge" x1="390" y1="200" x2="390" y2="242" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="400" y="226">prompt</text>
+
+          <g class="g-node">
+            <polygon class="n" points="214,248 566,248 590,278 566,308 214,308 190,278"/>
+            <text class="t t-ttl" x="390" y="274" text-anchor="middle">lm.getCapabilities()</text>
+            <text class="t t-sub" x="390" y="294" text-anchor="middle">.supportsStructuredOutput</text>
+          </g>
+
+          <polyline class="e g-edge" points="280,308 280,340 212,340 212,366" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="272" y="332" text-anchor="end">true</text>
+
+          <polyline class="e-soft g-edge" points="500,308 500,340 568,340 568,366" marker-end="url(#mk)" style="color:var(--muted)"/>
+          <text class="t t-edge g-lbl" x="508" y="332">false</text>
+
+          <g class="g-node">
+            <rect class="n" x="66" y="372" width="292" height="92" stroke-width="2"/>
+            <text class="t t-ttl" x="212" y="398" text-anchor="middle">generateStructured()</text>
+            <text class="t t-sub" x="212" y="420" text-anchor="middle">buildOutputJsonSchema(signature)</text>
+            <text class="t t-sub" x="212" y="440" text-anchor="middle">provider constrains decoding</text>
+          </g>
+
+          <g class="g-node">
+            <rect class="n" x="422" y="372" width="292" height="92"/>
+            <text class="t t-ttl" x="568" y="398" text-anchor="middle">generate()</text>
+            <text class="t t-sub" x="568" y="420" text-anchor="middle">parseOutput() scrapes "field: value"</text>
+            <text class="t t-sub" x="568" y="440" text-anchor="middle">BaseLM fallback asks for JSON in prose</text>
+          </g>
+
+          <polyline class="e g-edge" points="212,464 212,496 300,496 300,514" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <polyline class="e g-edge" points="568,464 568,496 480,496 480,514" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="390" y="488" text-anchor="middle">candidate object</text>
+
+          <g class="g-node">
+            <rect class="n" x="224" y="520" width="332" height="64" stroke-width="2"/>
+            <text class="t t-ttl" x="390" y="546" text-anchor="middle">buildOutputSchema().safeParse()</text>
+            <text class="t t-sub" x="390" y="568" text-anchor="middle">one zod schema, built from the declared types</text>
+          </g>
+
+          <polyline class="e g-edge" points="300,584 300,610 250,610 250,630" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="292" y="604" text-anchor="end">success</text>
+
+          <polyline class="e-fail g-edge" points="480,584 480,610 530,610 530,630" marker-end="url(#mk)" style="color:var(--fail)"/>
+          <text class="t t-edge t-fail g-lbl" x="490" y="604">issues[]</text>
+
+          <g class="g-node">
+            <rect class="n" x="150" y="636" width="200" height="58"/>
+            <text class="t t-ttl" x="250" y="662" text-anchor="middle">Prediction&lt;T&gt;</text>
+            <text class="t t-sub" x="250" y="681" text-anchor="middle">direct field access</text>
+          </g>
+
+          <g class="g-node">
+            <rect class="n-fail" x="430" y="636" width="200" height="58"/>
+            <text class="t t-ttl t-fail" x="530" y="662" text-anchor="middle">ValidationError</text>
+            <text class="t t-sub t-fail" x="530" y="681" text-anchor="middle" opacity=".8">issues + rawOutput</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Fig. 1 &mdash; The request path.</b> The dashed rail is the point of the
+        library: one declaration feeds the prompt, the JSON Schema, and the
+        validator. Both branches end at the same <code>safeParse</code>, so nothing
+        reaches your code untyped. All three shipped providers report
+        <code>supportsStructuredOutput: true</code>, so the right-hand branch is what
+        a custom <code>ILanguageModel</code> gets &mdash; and what <code>RespAct</code>
+        always uses.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ══════════ 2. PACKAGES ══════════ -->
+  <section id="packages">
+    <p class="anchor">02</p>
+    <h2>Packages and the provider seam</h2>
+    <p>
+      <code>@ts-dspy/core</code> depends on <code>zod</code> and nothing else &mdash;
+      no vendor SDK. Each provider package pulls in its own official SDK and
+      extends <code>BaseLM</code>, which already owns usage accounting,
+      <code>generate()</code> delegation, and a prompt-based
+      <code>generateStructured()</code> fallback. A provider implements two
+      methods: <code>chat()</code> and <code>getCapabilities()</code>.
+    </p>
+    <p>
+      Modules never name a vendor. They hold an <code>ILanguageModel</code>,
+      handed in at construction or read from the <code>configure()</code> singleton.
+    </p>
+
+    <figure class="fig" data-anim>
+      <div class="fig-body">
+        <svg viewBox="0 0 780 470" role="img"
+             aria-label="Package dependency map: an application declares signatures against core and instantiates one provider; core and the three provider packages both meet at the ILanguageModel interface, so core carries no vendor SDK.">
+          <defs>
+            <marker id="mk2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+            </marker>
+          </defs>
+
+          <g class="g-node">
+            <rect class="n" x="266" y="16" width="248" height="56"/>
+            <text class="t t-ttl" x="390" y="42" text-anchor="middle">your application</text>
+            <text class="t t-sub" x="390" y="61" text-anchor="middle">configure({ lm }) &#183; new Predict(Sig)</text>
+          </g>
+
+          <line class="e g-edge" x1="390" y1="72" x2="390" y2="114" marker-end="url(#mk2)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="400" y="98">declares signatures</text>
+
+          <polyline class="e-soft g-edge" points="514,44 750,44 750,400 722,400" marker-end="url(#mk2)" style="color:var(--muted)"/>
+          <text class="t t-edge g-lbl" x="742" y="222" text-anchor="middle" transform="rotate(-90 742 222)">installs one provider</text>
+
+          <g class="g-node">
+            <rect class="n-band" x="40" y="120" width="700" height="140"/>
+            <text class="t t-band" x="56" y="142">@ts-dspy/core &#8212; zod only, no vendor SDK</text>
+          </g>
+
+          <g class="g-node">
+            <rect class="n" x="64" y="164" width="150" height="70"/>
+            <text class="t t-ttl" x="139" y="192" text-anchor="middle">Signature</text>
+            <text class="t t-sub" x="139" y="211" text-anchor="middle">decorators &#8594;</text>
+            <text class="t t-sub" x="139" y="225" text-anchor="middle">static field maps</text>
+          </g>
+          <g class="g-node">
+            <rect class="n" x="234" y="164" width="150" height="70"/>
+            <text class="t t-ttl" x="309" y="192" text-anchor="middle">Modules</text>
+            <text class="t t-sub" x="309" y="211" text-anchor="middle">Predict &#183; ChainOf-</text>
+            <text class="t t-sub" x="309" y="225" text-anchor="middle">Thought &#183; RespAct</text>
+          </g>
+          <g class="g-node">
+            <rect class="n" x="404" y="164" width="150" height="70"/>
+            <text class="t t-ttl" x="479" y="192" text-anchor="middle">parsing</text>
+            <text class="t t-sub" x="479" y="211" text-anchor="middle">+ schema (zod,</text>
+            <text class="t t-sub" x="479" y="225" text-anchor="middle">JSON Schema)</text>
+          </g>
+          <g class="g-node">
+            <rect class="n" x="574" y="164" width="146" height="70"/>
+            <text class="t t-ttl" x="647" y="192" text-anchor="middle">config</text>
+            <text class="t t-sub" x="647" y="211" text-anchor="middle">singleton holding</text>
+            <text class="t t-sub" x="647" y="225" text-anchor="middle">the default LM</text>
+          </g>
+
+          <line class="e g-edge" x1="390" y1="260" x2="390" y2="290" marker-end="url(#mk2)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="400" y="280">calls through</text>
+
+          <g class="g-node">
+            <rect class="n-fill" x="190" y="296" width="400" height="52"/>
+            <text class="t t-ttl t-inv" x="390" y="320" text-anchor="middle">interface ILanguageModel</text>
+            <text class="t t-sub t-inv" x="390" y="339" text-anchor="middle" opacity=".72">generate &#183; generateStructured &#183; chat &#183; getCapabilities</text>
+          </g>
+
+          <polyline class="e g-edge" points="162,384 162,364 224,364 224,354" marker-end="url(#mk2)" style="color:var(--ink)"/>
+          <line class="e g-edge" x1="390" y1="384" x2="390" y2="354" marker-end="url(#mk2)" style="color:var(--ink)"/>
+          <polyline class="e g-edge" points="618,384 618,364 556,364 556,354" marker-end="url(#mk2)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="378" y="378" text-anchor="end">extends BaseLM</text>
+
+          <g class="g-node">
+            <rect class="n" x="64" y="384" width="196" height="62"/>
+            <text class="t t-ttl" x="162" y="410" text-anchor="middle">@ts-dspy/openai</text>
+            <text class="t t-sub" x="162" y="430" text-anchor="middle">OpenAILM &#183; openai</text>
+          </g>
+          <g class="g-node">
+            <rect class="n" x="292" y="384" width="196" height="62"/>
+            <text class="t t-ttl" x="390" y="410" text-anchor="middle">@ts-dspy/gemini</text>
+            <text class="t t-sub" x="390" y="430" text-anchor="middle">GeminiLM &#183; @google/genai</text>
+          </g>
+          <g class="g-node">
+            <rect class="n" x="520" y="384" width="196" height="62"/>
+            <text class="t t-ttl" x="618" y="410" text-anchor="middle">@ts-dspy/anthropic</text>
+            <text class="t t-sub" x="618" y="430" text-anchor="middle">AnthropicLM &#183; @anthropic-ai/sdk</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Fig. 2 &mdash; Dependency inversion at <code>ILanguageModel</code>.</b> Core
+        calls down to the interface; providers implement up to it. That is why
+        installing <code>@ts-dspy/core</code> alone pulls in no vendor SDK, and why a
+        fourth provider is a new package rather than a change to core.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ══════════ 3. MODULES ══════════ -->
+  <section id="modules">
+    <p class="anchor">03</p>
+    <h2>What each module adds</h2>
+    <p>
+      All three extend <code>Module</code>, which supplies the language model and
+      the <code>forward()</code> contract. <code>call()</code> and
+      <code>__call__()</code> are aliases for it.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th scope="col">Module</th><th scope="col">LM calls</th><th scope="col">Adds to the output</th><th scope="col">What it is for</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="sym">Predict</td><td class="path">1</td><td class="path">&mdash;</td>
+            <td class="note">The baseline. Prompt, one completion, validate.</td>
+          </tr>
+          <tr>
+            <td class="sym">ChainOfThought</td><td class="path">2</td><td class="path">reasoning: string</td>
+            <td class="note">Extends <code>Predict</code>. Step one reasons in free text via plain <code>generate()</code>; step two re-asks with that reasoning in context and validates normally.</td>
+          </tr>
+          <tr>
+            <td class="sym">RespAct</td><td class="path">1&#8230;maxSteps</td><td class="path">steps: number</td>
+            <td class="note">Extends <code>Module</code> directly. A reason&ndash;act&ndash;observe loop over tools you supply, with an <code>onEvent</code> hook for tracing.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════ 4. RESPACT ══════════ -->
+  <section id="respact">
+    <p class="anchor">04</p>
+    <h2>The RespAct loop</h2>
+    <p>
+      <code>RespAct</code> is the only module whose control flow is a cycle rather
+      than a line. The transcript grows in place: each thought, each observation,
+      and each correction is appended to the same conversation string and re-sent.
+    </p>
+    <p>
+      Two edges matter more than the happy path. A tool call identical to one
+      already made gets an observation telling the model to move on, instead of
+      being executed again. And a malformed final answer is not fatal &mdash; the
+      loop names the fields that failed and gives the model another step, provided
+      one is left.
+    </p>
+
+    <figure class="fig" data-anim>
+      <div class="fig-body">
+        <svg viewBox="0 0 660 386" role="img"
+             aria-label="RespAct control flow: the model thinks, optionally calls a tool and receives an observation back into the same loop, and on a final answer goes to validation which either returns a Prediction or feeds a correction back into the loop.">
+          <defs>
+            <marker id="mk3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+            </marker>
+          </defs>
+
+          <g class="g-node">
+            <rect class="n" x="210" y="52" width="170" height="56" stroke-width="2"/>
+            <text class="t t-ttl" x="295" y="78" text-anchor="middle">execute tool</text>
+            <text class="t t-sub" x="295" y="97" text-anchor="middle">tools[name](input)</text>
+          </g>
+
+          <line class="e g-edge" x1="258" y1="176" x2="258" y2="114" marker-end="url(#mk3)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="250" y="146" text-anchor="end">Action:</text>
+
+          <line class="e g-edge" x1="332" y1="108" x2="332" y2="170" marker-end="url(#mk3)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="342" y="146">Observation:</text>
+
+          <text class="t t-edge g-lbl" x="396" y="86">loop &#8804; maxSteps (6)</text>
+          <text class="t t-edge g-lbl" x="396" y="102">repeats are skipped</text>
+
+          <g class="g-node">
+            <rect class="n" x="16" y="176" width="130" height="56"/>
+            <text class="t t-ttl" x="81" y="202" text-anchor="middle">transcript</text>
+            <text class="t t-sub" x="81" y="221" text-anchor="middle">task + tool list</text>
+          </g>
+
+          <line class="e g-edge" x1="146" y1="204" x2="204" y2="204" marker-end="url(#mk3)" style="color:var(--ink)"/>
+
+          <g class="g-node">
+            <rect class="n" x="210" y="176" width="170" height="56"/>
+            <text class="t t-ttl" x="295" y="202" text-anchor="middle">lm.generate()</text>
+            <text class="t t-sub" x="295" y="221" text-anchor="middle">&#8594; Thought</text>
+          </g>
+
+          <line class="e g-edge" x1="380" y1="204" x2="446" y2="204" marker-end="url(#mk3)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="413" y="194" text-anchor="middle">Final Answer:</text>
+
+          <g class="g-node">
+            <rect class="n" x="452" y="176" width="160" height="56"/>
+            <text class="t t-ttl" x="532" y="202" text-anchor="middle">parseOutput()</text>
+            <text class="t t-sub" x="532" y="221" text-anchor="middle">zod, per signature</text>
+          </g>
+
+          <line class="e g-edge" x1="532" y1="232" x2="532" y2="294" marker-end="url(#mk3)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="542" y="266">ok</text>
+
+          <polyline class="e-fail g-edge" points="480,232 480,262 295,262 295,238" marker-end="url(#mk3)" style="color:var(--fail)"/>
+          <text class="t t-edge t-fail g-lbl" x="388" y="278" text-anchor="middle">ValidationError &#8594; "provide every required field"</text>
+
+          <g class="g-node">
+            <rect class="n" x="452" y="300" width="160" height="58"/>
+            <text class="t t-ttl" x="532" y="326" text-anchor="middle">Prediction</text>
+            <text class="t t-sub" x="532" y="345" text-anchor="middle">fields + steps</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Fig. 3 &mdash; Reason, act, observe.</b> Tool use wins over a final answer
+        in the same reply, so a model that hedges still advances the loop. Running
+        out of steps throws rather than returning a half-formed answer.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ══════════ 5. FILES ══════════ -->
+  <section id="files">
+    <p class="anchor">05</p>
+    <h2>Where things live</h2>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Path</th><th scope="col">Holds</th></tr></thead>
+        <tbody>
+          <tr><td class="path">core/src/core/signature.ts</td><td class="note">Decorators and the static field maps.</td></tr>
+          <tr><td class="path">core/src/core/module.ts</td><td class="note">The <code>forward()</code> contract and LM resolution.</td></tr>
+          <tr><td class="path">core/src/core/base-lm.ts</td><td class="note">Usage accounting, the structured-output fallback, and fence-tolerant JSON extraction.</td></tr>
+          <tr><td class="path">core/src/core/config.ts</td><td class="note">The <code>configure()</code> singleton: default LM, cache flag, tracing flag.</td></tr>
+          <tr><td class="path">core/src/utils/schema.ts</td><td class="note">Type string &#8594; zod schema, and &#8594; JSON Schema. Lenient coercion lives here.</td></tr>
+          <tr><td class="path">core/src/utils/parsing.ts</td><td class="note">Prompt construction and the labelled-text extractor.</td></tr>
+          <tr><td class="path">core/src/core/errors.ts</td><td class="note"><code>TsDspyError</code> &#8594; <code>ValidationError</code>, <code>LMError</code>.</td></tr>
+          <tr><td class="path">{openai,gemini,anthropic}/src</td><td class="note">One <code>BaseLM</code> subclass each, plus its native structured-output override.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <span class="label">Design constraint</span>
+      <p>
+        Coercion is deliberately lenient and validation is deliberately loud.
+        <code>"42"</code> satisfies a <code>number</code> field, and so does
+        <code>"1,200"</code> and <code>"87%"</code> &mdash; commas and a trailing
+        percent are stripped before the check. But <code>"about forty"</code> throws
+        a <code>ValidationError</code> naming the field rather than handing back a
+        string where the type says number. Versions before 0.5.0 returned the raw
+        string on coercion failure, which is exactly the lie the runtime check
+        exists to prevent.
+      </p>
+    </div>
+  </section>
+
+  </div>
+</div>
+
+</main>
+
+<footer class="foot">
+  <div class="shell foot-in">
+    <div>
+      <p class="foot-mark"><span aria-hidden="true">&#8866;</span> TS-DSPy</p>
+      <p class="foot-note">Drawn from the source at <a href="https://github.com/ardada2468/LLMTypeSafe">ardada2468/LLMTypeSafe</a> &#183; core 0.5.0</p>
+    </div>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="docs.html">Docs</a>
+      <a href="examples.html">Examples</a>
+      <a href="https://www.npmjs.com/package/@ts-dspy/core">npm</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="diagrams.js"></script>
+</body>
+</html>
