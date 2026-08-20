@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TS-DSPy — type-safe LLM output for TypeScript</title>
+<meta name="description" content="TS-DSPy validates model output against the signature you declared and throws when it does not match. Providers for OpenAI, Anthropic, and Gemini behind one interface.">
+<meta property="og:title" content="TS-DSPy">
+<meta property="og:description" content="You declared a number. The model said &quot;high&quot;. TS-DSPy catches that.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230A0A0A'/><text y='72' x='50' text-anchor='middle' font-size='64' font-family='monospace' fill='white'>&#8866;</text></svg>">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="shell nav-in">
+    <a class="mark" href="#top">
+      <span class="mark-glyph" aria-hidden="true">&#8866;</span>
+      <span class="mark-text">TS-DSPy</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#start">Start</a>
+      <a href="#providers">Providers</a>
+      <a href="#concepts">Concepts</a>
+      <a href="https://github.com/ardada2468/LLMTypeSafe">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ───────────────────────── hero ───────────────────────── -->
+<section class="hero" id="top">
+  <div class="shell">
+    <p class="eyebrow">v0.5.0 &nbsp;/&nbsp; TypeScript &nbsp;/&nbsp; MIT</p>
+    <h1 class="display">
+      You declared a number.<br>
+      The model said <span class="quoted">&ldquo;high&rdquo;</span>.
+    </h1>
+    <p class="lede">
+      TS-DSPy checks every field of a model&rsquo;s reply against the signature you
+      wrote, and throws when it doesn&rsquo;t match. No silent coercion. No string
+      wearing a number&rsquo;s type.
+    </p>
+
+    <!-- signature element: the validator -->
+    <figure class="validator" id="validator" aria-label="A model reply being checked against a declared signature">
+      <figcaption class="validator-head">
+        <span class="col-label">Model reply</span>
+        <span class="col-label col-label-r">Declared signature</span>
+      </figcaption>
+
+      <div class="rows" id="rows">
+        <div class="row" data-field="answer" data-type="string" data-state="pass">
+          <code class="raw"><span class="k">answer:</span> Paris</code>
+          <span class="link" aria-hidden="true"></span>
+          <code class="sig"><span class="f">answer</span><span class="t">string</span></code>
+          <span class="verdict" aria-hidden="true"></span>
+        </div>
+        <div class="row" data-field="score" data-type="number" data-state="fail">
+          <code class="raw"><span class="k">score:</span> high</code>
+          <span class="link" aria-hidden="true"></span>
+          <code class="sig"><span class="f">score</span><span class="t">number</span></code>
+          <span class="verdict" aria-hidden="true"></span>
+        </div>
+        <div class="row" data-field="sources" data-type="string[]" data-state="pass">
+          <code class="raw"><span class="k">sources:</span> wiki, britannica</code>
+          <span class="link" aria-hidden="true"></span>
+          <code class="sig"><span class="f">sources</span><span class="t">string[]</span></code>
+          <span class="verdict" aria-hidden="true"></span>
+        </div>
+      </div>
+
+      <output class="throw" id="throw" role="status">
+        <span class="throw-tag">ValidationError</span>
+        <span class="throw-msg">score: expected number, received &ldquo;high&rdquo;</span>
+      </output>
+    </figure>
+
+    <div class="cta">
+      <a class="btn" href="#start">Get started</a>
+      <a class="btn btn-ghost" href="https://github.com/ardada2468/LLMTypeSafe">View source</a>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── contrast ───────────────────────── -->
+<section class="band" id="why">
+  <div class="shell">
+    <p class="eyebrow">The difference</p>
+    <h2 class="h2">Types that are checked, not assumed</h2>
+    <div class="split">
+      <article class="pane">
+        <p class="pane-tag">Without validation</p>
+        <pre class="code"><code>const { score } = await predict({ question })
+
+<span class="c">// TypeScript says: number</span>
+<span class="c">// Actually holds: "high"</span>
+score.toFixed(2)  <span class="c">// throws, far from the cause</span></code></pre>
+        <p class="pane-note">
+          The failure surfaces somewhere else entirely &mdash; a chart, a sum, a
+          database write &mdash; long after the reply that caused it.
+        </p>
+      </article>
+      <article class="pane">
+        <p class="pane-tag">With TS-DSPy</p>
+        <pre class="code"><code>try {
+  const { score } = await predict({ question })
+} catch (e) {
+  <span class="c">// ValidationError, at the boundary</span>
+  e.issues     <span class="c">// [{ field: 'score', expected: 'number' }]</span>
+  e.rawOutput  <span class="c">// what the model actually said</span>
+}</code></pre>
+        <p class="pane-note">
+          You find out at the parse boundary, with the field name and the raw
+          reply in hand.
+        </p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── start ───────────────────────── -->
+<section class="band band-alt" id="start">
+  <div class="shell">
+    <p class="eyebrow">Get started</p>
+    <h2 class="h2">Declare the shape. Get it back, checked.</h2>
+
+    <div class="start-grid">
+      <div>
+        <p class="step-tag">Install</p>
+        <pre class="code"><code>npm install @ts-dspy/core @ts-dspy/anthropic</code></pre>
+        <p class="step-tag">Requirements</p>
+        <p class="body">Node.js 22 or newer. Ships ESM and CommonJS builds with types for both.</p>
+      </div>
+      <div>
+        <p class="step-tag">Write it</p>
+        <pre class="code"><code><span class="kw">import</span> { Signature, InputField, OutputField, Predict, configure } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+<span class="kw">import</span> { AnthropicLM } <span class="kw">from</span> <span class="s">'@ts-dspy/anthropic'</span>
+
+configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.ANTHROPIC_API_KEY }) })
+
+<span class="kw">class</span> <span class="ty">RateAnswer</span> <span class="kw">extends</span> <span class="ty">Signature</span> {
+  <span class="at">@InputField</span>({ description: <span class="s">'the question'</span> })
+  question!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'confidence 0-1'</span>, type: <span class="s">'number'</span> })
+  score!: <span class="ty">number</span>
+}
+
+<span class="kw">const</span> { score } = <span class="kw">await</span> <span class="kw">new</span> Predict(RateAnswer).forward({ question })
+<span class="c">// score is a number, or this threw</span></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── providers ───────────────────────── -->
+<section class="band" id="providers">
+  <div class="shell">
+    <p class="eyebrow">Providers</p>
+    <h2 class="h2">One interface, three vendors</h2>
+    <p class="body body-wide">
+      Each provider wraps its vendor&rsquo;s official SDK and uses the native
+      structured-output mode when the model has one. Swap the provider; the
+      signature and the module stay put.
+    </p>
+
+    <ul class="cards">
+      <li class="card">
+        <p class="card-name">@ts-dspy/anthropic</p>
+        <p class="card-model">claude-opus-5</p>
+        <p class="card-body">Structured outputs, streaming, and refusals surfaced as a typed error rather than empty text.</p>
+        <code class="card-cmd">npm i @ts-dspy/anthropic</code>
+      </li>
+      <li class="card">
+        <p class="card-name">@ts-dspy/openai</p>
+        <p class="card-model">gpt-5.2</p>
+        <p class="card-body">Chat Completions on the official SDK, JSON-schema structured outputs, and any OpenAI-compatible base URL.</p>
+        <code class="card-cmd">npm i @ts-dspy/openai</code>
+      </li>
+      <li class="card">
+        <p class="card-name">@ts-dspy/gemini</p>
+        <p class="card-model">gemini-3.5-flash</p>
+        <p class="card-body">Built on @google/genai with response schemas, streaming, and Vertex AI support.</p>
+        <code class="card-cmd">npm i @ts-dspy/gemini</code>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<!-- ───────────────────────── concepts ───────────────────────── -->
+<section class="band band-alt" id="concepts">
+  <div class="shell">
+    <p class="eyebrow">Concepts</p>
+    <h2 class="h2">Three pieces</h2>
+    <dl class="defs">
+      <div class="def">
+        <dt>Signature</dt>
+        <dd>
+          A class whose decorated fields declare what goes in and what must come
+          back, with a type per output field. It is the contract the reply is
+          measured against, and the source of the JSON schema sent to providers
+          that accept one.
+        </dd>
+      </div>
+      <div class="def">
+        <dt>Module</dt>
+        <dd>
+          The strategy that fills the contract. <code>Predict</code> asks once.
+          <code>ChainOfThought</code> reasons first, then answers.
+          <code>RespAct</code> runs a tool loop until it can.
+        </dd>
+      </div>
+      <div class="def">
+        <dt>Validation</dt>
+        <dd>
+          Every reply is parsed and checked against the signature before it
+          reaches you. Coercion stays lenient, because models emit text &mdash;
+          <code>"42"</code> satisfies a number. Failure does not: it throws
+          <code>ValidationError</code> naming the field.
+        </dd>
+      </div>
+    </dl>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="shell foot-in">
+    <div>
+      <p class="foot-mark"><span aria-hidden="true">&#8866;</span> TS-DSPy</p>
+      <p class="foot-note">Inspired by <a href="https://github.com/stanfordnlp/dspy">DSPy</a>. MIT licensed.</p>
+    </div>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="https://github.com/ardada2468/LLMTypeSafe">Source</a>
+      <a href="https://www.npmjs.com/package/@ts-dspy/core">npm</a>
+      <a href="https://github.com/ardada2468/LLMTypeSafe/issues">Issues</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

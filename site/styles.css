@@ -1,0 +1,396 @@
+/* ───────────────────────────────────────────────────────────
+   TS-DSPy — monochrome, type-led.
+   The page carries exactly one chromatic colour, and it is
+   spent on a validation failure. Everything else is ink on
+   paper, so the failure is the thing the eye finds.
+   ─────────────────────────────────────────────────────────── */
+
+:root {
+  --paper:  #ffffff;
+  --panel:  #f5f5f4;
+  --ink:    #0a0a0a;
+  --muted:  #6e6e6b;
+  --rule:   #dededc;
+  --fail:   #d6301f;
+
+  --display: 'Archivo', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --shell: 1180px;
+  --gutter: clamp(20px, 5vw, 56px);
+  --band: clamp(72px, 10vw, 140px);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0a0a0a;
+    --panel: #141413;
+    --ink:   #f5f5f4;
+    --muted: #8f8f89;
+    --rule:  #2a2a28;
+    --fail:  #ff5c47;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: 17px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  font-synthesis-weight: none;
+}
+
+a { color: inherit; }
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.skip {
+  position: absolute; left: -9999px;
+  background: var(--ink); color: var(--paper);
+  padding: 12px 18px; z-index: 100;
+  font-family: var(--mono); font-size: 13px;
+}
+.skip:focus { left: 12px; top: 12px; }
+
+.shell {
+  width: 100%;
+  max-width: var(--shell);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+/* ── nav ─────────────────────────────────────────────────── */
+
+.nav {
+  position: sticky; top: 0; z-index: 40;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--rule);
+}
+.nav-in {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 24px; height: 64px;
+}
+.mark {
+  display: inline-flex; align-items: baseline; gap: 10px;
+  text-decoration: none;
+  font-weight: 700; font-size: 17px; letter-spacing: -0.02em;
+}
+.mark-glyph { font-family: var(--mono); font-size: 19px; }
+.nav-links { display: flex; gap: clamp(16px, 3vw, 34px); }
+.nav-links a {
+  font-family: var(--mono); font-size: 13px; letter-spacing: 0.01em;
+  text-decoration: none; color: var(--muted);
+  padding-block: 4px;
+  border-bottom: 1px solid transparent;
+  transition: color .18s ease, border-color .18s ease;
+}
+.nav-links a:hover { color: var(--ink); border-bottom-color: var(--ink); }
+@media (max-width: 620px) { .nav-links a:not(:last-child) { display: none; } }
+
+/* ── shared type ─────────────────────────────────────────── */
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 12px; font-weight: 500;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 22px;
+}
+
+.display {
+  font-size: clamp(34px, 5.4vw, 66px);
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 1.0;
+  margin: 0 0 24px;
+  /* No ch cap: the <br> in the markup sets the breaks, and a cap here fights
+     it into an extra wrap. Balance keeps the two lines even if it does wrap. */
+  text-wrap: balance;
+}
+.quoted { font-family: var(--mono); font-weight: 500; letter-spacing: -0.02em; }
+
+.h2 {
+  font-size: clamp(28px, 4vw, 46px);
+  font-weight: 700; letter-spacing: -0.035em; line-height: 1.05;
+  margin: 0 0 20px; max-width: 20ch;
+}
+
+.lede {
+  font-size: clamp(17px, 1.9vw, 21px);
+  line-height: 1.5; color: var(--muted);
+  max-width: 54ch; margin: 0 0 40px;
+}
+.body { color: var(--muted); margin: 0 0 8px; }
+.body-wide { max-width: 62ch; margin-bottom: 44px; }
+
+/* ── hero ────────────────────────────────────────────────── */
+
+.hero { padding-block: clamp(40px, 6vw, 72px) var(--band); }
+
+.cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 44px; }
+.btn {
+  display: inline-block;
+  font-family: var(--mono); font-size: 14px; font-weight: 500;
+  text-decoration: none;
+  padding: 13px 24px;
+  background: var(--ink); color: var(--paper);
+  border: 1px solid var(--ink);
+  transition: opacity .18s ease;
+}
+.btn:hover { opacity: .82; }
+.btn-ghost { background: transparent; color: var(--ink); }
+.btn-ghost:hover { background: var(--ink); color: var(--paper); opacity: 1; }
+
+/* ── the validator (signature element) ───────────────────── */
+
+.validator {
+  margin: 0;
+  border: 1px solid var(--rule);
+  background: var(--panel);
+}
+
+.validator-head {
+  display: grid;
+  grid-template-columns: 1fr 64px 1fr 40px;
+  align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--rule);
+}
+.col-label {
+  font-family: var(--mono); font-size: 11px; font-weight: 500;
+  letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted);
+}
+.col-label-r { grid-column: 3; }
+
+.rows { padding: 6px 0; }
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 64px 1fr 40px;
+  align-items: center;
+  padding: 13px 20px;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity .42s ease, transform .42s ease;
+}
+.row.in { opacity: 1; transform: none; }
+
+.raw, .sig {
+  font-family: var(--mono);
+  font-size: clamp(12px, 1.35vw, 14px);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.raw .k { color: var(--muted); }
+.sig { display: flex; gap: 12px; align-items: baseline; }
+.sig .f { font-weight: 500; }
+.sig .t {
+  color: var(--muted);
+  border: 1px solid var(--rule);
+  padding: 1px 7px;
+  font-size: 0.85em;
+}
+
+/* the connector: draws itself when the field is checked */
+.link {
+  position: relative; height: 1px; background: var(--rule);
+  margin-inline: 12px;
+}
+.link::after {
+  content: ''; position: absolute; inset: 0 100% 0 0;
+  background: var(--ink);
+  transition: right .34s ease;
+}
+.row.checked .link::after { right: 0; }
+.row.checked[data-state='fail'] .link::after { background: var(--fail); }
+
+/* verdict mark */
+.verdict {
+  justify-self: end;
+  width: 18px; height: 18px;
+  display: grid; place-items: center;
+  font-family: var(--mono); font-size: 13px; font-weight: 700;
+  opacity: 0; transform: scale(.7);
+  transition: opacity .22s ease, transform .22s cubic-bezier(.34,1.56,.64,1);
+}
+.row.checked .verdict { opacity: 1; transform: none; }
+.row[data-state='pass'] .verdict::before { content: '\2713'; }
+.row[data-state='fail'] .verdict::before { content: '\2715'; color: var(--fail); }
+
+.row.checked[data-state='fail'] .raw,
+.row.checked[data-state='fail'] .sig .f { color: var(--fail); }
+.row.checked[data-state='fail'] .sig .t { color: var(--fail); border-color: var(--fail); }
+
+/* the throw */
+.throw {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px;
+  padding: 0 20px;
+  max-height: 0; overflow: hidden;
+  border-top: 1px solid transparent;
+  transition: max-height .36s ease, padding .36s ease, border-color .36s ease;
+}
+.throw.on {
+  max-height: 140px;
+  padding: 15px 20px;
+  border-top-color: var(--fail);
+}
+.throw-tag {
+  font-family: var(--mono); font-size: 12px; font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--paper); background: var(--fail);
+  padding: 3px 9px;
+}
+.throw-msg { font-family: var(--mono); font-size: 13px; color: var(--fail); }
+
+@media (max-width: 700px) {
+  /* The connector needs room to read as a connector. At this width it collapses
+     to a stub that looks like stray punctuation, so drop it and let the columns
+     speak for themselves. */
+  .validator-head, .row { grid-template-columns: 1fr 0 1fr 22px; padding-inline: 14px; }
+  .link { display: none; }
+  .sig { flex-direction: column; gap: 2px; }
+  .sig .t { align-self: flex-start; }
+}
+
+/* ── bands ───────────────────────────────────────────────── */
+
+.band { padding-block: var(--band); border-top: 1px solid var(--rule); }
+.band-alt { background: var(--panel); }
+
+/* ── split panes ─────────────────────────────────────────── */
+
+.split {
+  display: grid; gap: 1px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  margin-top: 40px;
+}
+.pane { background: var(--paper); padding: clamp(22px, 3vw, 34px); margin: 0; min-width: 0; }
+.pane-tag {
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  margin: 0 0 18px; color: var(--muted);
+}
+.pane-note { color: var(--muted); font-size: 15px; margin: 20px 0 0; max-width: 44ch; }
+
+/* ── code ────────────────────────────────────────────────── */
+
+.code {
+  font-family: var(--mono);
+  font-size: clamp(12px, 1.25vw, 13.5px);
+  line-height: 1.72;
+  margin: 0;
+  padding: 20px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  overflow-x: auto;
+  max-width: 100%;
+  tab-size: 2;
+}
+.band-alt .code { background: var(--paper); }
+.code code { font: inherit; color: inherit; }
+.code .c  { color: var(--muted); }
+.code .kw { font-weight: 700; }
+.code .s  { color: var(--muted); }
+.code .ty { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.code .at { font-weight: 700; }
+
+/* ── start grid ──────────────────────────────────────────── */
+
+.start-grid {
+  display: grid; gap: clamp(28px, 4vw, 52px);
+  grid-template-columns: minmax(0, 0.72fr) minmax(0, 1fr);
+  margin-top: 40px;
+}
+.start-grid > * { min-width: 0; }
+@media (max-width: 860px) { .start-grid { grid-template-columns: minmax(0, 1fr); } }
+.step-tag {
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  margin: 0 0 12px; color: var(--muted);
+}
+.start-grid .step-tag + .code { margin-bottom: 30px; }
+
+/* ── provider cards ──────────────────────────────────────── */
+
+.cards {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: 1px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  background: var(--rule);
+  border: 1px solid var(--rule);
+}
+.card { background: var(--paper); padding: clamp(22px, 2.6vw, 30px); min-width: 0; }
+.card-name {
+  font-family: var(--mono); font-size: 14px; font-weight: 700;
+  margin: 0 0 4px; letter-spacing: -0.01em;
+}
+.card-model {
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+  margin: 0 0 18px;
+}
+.card-body { font-size: 15px; color: var(--muted); margin: 0 0 22px; }
+.card-cmd {
+  font-family: var(--mono); font-size: 12px;
+  display: block; padding: 9px 12px;
+  background: var(--panel); border: 1px solid var(--rule);
+  overflow-x: auto; white-space: nowrap;
+}
+
+/* ── definitions ─────────────────────────────────────────── */
+
+.defs { margin: 40px 0 0; display: grid; gap: 0; }
+.def {
+  display: grid;
+  grid-template-columns: minmax(0, 0.34fr) minmax(0, 1fr);
+  gap: clamp(16px, 4vw, 48px);
+  padding: 30px 0;
+  border-top: 1px solid var(--rule);
+}
+.def:last-child { border-bottom: 1px solid var(--rule); }
+@media (max-width: 760px) { .def { grid-template-columns: minmax(0, 1fr); gap: 10px; } }
+.def dt {
+  font-size: clamp(20px, 2.2vw, 26px); font-weight: 700;
+  letter-spacing: -0.03em;
+}
+.def dt, .def dd { min-width: 0; }
+.def dd { margin: 0; color: var(--muted); max-width: 62ch; }
+.def dd code {
+  font-family: var(--mono); font-size: 0.88em;
+  color: var(--ink); background: var(--paper);
+  border: 1px solid var(--rule); padding: 1px 5px;
+}
+
+/* ── footer ──────────────────────────────────────────────── */
+
+.foot { border-top: 1px solid var(--rule); padding-block: 44px; }
+.foot-in {
+  display: flex; flex-wrap: wrap; gap: 24px;
+  align-items: flex-start; justify-content: space-between;
+}
+.foot-mark { font-weight: 700; margin: 0 0 6px; letter-spacing: -0.02em; }
+.foot-mark span { font-family: var(--mono); }
+.foot-note { margin: 0; font-size: 14px; color: var(--muted); }
+.foot-links { display: flex; gap: 26px; }
+.foot-links a, .foot-note a {
+  font-family: var(--mono); font-size: 13px; color: var(--muted);
+  text-decoration: none; border-bottom: 1px solid var(--rule);
+}
+.foot-links a:hover, .foot-note a:hover { color: var(--ink); border-bottom-color: var(--ink); }
+
+@media (prefers-reduced-motion: reduce) {
+  .row, .link::after, .verdict, .throw { transition: none !important; }
+}
