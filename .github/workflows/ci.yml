@@ -97,7 +97,13 @@ jobs:
     name: Changeset
     # A push to main is either the release PR merging or a docs commit; the
     # changeset requirement is a pull-request concern.
-    if: github.event_name == 'pull_request'
+    #
+    # The release PR is the one pull request that must never carry a changeset:
+    # applying them is its entire purpose, so it lands with .changeset/ emptied
+    # and every published package modified. Checking it here fails it every time.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.head_ref != 'changeset-release/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
