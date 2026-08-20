@@ -4,3 +4,4 @@ coverage
 package-lock.json
 CHANGELOG.md
 .changeset
+site/

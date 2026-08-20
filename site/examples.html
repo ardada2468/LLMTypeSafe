@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Examples — TS-DSPy</title>
+<meta name="description" content="Worked examples: classification, extraction, chain of thought, tool loops, streaming, provider swapping, error handling, and testing.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230A0A0A'/><text y='72' x='50' text-anchor='middle' font-size='64' font-family='monospace' fill='white'>&#8866;</text></svg>">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="shell nav-in">
+    <a class="mark" href="index.html">
+      <span class="mark-glyph" aria-hidden="true">&#8866;</span>
+      <span class="mark-text">TS-DSPy</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="docs.html">Docs</a>
+      <a href="examples.html" aria-current="page">Examples</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="https://github.com/ardada2468/LLMTypeSafe">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="pagehead">
+  <div class="shell">
+    <p class="eyebrow">Examples</p>
+    <h1 class="display">Nine things<br>you might build.</h1>
+    <p class="lede">
+      Each one runs as written, given an API key in the environment. They start
+      simple and end at the parts most libraries leave out: failure handling,
+      provider swapping, and tests.
+    </p>
+    <p class="meta">
+      <span>0.5.0</span><span>tsx examples/&hellip;</span><span>node &gt;=22</span>
+    </p>
+  </div>
+</section>
+
+<div class="shell docs">
+
+  <nav class="toc" aria-label="On this page">
+    <p class="toc-title">Examples</p>
+    <ol>
+      <li><a href="#qa">1 &nbsp;Question answering</a></li>
+      <li><a href="#classify">2 &nbsp;Classification</a></li>
+      <li><a href="#extract">3 &nbsp;Structured extraction</a></li>
+      <li><a href="#cot">4 &nbsp;Chain of thought</a></li>
+      <li><a href="#agent">5 &nbsp;Tool loop</a></li>
+      <li><a href="#stream">6 &nbsp;Streaming</a></li>
+      <li><a href="#swap">7 &nbsp;Swapping providers</a></li>
+      <li><a href="#errors">8 &nbsp;Handling failure</a></li>
+      <li><a href="#test">9 &nbsp;Testing</a></li>
+    </ol>
+  </nav>
+
+  <div class="doc">
+
+  <section id="qa">
+    <div class="ex-head">
+      <p class="anchor">Example 1</p>
+      <span class="ex-tags"><span class="ex-tag">Predict</span><span class="ex-tag">string signature</span></span>
+    </div>
+    <h2>Question answering</h2>
+    <p>The shortest useful program. A string signature needs no decorators.</p>
+    <pre class="code"><code><span class="kw">import</span> { Predict, configure } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+<span class="kw">import</span> { AnthropicLM } <span class="kw">from</span> <span class="s">'@ts-dspy/anthropic'</span>
+
+configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.ANTHROPIC_API_KEY! }) })
+
+<span class="kw">const</span> qa = <span class="kw">new</span> Predict(<span class="s">'question -&gt; answer'</span>)
+<span class="kw">const</span> out = <span class="kw">await</span> qa.forward({ question: <span class="s">'What is a B-tree used for?'</span> })
+
+console.log(out.answer)</code></pre>
+    <p class="out-label">Output</p>
+    <pre class="out">B-trees keep sorted data on disk with a high branching factor, so a
+lookup touches few blocks. Databases and filesystems use them for indexes.</pre>
+  </section>
+
+  <section id="classify">
+    <div class="ex-head">
+      <p class="anchor">Example 2</p>
+      <span class="ex-tags"><span class="ex-tag">Predict</span><span class="ex-tag">number</span><span class="ex-tag">boolean</span></span>
+    </div>
+    <h2>Classification with a confidence score</h2>
+    <p>
+      Declaring <code>type: 'number'</code> is what makes <code>confidence</code>
+      arithmetic-safe. Without it you get a string that looks like a number until
+      you multiply by it.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { Signature, InputField, OutputField, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">class</span> <span class="ty">TriageTicket</span> <span class="kw">extends</span> <span class="ty">Signature</span> {
+  <span class="kw">static</span> description = <span class="s">'Classify a support ticket.'</span>
+
+  <span class="at">@InputField</span>({ description: <span class="s">'the ticket body'</span> })
+  ticket!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'one of: billing, bug, feature, other'</span> })
+  category!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'confidence from 0 to 1'</span>, type: <span class="s">'number'</span> })
+  confidence!: <span class="ty">number</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'true if a human should see this today'</span>, type: <span class="s">'boolean'</span> })
+  urgent!: <span class="ty">boolean</span>
+}
+
+<span class="kw">const</span> out = <span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket).forward({
+  ticket: <span class="s">'Charged twice this month and support never replied.'</span>,
+})
+
+<span class="kw">if</span> (out.urgent &amp;&amp; out.confidence &gt; <span class="s">0.7</span>) page(out.category)</code></pre>
+    <p class="out-label">Output</p>
+    <pre class="out">{ category: 'billing', confidence: 0.93, urgent: true }
+         string              number          boolean</pre>
+  </section>
+
+  <section id="extract">
+    <div class="ex-head">
+      <p class="anchor">Example 3</p>
+      <span class="ex-tags"><span class="ex-tag">Predict</span><span class="ex-tag">string[]</span><span class="ex-tag">optional</span></span>
+    </div>
+    <h2>Structured extraction</h2>
+    <p>
+      Arrays and optional fields. <code>required: false</code> makes a field
+      optional in both the schema and the inferred type, so a missing value is
+      not a failure.
+    </p>
+    <pre class="code"><code><span class="kw">class</span> <span class="ty">ExtractInvoice</span> <span class="kw">extends</span> <span class="ty">Signature</span> {
+  <span class="kw">static</span> description = <span class="s">'Pull structured fields out of an invoice email.'</span>
+
+  <span class="at">@InputField</span>({ description: <span class="s">'raw email text'</span> })
+  email!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'vendor name'</span> })
+  vendor!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'total in dollars'</span>, type: <span class="s">'number'</span> })
+  total!: <span class="ty">number</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'each line item description'</span>, type: <span class="s">'string[]'</span> })
+  lineItems!: <span class="ty">string</span>[]
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'due date if stated'</span>, required: <span class="kw">false</span> })
+  dueDate?: <span class="ty">string</span>
+}
+
+<span class="kw">const</span> out = <span class="kw">await</span> <span class="kw">new</span> Predict(ExtractInvoice).forward({ email })</code></pre>
+    <p class="out-label">Output — note <code>"$1,240.00"</code> coerced to a number</p>
+    <pre class="out">{
+  vendor: 'Northwind Traders',
+  total: 1240,
+  lineItems: [ 'Annual licence', 'Priority support' ],
+  dueDate: undefined
+}</pre>
+  </section>
+
+  <section id="cot">
+    <div class="ex-head">
+      <p class="anchor">Example 4</p>
+      <span class="ex-tags"><span class="ex-tag">ChainOfThought</span><span class="ex-tag">2 calls</span></span>
+    </div>
+    <h2>Chain of thought</h2>
+    <p>
+      Reasons first, answers second. You get the reasoning alongside the
+      validated fields, which is useful to log even when you do not show it.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { ChainOfThought } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">class</span> <span class="ty">SolveWordProblem</span> <span class="kw">extends</span> <span class="ty">Signature</span> {
+  <span class="at">@InputField</span>({ description: <span class="s">'a word problem'</span> })
+  problem!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'the numeric answer'</span>, type: <span class="s">'number'</span> })
+  answer!: <span class="ty">number</span>
+}
+
+<span class="kw">const</span> out = <span class="kw">await</span> <span class="kw">new</span> ChainOfThought(SolveWordProblem).forward({
+  problem: <span class="s">'A train leaves at 09:40 and arrives at 13:15. How many minutes?'</span>,
+})
+
+logger.debug({ reasoning: out.reasoning })
+console.log(out.answer)  <span class="c">// 215, as a number</span></code></pre>
+  </section>
+
+  <section id="agent">
+    <div class="ex-head">
+      <p class="anchor">Example 5</p>
+      <span class="ex-tags"><span class="ex-tag">RespAct</span><span class="ex-tag">tools</span><span class="ex-tag">tracing</span></span>
+    </div>
+    <h2>A tool loop</h2>
+    <p>
+      The model decides which tool to call and when it has enough to answer.
+      Tool descriptions are the whole interface &mdash; write them as instructions,
+      and say what the input should be.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { RespAct } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> support = <span class="kw">new</span> RespAct(<span class="s">'question -&gt; answer'</span>, {
+  tools: {
+    orderStatus: {
+      description: <span class="s">'Look up an order. Input: the order ID, e.g. A-4182.'</span>,
+      fn: <span class="kw">async</span> (id) =&gt; JSON.stringify(<span class="kw">await</span> orders.find(id.trim())),
+    },
+    shippingPolicy: {
+      description: <span class="s">'Return the shipping policy. Input: ignored.'</span>,
+      fn: () =&gt; policies.shipping,
+    },
+  },
+  maxSteps: <span class="s">8</span>,
+  onEvent: (e) =&gt; logger.debug({ respact: e }),
+})
+
+<span class="kw">const</span> out = <span class="kw">await</span> support.forward({
+  question: <span class="s">'Order A-4182 has not arrived. Is it late?'</span>,
+})
+
+console.log(out.answer, <span class="s">'in'</span>, out.steps, <span class="s">'steps'</span>)</code></pre>
+    <p class="out-label">Trace</p>
+    <pre class="out">Thought:      Need the order's ship date before judging lateness.
+Action:       orderStatus(A-4182)
+Observation:  {"shipped":"2026-08-14","carrier":"DHL","eta":"2026-08-18"}
+Thought:      ETA has passed. Check the policy for what counts as late.
+Action:       shippingPolicy()
+Observation:  Orders are late 2 business days past ETA.
+Final Answer: Yes - it is three days past the 18 Aug ETA.</pre>
+  </section>
+
+  <section id="stream">
+    <div class="ex-head">
+      <p class="anchor">Example 6</p>
+      <span class="ex-tags"><span class="ex-tag">streaming</span><span class="ex-tag">no validation</span></span>
+    </div>
+    <h2>Streaming to a UI</h2>
+    <p>
+      Streaming skips signature validation by design: there is no complete reply
+      to check yet. Stream for display, then use a module when you need the
+      parsed object.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> lm = <span class="kw">new</span> AnthropicLM({ apiKey: process.env.ANTHROPIC_API_KEY! })
+
+<span class="kw">for</span> <span class="kw">await</span> (<span class="kw">const</span> chunk <span class="kw">of</span> lm.generateStream(<span class="s">'Explain WAL in two paragraphs.'</span>)) {
+  res.write(chunk.content)
+  <span class="kw">if</span> (chunk.done) logger.info({ usage: chunk.usage })
+}
+res.end()</code></pre>
+  </section>
+
+  <section id="swap">
+    <div class="ex-head">
+      <p class="anchor">Example 7</p>
+      <span class="ex-tags"><span class="ex-tag">portability</span><span class="ex-tag">3 providers</span></span>
+    </div>
+    <h2>Swapping providers</h2>
+    <p>
+      Signatures and modules name no vendor, so the provider is a runtime choice.
+      This is also how you run the same evaluation across models.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { AnthropicLM } <span class="kw">from</span> <span class="s">'@ts-dspy/anthropic'</span>
+<span class="kw">import</span> { OpenAILM } <span class="kw">from</span> <span class="s">'@ts-dspy/openai'</span>
+<span class="kw">import</span> { GeminiLM } <span class="kw">from</span> <span class="s">'@ts-dspy/gemini'</span>
+
+<span class="kw">const</span> providers = {
+  claude: () =&gt; <span class="kw">new</span> AnthropicLM({ apiKey: process.env.ANTHROPIC_API_KEY! }),
+  gpt:    () =&gt; <span class="kw">new</span> OpenAILM({ apiKey: process.env.OPENAI_API_KEY! }),
+  gemini: () =&gt; <span class="kw">new</span> GeminiLM({ apiKey: process.env.GEMINI_API_KEY! }),
+}
+
+<span class="kw">for</span> (<span class="kw">const</span> [name, make] <span class="kw">of</span> Object.entries(providers)) {
+  <span class="kw">const</span> triage = <span class="kw">new</span> Predict(TriageTicket, make())
+  <span class="kw">const</span> out = <span class="kw">await</span> triage.forward({ ticket })
+  console.log(name, out.category, out.confidence)
+}</code></pre>
+  </section>
+
+  <section id="errors">
+    <div class="ex-head">
+      <p class="anchor">Example 8</p>
+      <span class="ex-tags"><span class="ex-tag">ValidationError</span><span class="ex-tag">LMError</span><span class="ex-tag">production</span></span>
+    </div>
+    <h2>Handling failure</h2>
+    <p>
+      The case worth writing code for. A validation failure tells you which field
+      the model got wrong and what it actually said, which is usually enough to
+      fix the field description.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { ValidationError, LMError } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">async</span> <span class="kw">function</span> triageWithFallback(ticket: <span class="ty">string</span>) {
+  <span class="kw">try</span> {
+    <span class="kw">return</span> <span class="kw">await</span> triage.forward({ ticket }, { timeout: <span class="s">20_000</span> })
+  } <span class="kw">catch</span> (err) {
+    <span class="kw">if</span> (err <span class="kw">instanceof</span> ValidationError) {
+      <span class="c">// The model answered, but not in the declared shape.</span>
+      logger.warn({
+        fields: err.issues.map((i) =&gt; i.field),
+        raw: err.rawOutput,
+      })
+      <span class="kw">return</span> { category: <span class="s">'other'</span>, confidence: <span class="s">0</span>, urgent: <span class="kw">true</span> }
+    }
+
+    <span class="kw">if</span> (err <span class="kw">instanceof</span> LMError) {
+      <span class="c">// The call itself failed. The SDK already retried.</span>
+      logger.error({ cause: err.cause })
+      <span class="kw">throw</span> err
+    }
+
+    <span class="kw">throw</span> err
+  }
+}</code></pre>
+    <p class="out-label">A caught ValidationError</p>
+    <pre class="out out-fail">ValidationError: Output did not match TriageTicket
+
+  issues:    [ { field: 'confidence',
+                 expected: 'number',
+                 received: 'very high' } ]
+  rawOutput: 'category: billing\nconfidence: very high\nurgent: yes'</pre>
+    <div class="callout">
+      <span class="label">Reading this</span>
+      <p>
+        <code>urgent: yes</code> passed &mdash; <code>"yes"</code> is accepted for a
+        boolean. <code>"very high"</code> is not a number and no amount of
+        coercion makes it one, so the whole reply is rejected rather than handing
+        back a partly-wrong object. Tightening the description to
+        <code>'confidence from 0 to 1'</code> is the fix.
+      </p>
+    </div>
+  </section>
+
+  <section id="test">
+    <div class="ex-head">
+      <p class="anchor">Example 9</p>
+      <span class="ex-tags"><span class="ex-tag">vitest</span><span class="ex-tag">no network</span></span>
+    </div>
+    <h2>Testing without a network</h2>
+    <p>
+      Pass a stub model and your tests are deterministic, free, and fast. Test
+      the shapes you fear, not the one you hope for.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { describe, it, expect } <span class="kw">from</span> <span class="s">'vitest'</span>
+<span class="kw">import</span> { BaseLM, Predict, ValidationError } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">class</span> <span class="ty">StubLM</span> <span class="kw">extends</span> <span class="ty">BaseLM</span> {
+  <span class="kw">constructor</span>(<span class="kw">private</span> reply: <span class="ty">string</span>) { <span class="kw">super</span>({ model: <span class="s">'stub'</span> }) }
+  <span class="kw">async</span> chat() { <span class="kw">return</span> <span class="kw">this</span>.reply }
+  getCapabilities() {
+    <span class="kw">return</span> { supportsStructuredOutput: <span class="kw">false</span>, supportsStreaming: <span class="kw">false</span>,
+             supportsFunctionCalling: <span class="kw">false</span>, supportsVision: <span class="kw">false</span>,
+             maxContextLength: <span class="s">4096</span>, supportedFormats: [<span class="s">'text'</span>] }
+  }
+}
+
+describe(<span class="s">'TriageTicket'</span>, () =&gt; {
+  it(<span class="s">'coerces a numeric string'</span>, <span class="kw">async</span> () =&gt; {
+    <span class="kw">const</span> lm = <span class="kw">new</span> StubLM(<span class="s">'category: bug\nconfidence: 0.82\nurgent: yes'</span>)
+    <span class="kw">const</span> out = <span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket, lm).forward({ ticket: <span class="s">'x'</span> })
+
+    expect(out.confidence).toBe(<span class="s">0.82</span>)
+    expect(<span class="kw">typeof</span> out.confidence).toBe(<span class="s">'number'</span>)
+    expect(out.urgent).toBe(<span class="kw">true</span>)
+  })
+
+  it(<span class="s">'rejects prose where a number was declared'</span>, <span class="kw">async</span> () =&gt; {
+    <span class="kw">const</span> lm = <span class="kw">new</span> StubLM(<span class="s">'category: bug\nconfidence: very high\nurgent: yes'</span>)
+
+    <span class="kw">await</span> expect(<span class="kw">new</span> Predict(TriageTicket, lm).forward({ ticket: <span class="s">'x'</span> }))
+      .rejects.toBeInstanceOf(ValidationError)
+  })
+})</code></pre>
+  </section>
+
+  <section>
+    <h2>Running these</h2>
+    <p>
+      The repository ships runnable versions under <code>examples/</code>. They
+      read their key from the environment and fail with a clear message when it is
+      missing.
+    </p>
+    <pre class="code" data-lang="bash"><code>git clone https://github.com/ardada2468/LLMTypeSafe.git
+cd LLMTypeSafe &amp;&amp; npm ci &amp;&amp; npm run build
+
+ANTHROPIC_API_KEY=... npm run example:anthropic
+OPENAI_API_KEY=...    npm run example:openai
+GEMINI_API_KEY=...    npm run example:gemini</code></pre>
+  </section>
+
+  </div>
+</div>
+
+</main>
+
+<footer class="foot">
+  <div class="shell foot-in">
+    <div>
+      <p class="foot-mark"><span aria-hidden="true">&#8866;</span> TS-DSPy</p>
+      <p class="foot-note">MIT licensed &#183; <a href="https://github.com/ardada2468/LLMTypeSafe/issues">Report an issue</a></p>
+    </div>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="docs.html">Docs</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="https://www.npmjs.com/package/@ts-dspy/core">npm</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="diagrams.js"></script>
+<script src="highlight.js"></script>
+</body>
+</html>

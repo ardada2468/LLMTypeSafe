@@ -40,9 +40,16 @@
   "keywords": [
     "ai",
     "openai",
+    "gpt",
     "llm",
     "dspy",
-    "typescript"
+    "typescript",
+    "structured-outputs",
+    "json-schema",
+    "function-calling",
+    "tool-calling",
+    "type-safe",
+    "validation"
   ],
   "author": "Arnav Dadarya",
   "license": "MIT",

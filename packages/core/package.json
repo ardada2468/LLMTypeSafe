@@ -39,7 +39,17 @@
     "dspy",
     "typescript",
     "prompting",
-    "structured-output"
+    "structured-output",
+    "structured-outputs",
+    "json-schema",
+    "zod",
+    "validation",
+    "type-safe",
+    "ai-agents",
+    "prompt-engineering",
+    "tool-calling",
+    "chain-of-thought",
+    "llm-framework"
   ],
   "author": "Arnav Dadarya",
   "license": "MIT",
