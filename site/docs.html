@@ -73,7 +73,7 @@
     <p class="anchor">01</p>
     <h2>Installation</h2>
     <p>Install core plus the provider you intend to use. Core carries no vendor SDK.</p>
-    <pre class="code"><code>npm install @ts-dspy/core @ts-dspy/anthropic
+    <pre class="code" data-lang="bash"><code>npm install @ts-dspy/core @ts-dspy/anthropic
 npm install @ts-dspy/core @ts-dspy/openai
 npm install @ts-dspy/core @ts-dspy/gemini</code></pre>
     <p>
@@ -86,7 +86,7 @@ npm install @ts-dspy/core @ts-dspy/gemini</code></pre>
       <code>experimentalDecorators</code>. Everything else works without it &mdash;
       string signatures are decorator-free.
     </p>
-    <pre class="code"><code>{
+    <pre class="code" data-lang="json"><code>{
   <span class="s">"compilerOptions"</span>: {
     <span class="s">"experimentalDecorators"</span>: <span class="kw">true</span>,
     <span class="s">"useDefineForClassFields"</span>: <span class="kw">false</span>,
@@ -611,5 +611,6 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
 </footer>
 
 <script src="diagrams.js"></script>
+<script src="highlight.js"></script>
 </body>
 </html>

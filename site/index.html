@@ -44,43 +44,51 @@
       The model said <span class="quoted">&ldquo;high&rdquo;</span>.
     </h1>
     <p class="lede">
-      TS-DSPy checks every field of a model&rsquo;s reply against the signature you
-      wrote, and throws when it doesn&rsquo;t match. No silent coercion. No string
-      wearing a number&rsquo;s type.
+      Declare the shape you want back. TS-DSPy checks the model&rsquo;s reply
+      against it and hands you typed values &mdash; or throws, naming the field
+      that failed. What it never does is give you a string wearing a
+      number&rsquo;s type.
     </p>
 
-    <!-- signature element: the validator -->
-    <figure class="validator" id="validator" aria-label="A model reply being checked against a declared signature">
-      <figcaption class="validator-head">
-        <span class="col-label">Model reply</span>
-        <span class="col-label col-label-r">Declared signature</span>
-      </figcaption>
+    <!-- signature element: text in, typed values out, checked -->
+    <figure class="rig" id="rig" aria-label="A request running: what you declare, what the model replies, and the typed values you receive after validation.">
+      <div class="rig-bar">
+        <span class="rig-dot" aria-hidden="true"></span>
+        <span class="rig-route">Predict(AnswerQuestion).forward()</span>
+        <span class="rig-state" id="rigState">idle</span>
+      </div>
 
-      <div class="rows" id="rows">
-        <div class="row" data-field="answer" data-type="string" data-state="pass">
-          <code class="raw"><span class="k">answer:</span> Paris</code>
-          <span class="link" aria-hidden="true"></span>
-          <code class="sig"><span class="f">answer</span><span class="t">string</span></code>
-          <span class="verdict" aria-hidden="true"></span>
+      <div class="rig-head" aria-hidden="true">
+        <span>You declare</span>
+        <span>Model replies</span>
+        <span>You receive</span>
+        <span></span>
+      </div>
+
+      <div class="rig-rows" id="rigRows">
+        <span class="scan" id="scan" aria-hidden="true"></span>
+
+        <div class="rrow" data-i="0">
+          <code class="rsig"><b>answer</b><i>string</i></code>
+          <code class="rout"></code>
+          <code class="rval"></code>
+          <span class="rmark" aria-hidden="true"></span>
         </div>
-        <div class="row" data-field="score" data-type="number" data-state="fail">
-          <code class="raw"><span class="k">score:</span> high</code>
-          <span class="link" aria-hidden="true"></span>
-          <code class="sig"><span class="f">score</span><span class="t">number</span></code>
-          <span class="verdict" aria-hidden="true"></span>
+        <div class="rrow" data-i="1">
+          <code class="rsig"><b>score</b><i>number</i></code>
+          <code class="rout"></code>
+          <code class="rval"></code>
+          <span class="rmark" aria-hidden="true"></span>
         </div>
-        <div class="row" data-field="sources" data-type="string[]" data-state="pass">
-          <code class="raw"><span class="k">sources:</span> wiki, britannica</code>
-          <span class="link" aria-hidden="true"></span>
-          <code class="sig"><span class="f">sources</span><span class="t">string[]</span></code>
-          <span class="verdict" aria-hidden="true"></span>
+        <div class="rrow" data-i="2">
+          <code class="rsig"><b>sources</b><i>string[]</i></code>
+          <code class="rout"></code>
+          <code class="rval"></code>
+          <span class="rmark" aria-hidden="true"></span>
         </div>
       </div>
 
-      <output class="throw" id="throw" role="status">
-        <span class="throw-tag">ValidationError</span>
-        <span class="throw-msg">score: expected number, received &ldquo;high&rdquo;</span>
-      </output>
+      <output class="rig-foot" id="rigFoot" role="status"></output>
     </figure>
 
     <div class="cta">
@@ -135,7 +143,7 @@ score.toFixed(2)  <span class="c">// throws, far from the cause</span></code></p
     <div class="start-grid">
       <div>
         <p class="step-tag">Install</p>
-        <pre class="code"><code>npm install @ts-dspy/core @ts-dspy/anthropic</code></pre>
+        <pre class="code" data-lang="bash"><code>npm install @ts-dspy/core @ts-dspy/anthropic</code></pre>
         <p class="step-tag">Requirements</p>
         <p class="body">Node.js 22 or newer. Ships ESM and CommonJS builds with types for both.</p>
       </div>
@@ -231,6 +239,122 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
   </div>
 </section>
 
+<!-- ───────────────────────── how it works ───────────────────────── -->
+<section class="band" id="how">
+  <div class="shell">
+    <p class="eyebrow">How it works</p>
+    <h2 class="h2">One declaration, three consumers</h2>
+    <p class="body body-wide">
+      The signature you write drives the prompt, the JSON Schema sent to the
+      provider, and the schema your reply is validated against. Both routes
+      through the middle end at the same gate, so nothing reaches your code
+      unchecked.
+    </p>
+
+<figure class="fig" data-anim>
+      <div class="fig-body">
+        <svg viewBox="0 0 780 720" role="img"
+             aria-label="Flow from a decorated Signature class through prompt building, a capability fork into either native structured output or labelled-text parsing, converging on a single zod validation gate that yields either a Prediction or a ValidationError.">
+          <defs>
+            <marker id="mk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+            </marker>
+          </defs>
+
+          <!-- declared-types rail -->
+          <polyline class="e-soft g-edge" points="240,58 26,58 26,552 224,552" marker-end="url(#mk)" style="color:var(--muted)"/>
+          <text class="t t-edge g-lbl" x="18" y="310" text-anchor="middle" transform="rotate(-90 18 310)">declared field types</text>
+
+          <g class="g-node">
+            <rect class="n-fill" x="240" y="24" width="300" height="68"/>
+            <text class="t t-ttl t-inv" x="390" y="52" text-anchor="middle">class AnswerQuestion extends Signature</text>
+            <text class="t t-sub t-inv" x="390" y="74" text-anchor="middle" opacity=".72">@InputField / @OutputField &#8594; static field maps</text>
+          </g>
+
+          <line class="e g-edge" x1="390" y1="92" x2="390" y2="134" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="400" y="118">inputs</text>
+
+          <g class="g-node">
+            <rect class="n" x="240" y="140" width="300" height="60"/>
+            <text class="t t-ttl" x="390" y="166" text-anchor="middle">buildPrompt()</text>
+            <text class="t t-sub" x="390" y="186" text-anchor="middle">description + labelled inputs + field list</text>
+          </g>
+
+          <line class="e g-edge" x1="390" y1="200" x2="390" y2="242" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="400" y="226">prompt</text>
+
+          <g class="g-node">
+            <polygon class="n" points="214,248 566,248 590,278 566,308 214,308 190,278"/>
+            <text class="t t-ttl" x="390" y="274" text-anchor="middle">lm.getCapabilities()</text>
+            <text class="t t-sub" x="390" y="294" text-anchor="middle">.supportsStructuredOutput</text>
+          </g>
+
+          <polyline class="e g-edge" points="280,308 280,340 212,340 212,366" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="272" y="332" text-anchor="end">true</text>
+
+          <polyline class="e-soft g-edge" points="500,308 500,340 568,340 568,366" marker-end="url(#mk)" style="color:var(--muted)"/>
+          <text class="t t-edge g-lbl" x="508" y="332">false</text>
+
+          <g class="g-node">
+            <rect class="n" x="66" y="372" width="292" height="92" stroke-width="2"/>
+            <text class="t t-ttl" x="212" y="398" text-anchor="middle">generateStructured()</text>
+            <text class="t t-sub" x="212" y="420" text-anchor="middle">buildOutputJsonSchema(signature)</text>
+            <text class="t t-sub" x="212" y="440" text-anchor="middle">provider constrains decoding</text>
+          </g>
+
+          <g class="g-node">
+            <rect class="n" x="422" y="372" width="292" height="92"/>
+            <text class="t t-ttl" x="568" y="398" text-anchor="middle">generate()</text>
+            <text class="t t-sub" x="568" y="420" text-anchor="middle">parseOutput() scrapes "field: value"</text>
+            <text class="t t-sub" x="568" y="440" text-anchor="middle">BaseLM fallback asks for JSON in prose</text>
+          </g>
+
+          <polyline class="e g-edge" points="212,464 212,496 300,496 300,514" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <polyline class="e g-edge" points="568,464 568,496 480,496 480,514" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="390" y="488" text-anchor="middle">candidate object</text>
+
+          <g class="g-node">
+            <rect class="n" x="224" y="520" width="332" height="64" stroke-width="2"/>
+            <text class="t t-ttl" x="390" y="546" text-anchor="middle">buildOutputSchema().safeParse()</text>
+            <text class="t t-sub" x="390" y="568" text-anchor="middle">one zod schema, built from the declared types</text>
+          </g>
+
+          <polyline class="e g-edge" points="300,584 300,610 250,610 250,630" marker-end="url(#mk)" style="color:var(--ink)"/>
+          <text class="t t-edge g-lbl" x="292" y="604" text-anchor="end">success</text>
+
+          <polyline class="e-fail g-edge" points="480,584 480,610 530,610 530,630" marker-end="url(#mk)" style="color:var(--fail)"/>
+          <text class="t t-edge t-fail g-lbl" x="490" y="604">issues[]</text>
+
+          <g class="g-node">
+            <rect class="n" x="150" y="636" width="200" height="58"/>
+            <text class="t t-ttl" x="250" y="662" text-anchor="middle">Prediction&lt;T&gt;</text>
+            <text class="t t-sub" x="250" y="681" text-anchor="middle">direct field access</text>
+          </g>
+
+          <g class="g-node">
+            <rect class="n-fail" x="430" y="636" width="200" height="58"/>
+            <text class="t t-ttl t-fail" x="530" y="662" text-anchor="middle">ValidationError</text>
+            <text class="t t-sub t-fail" x="530" y="681" text-anchor="middle" opacity=".8">issues + rawOutput</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Fig. 1 &mdash; The request path.</b> The dashed rail is the point of the
+        library: one declaration feeds the prompt, the JSON Schema, and the
+        validator. Both branches end at the same <code>safeParse</code>, so nothing
+        reaches your code untyped. All three shipped providers report
+        <code>supportsStructuredOutput: true</code>, so the right-hand branch is what
+        a custom <code>ILanguageModel</code> gets &mdash; and what <code>RespAct</code>
+        always uses.
+      </figcaption>
+    </figure>
+
+    <p class="body" style="margin-top:26px">
+      <a class="btn btn-ghost" href="architecture.html">Read the architecture</a>
+    </p>
+  </div>
+</section>
+
 </main>
 
 <footer class="foot">
@@ -249,5 +373,7 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
 </footer>
 
 <script src="app.js"></script>
+<script src="diagrams.js"></script>
+<script src="highlight.js"></script>
 </body>
 </html>

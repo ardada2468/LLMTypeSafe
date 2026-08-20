@@ -1,91 +1,161 @@
 /*
- * Drives the hero validator: rows arrive, each is checked against its declared
- * type in turn, and the one that fails throws. Loops while on screen.
+ * Drives the hero rig.
  *
- * Reduced motion gets the finished state immediately and no loop — the point
- * of the figure is the failure, not the animation.
+ * It runs two takes, alternating, because one alone only tells half the story:
+ *
+ *   take 1  a well-formed reply  -> three typed values land in your hands
+ *   take 2  the same task, but the model answers "high" where a number was
+ *           declared -> ValidationError instead of a string wearing the wrong
+ *           type
+ *
+ * Showing only the failure would read as "this library reports errors". Showing
+ * only the success would read as "this library parses text". The pair is the
+ * actual proposition: you get typed values, and when you cannot, you are told.
  */
 (function () {
-  var fig = document.getElementById('validator');
-  var thrown = document.getElementById('throw');
-  if (!fig || !thrown) return;
+  var rig = document.getElementById('rig');
+  if (!rig) return;
 
-  var rows = Array.prototype.slice.call(fig.querySelectorAll('.row'));
+  var rowsEl = document.getElementById('rigRows');
+  var scan = document.getElementById('scan');
+  var stateEl = document.getElementById('rigState');
+  var footEl = document.getElementById('rigFoot');
+  var rows = [].slice.call(rig.querySelectorAll('.rrow'));
+
+  var TAKES = [
+    {
+      ok: true,
+      reply: ['answer: Paris', 'score: 0.92', 'sources: wiki, britannica'],
+      value: [
+        '<span class="q">"</span>Paris<span class="q">"</span>',
+        '<span class="n">0.92</span>',
+        '<span class="q">[</span>"wiki", "britannica"<span class="q">]</span>',
+      ],
+      bad: -1,
+      tag: 'Prediction',
+      msg: 'three fields, each the type you declared',
+    },
+    {
+      ok: false,
+      reply: ['answer: Paris', 'score: high', 'sources: wiki, britannica'],
+      value: [
+        '<span class="q">"</span>Paris<span class="q">"</span>',
+        'expected number',
+        '<span class="q">[</span>"wiki", "britannica"<span class="q">]</span>',
+      ],
+      bad: 1,
+      tag: 'ValidationError',
+      msg: 'score: expected number, received "high"',
+    },
+  ];
+
   var reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
   var timers = [];
   var running = false;
+  var take = 0;
 
-  function clearTimers() {
-    timers.forEach(clearTimeout);
-    timers = [];
-  }
-
-  function at(ms, fn) {
-    timers.push(setTimeout(fn, ms));
-  }
+  function clear() { timers.forEach(clearTimeout); timers = []; }
+  function at(ms, fn) { timers.push(setTimeout(fn, ms)); }
+  function say(s) { if (stateEl) stateEl.textContent = s; }
 
   function reset() {
-    rows.forEach(function (r) { r.classList.remove('in', 'checked'); });
-    thrown.classList.remove('on');
+    rig.classList.remove('live', 'ok', 'bad');
+    scan.classList.remove('sweep');
+    footEl.classList.remove('on', 'bad');
+    footEl.innerHTML = '';
+    rows.forEach(function (r) {
+      r.classList.remove('done', 'good', 'bad');
+      r.querySelector('.rout').textContent = '';
+      r.querySelector('.rout').classList.remove('typing');
+      r.querySelector('.rval').innerHTML = '';
+    });
+    say('idle');
   }
 
-  function settle() {
-    rows.forEach(function (r) { r.classList.add('in', 'checked'); });
-    thrown.classList.add('on');
+  function fill(t) {
+    rows.forEach(function (r, i) {
+      r.querySelector('.rout').textContent = t.reply[i];
+      r.querySelector('.rval').innerHTML = t.value[i];
+      r.classList.add('done', i === t.bad ? 'bad' : 'good');
+    });
+    footEl.innerHTML = '<span class="foot-tag">' + t.tag + '</span><span class="foot-msg">' + t.msg + '</span>';
+    footEl.classList.add('on');
+    footEl.classList.toggle('bad', !t.ok);
+    rig.classList.add(t.ok ? 'ok' : 'bad');
+    say(t.ok ? 'valid' : '1 invalid');
+  }
+
+  function settle() { clear(); reset(); fill(TAKES[1]); }
+
+  function type(t, i, done) {
+    if (i >= rows.length) { done(); return; }
+    var el = rows[i].querySelector('.rout');
+    var text = t.reply[i];
+    var n = 0;
+    el.classList.add('typing');
+    (function tick() {
+      n = Math.min(text.length, n + 2);
+      el.textContent = text.slice(0, n);
+      if (n < text.length) at(17, tick);
+      else { el.classList.remove('typing'); at(85, function () { type(t, i + 1, done); }); }
+    })();
   }
 
   function play() {
     if (running) return;
     running = true;
+
+    var t = TAKES[take % TAKES.length];
+    take++;
     reset();
 
-    var t = 260;
-    rows.forEach(function (row) {
-      at(t, function () { row.classList.add('in'); });
-      t += 190;
-    });
+    at(300, function () {
+      rig.classList.add('live');
+      say('streaming');
 
-    t += 320;
-    rows.forEach(function (row) {
-      at(t, function () { row.classList.add('checked'); });
-      t += 620;
-    });
+      type(t, 0, function () {
+        say('validating');
+        scan.style.setProperty('--sweep-to', rowsEl.getBoundingClientRect().height + 'px');
+        scan.classList.remove('sweep');
+        void scan.offsetWidth;
+        scan.classList.add('sweep');
 
-    at(t + 120, function () { thrown.classList.add('on'); });
+        rows.forEach(function (row, i) {
+          at(230 + i * 400, function () {
+            // The value column is the payoff — it lands as the sweep passes.
+            row.querySelector('.rval').innerHTML = t.value[i];
+            row.classList.add('done', i === t.bad ? 'bad' : 'good');
+          });
+        });
 
-    // hold the failed state long enough to read, then run it again
-    at(t + 4200, function () {
-      running = false;
-      play();
+        var end = 230 + rows.length * 400 + 110;
+        at(end, function () {
+          rig.classList.remove('live');
+          rig.classList.add(t.ok ? 'ok' : 'bad');
+          footEl.innerHTML = '<span class="foot-tag">' + t.tag + '</span><span class="foot-msg">' + t.msg + '</span>';
+          footEl.classList.add('on');
+          footEl.classList.toggle('bad', !t.ok);
+          say(t.ok ? 'valid' : '1 invalid');
+        });
+
+        at(end + 3800, function () { running = false; play(); });
+      });
     });
   }
 
-  function stop() {
-    clearTimers();
-    running = false;
-  }
-
-  function start() {
-    if (reduced.matches) { clearTimers(); settle(); return; }
-    play();
-  }
+  function stop() { clear(); running = false; }
+  function start() { if (reduced.matches) settle(); else play(); }
 
   var seen = new IntersectionObserver(function (entries) {
-    entries.forEach(function (entry) {
-      if (entry.isIntersecting) start();
-      else stop();
-    });
-  }, { threshold: 0.25 });
+    entries.forEach(function (e) { if (e.isIntersecting) start(); else stop(); });
+  }, { threshold: 0.3 });
+  seen.observe(rig);
 
-  seen.observe(fig);
-
-  // honour a mid-session change to the motion preference
   var onPref = function () { stop(); start(); };
   if (reduced.addEventListener) reduced.addEventListener('change', onPref);
   else if (reduced.addListener) reduced.addListener(onPref);
 
   document.addEventListener('visibilitychange', function () {
-    if (document.hidden) stop();
-    else if (!reduced.matches) start();
+    if (document.hidden) stop(); else if (!reduced.matches) { stop(); play(); }
   });
 })();
