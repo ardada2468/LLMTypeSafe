@@ -32,11 +32,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Deliberately no `registry-url`. It makes setup-node write an .npmrc
+      # containing `_authToken=${NODE_AUTH_TOKEN}` and default that variable to
+      # a placeholder, so npm authenticates with a dummy token and never falls
+      # back to OIDC — every publish then 404s. registry.npmjs.org is npm's
+      # default anyway, so nothing is lost by omitting it.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-          registry-url: https://registry.npmjs.org
 
       # Publishing uses npm trusted publishing (OIDC): npm mints a short-lived
       # credential from the runner's identity, so there is no NPM_TOKEN here and
@@ -47,6 +51,15 @@ jobs:
         run: |
           npm install -g npm@^11.5.1
           npm --version
+          # setup-node writes its .npmrc to NPM_CONFIG_USERCONFIG. If an
+          # _authToken line is there, npm authenticates with it and never tries
+          # OIDC, so the publish 404s. Fail here where the cause is obvious.
+          NPMRC="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          if [ -f "$NPMRC" ] && grep -q '_authToken' "$NPMRC"; then
+            echo "::error::$NPMRC configures an npm auth token; npm will use it instead of OIDC and the publish will 404. Remove registry-url from setup-node."
+            exit 1
+          fi
+          echo "No auth token configured - npm will use OIDC."
 
       - run: npm ci
       - run: npm run build
