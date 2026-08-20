@@ -1,5 +1,13 @@
 # @ts-dspy/core
 
+## 0.5.1
+
+### Patch Changes
+
+- bb1a1c1: Expand npm keywords so the packages surface for the searches people actually
+  run — `zod`, `json-schema`, `structured-outputs`, `validation`, `type-safe`,
+  `tool-calling`, and per-provider terms like `gpt`, `claude`, and `gemini-api`.
+
 ## 0.5.0
 
 ### Minor Changes
