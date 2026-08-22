@@ -76,4 +76,56 @@ describe('ChainOfThought', () => {
         expect(result.answer).toBe('Paris');
         expect(result.reasoning).toBe('some reasoning');
     });
+
+    describe('self-repair', () => {
+        it('retries the answering step without reasoning again', async () => {
+            class Scored extends Signature {
+                @OutputField({ description: 'score', type: 'number' })
+                score!: number;
+            }
+
+            const lm = new MockLM({
+                responses: ['reasoning', 'score: not-a-number', 'score: 0.4'],
+            });
+
+            const result = await new ChainOfThought(Scored, lm).forward(
+                {},
+                { repairAttempts: 1 }
+            );
+
+            expect(lm.calls).toHaveLength(3);
+            expect(result.score).toBe(0.4);
+            expect(result.reasoning).toBe('reasoning');
+        });
+
+        it('carries the reasoning into the repair prompt', async () => {
+            class Scored extends Signature {
+                @OutputField({ description: 'score', type: 'number' })
+                score!: number;
+            }
+
+            const lm = new MockLM({
+                responses: ['because of X', 'score: not-a-number', 'score: 0.4'],
+            });
+
+            await new ChainOfThought(Scored, lm).forward({}, { repairAttempts: 1 });
+
+            expect(lm.lastPrompt()).toContain('Reasoning: because of X');
+            expect(lm.lastPrompt()).toContain('score: expected number');
+        });
+
+        it('rethrows the ValidationError when repair is not requested', async () => {
+            class Scored extends Signature {
+                @OutputField({ description: 'score', type: 'number' })
+                score!: number;
+            }
+
+            const lm = new MockLM({ responses: ['reasoning', 'score: not-a-number'] });
+
+            await expect(new ChainOfThought(Scored, lm).forward({})).rejects.toThrow(
+                ValidationError
+            );
+            expect(lm.calls).toHaveLength(2);
+        });
+    });
 });

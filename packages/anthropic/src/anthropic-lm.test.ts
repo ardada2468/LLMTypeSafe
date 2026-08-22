@@ -1,4 +1,11 @@
-import { LMError } from '@ts-dspy/core';
+import {
+    AuthError,
+    ContentFilterError,
+    ContextLengthError,
+    LMError,
+    RateLimitError,
+    TimeoutError,
+} from '@ts-dspy/core';
 import {
     AnthropicLM,
     AnthropicRefusalError,
@@ -10,15 +17,31 @@ import {
 const mocks = vi.hoisted(() => {
     class MockAPIError extends Error {
         status: number;
-        constructor(status: number, message: string) {
+        // The real APIError lifts `error.type` out of the response body; it is
+        // the cleanest discriminator any of the three SDKs offers.
+        type: string | null;
+        constructor(status: number, message: string, type: string | null = null) {
             super(message);
             this.status = status;
+            this.type = type;
         }
     }
-    return { create: vi.fn(), stream: vi.fn(), MockAPIError };
+    // The real class extends APIConnectionError extends APIError, and carries
+    // neither a status nor a type.
+    class MockAPIConnectionTimeoutError extends MockAPIError {
+        constructor(message = 'Request timed out.') {
+            super(undefined as unknown as number, message);
+        }
+    }
+    return {
+        create: vi.fn(),
+        stream: vi.fn(),
+        MockAPIError,
+        MockAPIConnectionTimeoutError,
+    };
 });
 
-const { MockAPIError } = mocks;
+const { MockAPIError, MockAPIConnectionTimeoutError } = mocks;
 
 vi.mock('@anthropic-ai/sdk', () => ({
     default: class {
@@ -26,6 +49,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
         constructor(public options: unknown) {}
     },
     APIError: mocks.MockAPIError,
+    APIConnectionTimeoutError: mocks.MockAPIConnectionTimeoutError,
 }));
 
 function message(text: string, extra: Record<string, unknown> = {}) {
@@ -122,6 +146,21 @@ describe('AnthropicLM', () => {
                 AnthropicRefusalError
             );
         });
+
+        it('throws the shared ContentFilterError, which AnthropicRefusalError now aliases', async () => {
+            mocks.create.mockResolvedValue({
+                content: [],
+                stop_reason: 'refusal',
+                stop_details: { type: 'refusal', category: 'cyber' },
+                usage: { input_tokens: 5, output_tokens: 0 },
+            });
+
+            const error = await new AnthropicLM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
+
+            expect(error).toBeInstanceOf(ContentFilterError);
+            expect(AnthropicRefusalError).toBe(ContentFilterError);
+            expect(error.provider).toBe('anthropic');
+        });
     });
 
     describe('sampling parameters', () => {
@@ -161,6 +200,24 @@ describe('AnthropicLM', () => {
             });
 
             expect(mocks.create.mock.calls[0][1]).toEqual({ timeout: 3000, maxRetries: 4 });
+        });
+
+        it('forwards an abort signal to the SDK request options', async () => {
+            mocks.create.mockResolvedValue(message('ok'));
+            const controller = new AbortController();
+
+            await new AnthropicLM({ apiKey: 'k' }).generate('Hi', {
+                signal: controller.signal,
+            });
+
+            expect(mocks.create.mock.calls[0][1]).toEqual({ signal: controller.signal });
+        });
+
+        it('omits the signal when no cancellation is requested', async () => {
+            mocks.create.mockResolvedValue(message('ok'));
+            await new AnthropicLM({ apiKey: 'k' }).generate('Hi');
+
+            expect(mocks.create.mock.calls[0][1]).not.toHaveProperty('signal');
         });
     });
 
@@ -234,6 +291,26 @@ describe('AnthropicLM', () => {
                 done: true,
                 usage: { promptTokens: 14, completionTokens: 9, totalTokens: 23 },
             });
+        });
+
+        it('counts a refused stream exactly once', async () => {
+            // assertNotRefused records the error itself, and it used to sit
+            // inside the try, so the catch counted the same refusal twice.
+            mocks.stream.mockReturnValue({
+                async *[Symbol.asyncIterator]() {},
+                finalMessage: async () =>
+                    message('', { stop_reason: 'refusal', stop_details: null }),
+            });
+            const lm = new AnthropicLM({ apiKey: 'k' });
+
+            const consume = async () => {
+                for await (const _chunk of lm.generateStream('Hi')) {
+                    // drain
+                }
+            };
+
+            await expect(consume()).rejects.toBeInstanceOf(ContentFilterError);
+            expect(lm.getUsage().errorCount).toBe(1);
         });
 
         it('forwards tool-argument deltas and the assembled calls', async () => {
@@ -503,6 +580,74 @@ describe('AnthropicLM', () => {
 
             await expect(lm.generate('Hi')).rejects.toThrow();
             expect(lm.getUsage().errorCount).toBe(1);
+        });
+
+        it('classifies by the typed error union', async () => {
+            const lm = new AnthropicLM({ apiKey: 'k' });
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(429, 'rate limited', 'rate_limit_error')
+            );
+            const rateLimited = await lm.generate('Hi').catch((e) => e);
+            expect(rateLimited).toBeInstanceOf(RateLimitError);
+            // The new classes are still LMError, so old catch blocks hold.
+            expect(rateLimited).toBeInstanceOf(LMError);
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(401, 'bad key', 'authentication_error')
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(AuthError);
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(403, 'no access', 'permission_error')
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(AuthError);
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(408, 'took too long', 'timeout_error')
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(TimeoutError);
+        });
+
+        it('classifies a client-side timeout, which carries no status or type', async () => {
+            // `timeout_error` only covers a server-side gateway timeout, so a
+            // client timeout reached classify() with nothing to go on and came
+            // back as a plain LMError.
+            mocks.create.mockRejectedValue(new MockAPIConnectionTimeoutError());
+
+            const error = await new AnthropicLM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
+
+            expect(error).toBeInstanceOf(TimeoutError);
+            expect(error.status).toBeUndefined();
+        });
+
+        it('recognises an over-long prompt despite there being no context-length type', async () => {
+            const lm = new AnthropicLM({ apiKey: 'k' });
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(
+                    400,
+                    'prompt is too long: 250000 tokens > 200000 maximum',
+                    'invalid_request_error'
+                )
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(ContextLengthError);
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(400, 'max_tokens is required', 'invalid_request_error')
+            );
+            const other = await lm.generate('Hi').catch((e) => e);
+            expect(other).toBeInstanceOf(LMError);
+            expect(other).not.toBeInstanceOf(ContextLengthError);
+        });
+
+        it('leaves an unrecognised failure as a plain LMError', async () => {
+            mocks.create.mockRejectedValue(new MockAPIError(500, 'boom', 'api_error'));
+
+            const error = await new AnthropicLM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
+
+            expect(error.constructor.name).toBe('LMError');
+            expect(error.status).toBe(500);
         });
     });
 

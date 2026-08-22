@@ -1,6 +1,9 @@
 import {
     BaseLM,
+    ContentFilterError,
     LMError,
+    TimeoutError,
+    classify,
     type ChatMessage,
     type ChatResult,
     type FinishReason,
@@ -9,7 +12,7 @@ import {
     type StreamChunk,
     type ToolCall,
 } from '@ts-dspy/core';
-import OpenAI, { APIError } from 'openai';
+import OpenAI, { APIConnectionTimeoutError, APIError } from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 /**
@@ -95,6 +98,8 @@ export class OpenAILM extends BaseLM {
             });
 
             const choice = completion.choices[0];
+            assertNotFiltered(choice?.finish_reason);
+
             const toolCalls = fromOpenAIToolCalls(choice?.message?.tool_calls);
 
             return {
@@ -140,6 +145,8 @@ export class OpenAILM extends BaseLM {
             });
 
             const choice = completion.choices[0];
+            assertNotFiltered(choice?.finish_reason);
+
             if (choice?.finish_reason === 'length') {
                 throw new LMError(
                     'openai',
@@ -176,9 +183,11 @@ export class OpenAILM extends BaseLM {
     ): AsyncGenerator<StreamChunk, void, unknown> {
         const startedAt = Date.now();
 
-        let stream;
+        let promptTokens = 0;
+        let completionTokens = 0;
+
         try {
-            stream = await this.client.chat.completions.create(
+            const stream = await this.client.chat.completions.create(
                 {
                     model: options?.model ?? this.model,
                     messages: toOpenAIMessages(messages),
@@ -188,23 +197,26 @@ export class OpenAILM extends BaseLM {
                 },
                 requestOptions(options)
             );
+
+            // The loop is inside the try so a mid-stream abort surfaces as an
+            // LMError and is counted, rather than escaping as a raw SDK error.
+            for await (const chunk of stream) {
+                if (chunk.usage) {
+                    promptTokens = chunk.usage.prompt_tokens ?? 0;
+                    completionTokens = chunk.usage.completion_tokens ?? 0;
+                }
+                const choice = chunk.choices[0];
+                if (choice?.finish_reason === 'content_filter') {
+                    assertNotFiltered(choice.finish_reason);
+                }
+                const content = choice?.delta?.content;
+                if (content) {
+                    yield { content, done: false };
+                }
+            }
         } catch (error) {
             this.recordError();
             throw toLMError(error);
-        }
-
-        let promptTokens = 0;
-        let completionTokens = 0;
-
-        for await (const chunk of stream) {
-            if (chunk.usage) {
-                promptTokens = chunk.usage.prompt_tokens ?? 0;
-                completionTokens = chunk.usage.completion_tokens ?? 0;
-            }
-            const content = chunk.choices[0]?.delta?.content;
-            if (content) {
-                yield { content, done: false };
-            }
         }
 
         this.recordUsage({ promptTokens, completionTokens, latencyMs: Date.now() - startedAt });
@@ -396,17 +408,45 @@ function samplingParams(options?: LLMCallOptions): Record<string, unknown> {
 }
 
 /** Map ts-dspy call options onto the SDK's per-request options. */
-function requestOptions(options?: LLMCallOptions): { timeout?: number; maxRetries?: number } {
-    const request: { timeout?: number; maxRetries?: number } = {};
+function requestOptions(options?: LLMCallOptions): {
+    timeout?: number;
+    maxRetries?: number;
+    signal?: AbortSignal;
+} {
+    const request: { timeout?: number; maxRetries?: number; signal?: AbortSignal } = {};
     if (options?.timeout !== undefined) request.timeout = options.timeout;
     if (options?.retries !== undefined) request.maxRetries = options.retries;
+    if (options?.signal !== undefined) request.signal = options.signal;
     return request;
+}
+
+/**
+ * A filtered completion comes back as a normal 200 response whose only tell is
+ * `finish_reason: 'content_filter'`. The previous implementation checked only
+ * `'length'`, so a filtered reply was returned as an empty string in silence.
+ */
+function assertNotFiltered(finishReason: string | null | undefined): void {
+    if (finishReason !== 'content_filter') return;
+    throw new ContentFilterError('openai', 'Response was blocked by the content filter.', {
+        category: 'content_filter',
+    });
 }
 
 function toLMError(error: unknown): LMError {
     if (error instanceof LMError) return error;
+    // Checked before APIError: this is a subclass of it, and it carries no
+    // status of its own to classify by.
+    if (error instanceof APIConnectionTimeoutError) {
+        return new TimeoutError('openai', error.message, { cause: error });
+    }
     if (error instanceof APIError) {
-        return new LMError('openai', error.message, { cause: error, status: error.status });
+        // `code` is what separates a context-length 400 from any other 400.
+        const ErrorClass = classify(error.status, {
+            code: error.code,
+            type: error.type,
+            message: error.message,
+        });
+        return new ErrorClass('openai', error.message, { cause: error, status: error.status });
     }
     const message = error instanceof Error ? error.message : String(error);
     return new LMError('openai', message, { cause: error });

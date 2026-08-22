@@ -2,6 +2,11 @@ import { type TraceEntry } from '../types/module';
 
 export class Prediction<T = Record<string, any>> {
     private _data: T;
+    /**
+     * What the module did to produce this, when `configure({ tracing: true })`
+     * is set. A signature with an output field named `trace` shadows this —
+     * read `inspectHistory()` instead in that case.
+     */
     public trace?: TraceEntry;
 
     constructor(data: T, trace?: TraceEntry) {

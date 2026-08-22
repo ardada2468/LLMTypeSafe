@@ -64,6 +64,13 @@
       <li><a href="#testing">Testing</a></li>
       <li><a href="#api">API reference</a></li>
       <li><a href="#migration">Migrating to 0.5</a></li>
+      <li><a href="#tracing">Tracing &amp; history</a></li>
+      <li><a href="#caching">Caching</a></li>
+      <li><a href="#repair">Self-repair</a></li>
+      <li><a href="#batch">Batch &amp; concurrency</a></li>
+      <li><a href="#zod">Zod signatures</a></li>
+      <li><a href="#evaluate">Evaluation</a></li>
+      <li><a href="#optimizers">Few-shot &amp; optimizers</a></li>
     </ol>
   </nav>
 
@@ -205,6 +212,7 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
           <tr><td class="sym">string[]<br>array<br>list</td><td class="note">JSON arrays, or <code>"a, b, c"</code></td><td class="note">unparseable text</td></tr>
           <tr><td class="sym">number[]</td><td class="note"><code>[1,2]</code>, <code>"1, 2, 3"</code></td><td class="note">non-numeric members</td></tr>
           <tr><td class="sym">object<br>json</td><td class="note">JSON objects, fenced or bare</td><td class="note">invalid JSON</td></tr>
+          <tr><td class="sym">enum</td><td class="note">any declared member, trimmed and case-insensitive</td><td class="note">anything outside the set</td></tr>
         </tbody>
       </table>
     </div>
@@ -214,6 +222,85 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
       because models write <code>1,200</code> and <code>87%</code> when asked for a
       figure. That is a deliberate accommodation, not an accident &mdash; and it
       stops well short of guessing at prose.
+    </p>
+
+    <h3>Enums</h3>
+    <p>
+      A <code>string</code> field asked for a sentiment will accept
+      <code>euphoric</code> as readily as <code>positive</code>. An
+      <code>enum</code> field will not: it names the closed set, validates against
+      it, and &mdash; on providers with structured output &mdash; puts that set in
+      the schema, so the constraint reaches decoding rather than only the check
+      afterwards. Members are declared on <code>values</code>:
+    </p>
+    <pre class="code"><code><span class="kw">class</span> <span class="ty">Classify</span> <span class="kw">extends</span> <span class="ty">Signature</span> {
+  <span class="at">@InputField</span>({ description: <span class="s">'the review text'</span> })
+  review!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({
+    description: <span class="s">'overall sentiment'</span>,
+    type: <span class="s">'enum'</span>,
+    values: [<span class="s">'positive'</span>, <span class="s">'negative'</span>, <span class="s">'neutral'</span>],
+  })
+  sentiment!: <span class="ty">string</span>
+}</code></pre>
+    <p>
+      String signatures say the same thing inline. The members are separated by
+      <code>|</code> rather than <code>,</code>, because commas already separate
+      fields:
+    </p>
+    <pre class="code"><code><span class="kw">const</span> p = <span class="kw">new</span> Predict(<span class="s">'review -&gt; sentiment: enum(positive|negative|neutral)'</span>)</code></pre>
+    <p>
+      Matching is lenient in the same spirit as the other types &mdash;
+      <code>&nbsp;Positive&nbsp;</code> is the same answer as
+      <code>positive</code>, and the declared spelling is what you get back. A
+      value outside the set is a <code>ValidationError</code>, not a shrug. An
+      <code>enum</code> declared with no members throws immediately, since it would
+      constrain nothing, and so does a malformed inline declaration such as
+      <code>enum(a|b</code> &mdash; quietly falling back to an open string is the
+      one thing this type must never do.
+    </p>
+
+    <h3>Strict mode and open-ended types</h3>
+    <p>
+      OpenAI&rsquo;s <code>strict</code> structured output is stricter than JSON
+      Schema itself: every object in the document, nested ones included, must carry
+      <code>additionalProperties: false</code>, and <code>items</code> must be a
+      real schema rather than the empty <code>{}</code> that means &ldquo;any
+      element&rdquo;. Both open-ended types are emitted accordingly &mdash; an
+      <code>array</code> declares <code>items: { type: 'string' }</code>, and an
+      <code>object</code> declares an empty, closed object.
+    </p>
+    <div class="callout callout-warn">
+      <span class="label">Know this</span>
+      <p>
+        One schema is built per signature and handed to whichever provider is
+        configured, so the constraint lands everywhere, not only on OpenAI. Strict
+        mode cannot express a free-form object at all, which means a bare
+        <code>object</code> or <code>json</code> output field is pinned to
+        <code>{}</code> on <em>every</em> provider with structured output. Declare
+        the keys you actually want as their own signature fields. Only the text
+        path &mdash; a model reporting
+        <code>supportsStructuredOutput: false</code> &mdash; still accepts an
+        arbitrary object.
+      </p>
+    </div>
+    <p>
+      The array case has a milder version of the same edge. A bare
+      <code>array</code> or <code>list</code> now tells the provider its elements
+      are strings, so a list of figures comes back as <code>['1', '2']</code> rather
+      than <code>[1, 2]</code>. Declare <code>number[]</code> or
+      <code>string[]</code> whenever the elements have a type worth naming;
+      validation accepts either way, but only the declared form constrains what the
+      model may emit.
+    </p>
+    <p>
+      Optional fields are emitted as <code>type: [base, 'null']</code> rather than
+      being dropped from <code>required</code>. OpenAI documents that form, Anthropic
+      takes plain JSON Schema, and Gemini&rsquo;s <code>responseJsonSchema</code>
+      documents it too. Gemini&rsquo;s older <code>responseSchema</code> keyword
+      models nullability with a <code>nullable</code> boolean instead, so a provider
+      pinned to that older shape would have to translate.
     </p>
   </section>
 
@@ -372,9 +459,11 @@ console.log(out.answer, out.steps)</code></pre>
     <p class="anchor">07</p>
     <h2>Providers</h2>
     <p>
-      Each provider wraps its vendor's official SDK and reports
+      Each vendor provider wraps its vendor's official SDK and reports
       <code>supportsStructuredOutput: true</code>, so <code>Predict</code> uses the
       native JSON-schema mode rather than scraping labelled text.
+      <code>OpenAICompatibleLM</code> is the exception &mdash; it declares its
+      capabilities from config, because the endpoint behind it might be anything.
     </p>
 
     <h3>Anthropic</h3>
@@ -404,6 +493,66 @@ console.log(out.answer, out.steps)</code></pre>
     <p>
       Sampling parameters are sent only when you set them, so reasoning models
       that reject a non-default <code>temperature</code> work untouched.
+    </p>
+
+    <h3>OpenAI-compatible endpoints</h3>
+    <p>
+      Ollama, LM&nbsp;Studio, vLLM, Groq, Together, and OpenRouter all speak the
+      OpenAI chat-completions API, so <code>@ts-dspy/openai</code> already talks to
+      them &mdash; but the OpenAI defaults are wrong once you leave
+      <code>api.openai.com</code>. <code>OpenAICompatibleLM</code> corrects them:
+      <code>baseURL</code> and <code>model</code> are required, the API key
+      defaults to a placeholder for local servers that want the header but ignore
+      its value, and capabilities are declared rather than assumed.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { OpenAICompatibleLM } <span class="kw">from</span> <span class="s">'@ts-dspy/openai'</span>
+
+<span class="kw">new</span> OpenAICompatibleLM({
+  baseURL: <span class="s">'http://localhost:11434/v1'</span>,  <span class="c">// required</span>
+  model: <span class="s">'llama3.2'</span>,                      <span class="c">// required</span>
+  <span class="c">// apiKey defaults to a placeholder Ollama and LM Studio ignore</span>
+  supportsStructuredOutput: <span class="kw">false</span>,       <span class="c">// default</span>
+  maxContextLength: <span class="s">8192</span>,               <span class="c">// default</span>
+})</code></pre>
+    <p>
+      <code>supportsStructuredOutput</code> is the flag that matters.
+      <code>Predict</code> branches on it: left at OpenAI's <code>true</code>, every
+      call ships a <code>response_format: { type: 'json_schema', strict: true }</code>
+      that most compatible servers reject outright, and the provider looks broken
+      rather than merely unsupported. At <code>false</code>, structured output goes
+      through the prompt-based fallback and the reply is validated against the
+      signature exactly as before.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Endpoint</th><th scope="col"><code>baseURL</code></th><th scope="col">Key</th><th scope="col">Capabilities to set</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">Ollama</td><td class="path">http://localhost:11434/v1</td><td class="note">none</td><td class="note">Defaults. Raise <code>maxContextLength</code> to match the model.</td></tr>
+          <tr><td class="sym">LM Studio</td><td class="path">http://localhost:1234/v1</td><td class="note">none</td><td class="note">Defaults.</td></tr>
+          <tr><td class="sym">vLLM</td><td class="path">http://localhost:8000/v1</td><td class="note">none</td><td class="note"><code>supportsStructuredOutput: true</code> when guided decoding is enabled.</td></tr>
+          <tr><td class="sym">Groq</td><td class="path">https://api.groq.com/openai/v1</td><td class="note"><code>GROQ_API_KEY</code></td><td class="note"><code>supportsFunctionCalling: true</code> on the tool-capable models.</td></tr>
+          <tr><td class="sym">Together</td><td class="path">https://api.together.xyz/v1</td><td class="note"><code>TOGETHER_API_KEY</code></td><td class="note"><code>supportsStructuredOutput: true</code> on models listing JSON mode.</td></tr>
+          <tr><td class="sym">OpenRouter</td><td class="path">https://openrouter.ai/api/v1</td><td class="note"><code>OPENROUTER_API_KEY</code></td><td class="note">Per routed model &mdash; the safe default is to set nothing.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Those URLs are also exported as <code>OPENAI_COMPATIBLE_BASE_URLS</code>, keyed
+      <code>ollama</code>, <code>lmstudio</code>, <code>vllm</code>,
+      <code>groq</code>, <code>together</code>, and <code>openrouter</code>. The
+      runnable version is <code>examples/ollama-local.ts</code>:
+    </p>
+    <pre class="code" data-lang="bash"><code>ollama serve      <span class="c"># leave running</span>
+ollama pull llama3.2
+npm run example:ollama</code></pre>
+    <p>
+      Note that <code>OPENAI_API_KEY</code> is deliberately <em>not</em> read from
+      the environment here, unlike <code>OpenAILM</code>. <code>baseURL</code> is by
+      definition somewhere other than <code>api.openai.com</code>, so forwarding an
+      OpenAI credential to it would be a leak rather than a convenience &mdash; pass
+      the endpoint's own key as <code>apiKey</code>.
     </p>
 
     <h3>Gemini</h3>
@@ -466,7 +615,7 @@ console.log(out.answer, out.steps)</code></pre>
         <thead><tr><th scope="col">Error</th><th scope="col">Means</th><th scope="col">Carries</th></tr></thead>
         <tbody>
           <tr><td class="sym">ValidationError</td><td class="note">The reply did not match the signature.</td><td class="note"><code>issues[]</code>, <code>rawOutput</code></td></tr>
-          <tr><td class="sym">LMError</td><td class="note">The provider call itself failed.</td><td class="note"><code>cause</code>, <code>provider</code></td></tr>
+          <tr><td class="sym">LMError</td><td class="note">The provider call itself failed.</td><td class="note"><code>cause</code>, <code>provider</code>, <code>status</code></td></tr>
           <tr><td class="sym">TsDspyError</td><td class="note">Base class for both.</td><td class="note">&mdash;</td></tr>
         </tbody>
       </table>
@@ -477,16 +626,173 @@ console.log(out.answer, out.steps)</code></pre>
       description is the lever: <code>'urgency from 0 to 1'</code> gets a number far
       more reliably than <code>'urgency'</code>.
     </p>
+
+    <h3>The error taxonomy</h3>
+    <p>
+      A failed provider call throws something more specific than
+      <code>LMError</code> whenever the SDK gives us enough to tell &mdash; so
+      retry logic is a <code>catch</code> on a class, not a sniff at an HTTP
+      status number. Every one of these still extends <code>LMError</code>, so
+      existing handlers keep working unchanged.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Error</th><th scope="col">Thrown when</th><th scope="col">What each provider gives us</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="sym">RateLimitError</td>
+            <td class="note">A rate or quota limit was hit. Retry after a backoff.</td>
+            <td class="note">OpenAI 429; Anthropic <code>rate_limit_error</code>; Gemini 429.</td>
+          </tr>
+          <tr>
+            <td class="sym">AuthError</td>
+            <td class="note">The key is missing, wrong, or not entitled to the model. Retrying will not help.</td>
+            <td class="note">OpenAI 401/403; Anthropic <code>authentication_error</code> or <code>permission_error</code>; Gemini 401/403.</td>
+          </tr>
+          <tr>
+            <td class="sym">ContextLengthError</td>
+            <td class="note">The prompt did not fit the context window. Shorten it or move to a larger model.</td>
+            <td class="note">OpenAI <code>code: 'context_length_exceeded'</code> on a 400 &mdash; the only dependable signal. Anthropic has no such type, and Gemini has no code at all, so both fall back to matching the message on a 400.</td>
+          </tr>
+          <tr>
+            <td class="sym">ContentFilterError</td>
+            <td class="note">Safety classifiers declined the request or the reply. Carries <code>category</code> where one is reported.</td>
+            <td class="note">Not an SDK error at all &mdash; see below.</td>
+          </tr>
+          <tr>
+            <td class="sym">TimeoutError</td>
+            <td class="note">The request timed out before a reply arrived.</td>
+            <td class="note">OpenAI <code>APIConnectionTimeoutError</code>, which carries no status; Anthropic <code>timeout_error</code>; any 408.</td>
+          </tr>
+          <tr>
+            <td class="sym">LMError</td>
+            <td class="note">Anything else &mdash; a 500, a dropped connection, an unrecognised 400.</td>
+            <td class="note">The status, when the SDK reported one, plus <code>cause</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre class="code"><code><span class="kw">import</span> { RateLimitError, ContextLengthError, LMError } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">try</span> {
+  <span class="kw">return</span> <span class="kw">await</span> triage.forward({ ticket })
+} <span class="kw">catch</span> (err) {
+  <span class="kw">if</span> (err <span class="kw">instanceof</span> RateLimitError) <span class="kw">return</span> queue.retryLater(ticket)
+  <span class="kw">if</span> (err <span class="kw">instanceof</span> ContextLengthError) <span class="kw">return</span> triage.forward({ ticket: truncate(ticket) })
+  <span class="kw">if</span> (err <span class="kw">instanceof</span> LMError) log.error(err.provider, err.status, err.cause)
+  <span class="kw">throw</span> err
+}</code></pre>
+
+    <h3>Content filtering is a 200</h3>
+    <p>
+      None of the three providers throws when a reply is filtered &mdash; all
+      three answer <code>200 OK</code> and leave a marker in the body. Anthropic
+      sets <code>stop_reason: 'refusal'</code>, Gemini sets
+      <code>promptFeedback.blockReason</code> or
+      <code>finishReason: 'SAFETY'</code>, and OpenAI sets
+      <code>finish_reason: 'content_filter'</code>. Each provider inspects the
+      response and raises <code>ContentFilterError</code>, so a declined request
+      never comes back to you as a silently empty string.
+    </p>
+    <p>
+      <code>AnthropicRefusalError</code> was the older, Anthropic-only name for
+      this. It is now a deprecated alias of <code>ContentFilterError</code>
+      &mdash; an alias of that class, not a subclass of it, so an
+      <code>instanceof</code> check under the old name now matches an OpenAI or
+      Gemini filter too. Test <code>err.provider === 'anthropic'</code> if you
+      need to tell them apart, and prefer the new name.
+    </p>
   </section>
 
   <section id="streaming">
     <p class="anchor">09</p>
     <h2>Streaming</h2>
     <p>
-      All three providers stream. Streaming bypasses signature validation by
-      design &mdash; you are consuming tokens as they arrive, before there is a
-      complete reply to check &mdash; so use it for display, and use a module when
-      you need the parsed object.
+      There are two levels. A module streams <em>fields</em>, so a value fills in
+      as its tokens arrive and is still validated at the end; a provider streams
+      <em>tokens</em>, which is raw text and validates nothing.
+    </p>
+
+    <h3>Streaming a module</h3>
+    <p>
+      <code>stream()</code> runs the same prediction as <code>forward()</code>.
+      Every yield is a snapshot of the output fields parsed so far, so the object
+      you render grows rather than appearing all at once.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> qa = <span class="kw">new</span> Predict(AnswerQuestion)
+
+<span class="kw">for</span> <span class="kw">await</span> (<span class="kw">const</span> partial <span class="kw">of</span> qa.stream({ question })) {
+  render(partial.answer)  <span class="c">// 'Par' &rarr; 'Paris' &rarr; 'Paris, France'</span>
+}</code></pre>
+    <p>
+      The <strong>last yield</strong> is the complete output, validated against
+      the signature exactly as <code>forward()</code> validates it &mdash; a stream
+      that ends in something the signature rejects still throws a
+      <code>ValidationError</code>, from the final pull. Streaming is not an
+      opt-out from the runtime checks. The generator's <strong>return value</strong>
+      is the <code>Prediction</code> wrapper, which <code>for await</code> discards;
+      reach it by driving the iterator yourself.
+    </p>
+    <p>
+      Only that last snapshot is guaranteed to match the declared types. Coercion
+      belongs to validation, so a field declared <code>number</code> may still be
+      the raw <code>'0.'</code> the model is part-way through writing &mdash; which
+      is why a snapshot is typed as <code>PartialOutput&lt;T&gt;</code>, every field
+      optional and possibly still a string.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> stream = qa.stream({ question }, { signal: controller.signal })
+
+<span class="kw">let</span> step = <span class="kw">await</span> stream.next()
+<span class="kw">while</span> (!step.done) {
+  render(step.value.answer)
+  step = <span class="kw">await</span> stream.next()
+}
+
+step.value.confidence  <span class="c">// the validated Prediction</span></code></pre>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Situation</th><th scope="col">Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">Native structured output</td><td class="note">Streams JSON, read by an incremental parser.</td></tr>
+          <tr><td class="sym">No structured output</td><td class="note">Streams labelled text, read by the usual heuristics.</td></tr>
+          <tr><td class="sym">supportsStreaming: false<br>or no chatStream</td><td class="note">One ordinary call, yielded once. It does not throw.</td></tr>
+          <tr><td class="sym">break</td><td class="note">Closes the provider's stream; nothing is left open.</td></tr>
+          <tr><td class="sym">signal</td><td class="note">Cancels the stream, which rejects with the signal's reason.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <code>ChainOfThought</code> streams too. The reasoning step has to finish
+      before the answer step can start, so nothing is yielded until it has; from
+      then on every snapshot carries the finished <code>reasoning</code> alongside
+      the fields filling in.
+    </p>
+
+    <h3>Reading truncated JSON</h3>
+    <p>
+      The parser behind the structured path is exported, dependency-free and
+      pure. Give it a JSON document cut off anywhere &mdash; mid-string, mid-key,
+      after a trailing comma, halfway through an escape &mdash; and it returns the
+      fields that are unambiguously there, without throwing. A number or keyword
+      cut off at the end is dropped, because <code>1</code> may still become
+      <code>12</code>.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { parsePartialJson } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+parsePartialJson(<span class="s">'{"answer": "Par'</span>)              <span class="c">// { answer: 'Par' }</span>
+parsePartialJson(<span class="s">'{"a": 1, "b": 2,'</span>)             <span class="c">// { a: 1, b: 2 }</span>
+parsePartialJson(<span class="s">'{"a": "he said \\"hi'</span>)         <span class="c">// { a: 'he said "hi' }</span>
+parsePartialJson(<span class="s">'{"score": 0.9'</span>)                <span class="c">// {} &mdash; 0.9 may become 0.95</span></code></pre>
+
+    <h3>Streaming a provider</h3>
+    <p>
+      One level down, all three providers yield raw chunks. This path bypasses
+      signature validation by design &mdash; you are consuming tokens before there
+      is a complete reply to check &mdash; so use it for display, and use a module
+      when you need the parsed object.
     </p>
     <pre class="code"><code><span class="kw">const</span> lm = <span class="kw">new</span> AnthropicLM({ apiKey })
 
@@ -501,9 +807,9 @@ console.log(out.answer, out.steps)</code></pre>
     <h2>Timeouts and retries</h2>
     <p>
       <code>LLMCallOptions</code> flows from a module through to the provider SDK,
-      which owns retries and honours <code>retry-after</code>. There is no
-      hand-rolled backoff in this library, so you never get two retry loops
-      fighting each other.
+      which owns retries and honours <code>retry-after</code>. There is no second
+      retry layer stacked on top, so you never get two loops fighting each other
+      &mdash; with one documented exception on Gemini, below.
     </p>
     <pre class="code"><code><span class="kw">const</span> out = <span class="kw">await</span> triage.forward(
   { ticket },
@@ -514,13 +820,74 @@ console.log(out.answer, out.steps)</code></pre>
       <table>
         <thead><tr><th scope="col">Option</th><th scope="col">Effect</th></tr></thead>
         <tbody>
-          <tr><td class="sym">timeout</td><td class="note">Per-request deadline in milliseconds.</td></tr>
-          <tr><td class="sym">retries</td><td class="note">Passed to the SDK's own retry policy.</td></tr>
+          <tr><td class="sym">timeout</td><td class="note">Deadline in milliseconds. It bounds each attempt, so a retried call gets a fresh one.</td></tr>
+          <tr><td class="sym">retries</td><td class="note">Passed to the SDK's own retry policy. Defaults to 2 on all three providers.</td></tr>
+          <tr><td class="sym">signal</td><td class="note">An <code>AbortSignal</code> that cancels the call in flight.</td></tr>
           <tr><td class="sym">maxTokens</td><td class="note">Output cap for the call.</td></tr>
           <tr><td class="sym">temperature<br>topP</td><td class="note">Sent only when set, so reasoning models are unaffected.</td></tr>
           <tr><td class="sym">model</td><td class="note">Override the provider's model for one call.</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <h3>Cancellation</h3>
+    <p>
+      A timeout ends a call that is taking too long. <code>signal</code> ends one
+      whose answer nobody is waiting for any more &mdash; a React component that
+      unmounted, a server request whose client hung up. Pass any
+      <code>AbortSignal</code> and the call rejects the moment it aborts, instead of
+      running on to a reply that gets thrown away.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> controller = <span class="kw">new</span> AbortController()
+<span class="c">// React: return () =&gt; controller.abort() from the effect.</span>
+
+<span class="kw">const</span> out = <span class="kw">await</span> triage.forward(
+  { ticket },
+  { signal: controller.signal, timeout: <span class="s">30_000</span> }
+)</code></pre>
+
+    <p>
+      <code>signal</code> and <code>timeout</code> compose: pass both and whichever
+      fires first ends the call. OpenAI and Anthropic hand each to the SDK
+      separately; Gemini exposes a single <code>abortSignal</code> slot, so ts-dspy
+      folds the two into one with <code>AbortSignal.any()</code>, freshly per
+      request.
+    </p>
+
+    <div class="callout">
+      <span class="label">One controller per unit of work</span>
+      <p>
+        The signal is read when the request goes out, and aborting a controller
+        aborts every call still attached to it. That is exactly what you want for
+        a screen full of parallel calls, and exactly what you do not want when
+        one retry should outlive an earlier cancellation &mdash; make a fresh
+        <code>AbortController</code> for each piece of work you might cancel
+        independently.
+      </p>
+    </div>
+
+    <h3>Provider defaults</h3>
+    <p>
+      The same two knobs are available at construction on all three providers, and
+      per-call options override them. <code>GeminiLM</code> accepted neither before
+      v0.6, and ignored <code>retries</code> on the call options as well.
+    </p>
+    <pre class="code"><code><span class="kw">new</span> OpenAILM({ apiKey, timeout: <span class="s">20_000</span>, maxRetries: <span class="s">2</span> })
+<span class="kw">new</span> AnthropicLM({ apiKey, timeout: <span class="s">20_000</span>, maxRetries: <span class="s">2</span> })
+<span class="kw">new</span> GeminiLM({ apiKey, timeout: <span class="s">20_000</span>, maxRetries: <span class="s">2</span> })</code></pre>
+
+    <div class="callout callout-warn">
+      <span class="label">Gemini is the exception</span>
+      <p>
+        <code>@google/genai</code> reads its retry policy from client-level options
+        only, so a per-call <code>retries</code> cannot be expressed through it &mdash;
+        and its retry wrapper replaces API errors with generic ones, losing the
+        status code, and keeps retrying after an abort. The Gemini provider
+        therefore runs the loop itself: exponential backoff on 408/409/429/5xx and
+        network failures, never on an abort or a client error. It is the one place
+        ts-dspy does not simply hand retries to the SDK, and it exists so
+        <code>retries: 2</code> means the same thing on all three providers.
+      </p>
     </div>
 
     <h3>Usage accounting</h3>
@@ -539,13 +906,94 @@ lm.resetUsage()</code></pre>
     <h2>Testing</h2>
     <p>
       Modules take a language model, so a test needs no network and no API key.
-      Implement <code>ILanguageModel</code>, or extend <code>BaseLM</code> for the
-      shared plumbing.
+      The doubles ts-dspy tests itself with ship alongside it, under the
+      <code>@ts-dspy/core/testing</code> subpath &mdash; a separate entry point, so
+      nothing in it is pulled into your production bundle.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { MockLM, CassetteLM } <span class="kw">from</span> <span class="s">'@ts-dspy/core/testing'</span></code></pre>
+
+    <h3>Scripted replies</h3>
+    <p>
+      <code>MockLM</code> answers with the strings you hand it, in order, and
+      records every call it received &mdash; including the prompt the module built,
+      which is usually the part worth asserting on.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { MockLM } <span class="kw">from</span> <span class="s">'@ts-dspy/core/testing'</span>
+
+it(<span class="s">'asks about the ticket it was handed'</span>, <span class="kw">async</span> () =&gt; {
+  <span class="kw">const</span> lm = <span class="kw">new</span> MockLM({ responses: [<span class="s">'category: bug\nurgency: 3'</span>] })
+
+  <span class="kw">const</span> result = <span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket, lm).forward({ ticket: <span class="s">'login broken'</span> })
+
+  expect(result.urgency).toBe(<span class="s">3</span>)
+  expect(lm.lastPrompt()).toContain(<span class="s">'login broken'</span>)
+})</code></pre>
+    <p>
+      Pass <code>structuredResponses</code> alongside
+      <code>capabilities: { supportsStructuredOutput: true }</code> to exercise the
+      native structured-output path instead, and read <code>lm.calls</code> or
+      <code>lm.structuredCalls</code> for the options each call carried.
+      <code>chatStream</code> and <code>generateStream</code> replay the same
+      scripted text in chunks.
+    </p>
+
+    <h3>Cassettes</h3>
+    <p>
+      A cassette records real provider replies once and replays them ever after.
+      Capture them with a key on your own machine, commit the file, and CI runs the
+      same test with no key, no network, and no flake.
+    </p>
+    <pre class="code"><code><span class="c">// Once, against the real provider:</span>
+<span class="kw">const</span> recorder = CassetteLM.record(<span class="s">'cassettes/triage.json'</span>, <span class="kw">new</span> OpenAILM({ apiKey }))
+<span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket, recorder).forward({ ticket: <span class="s">'login broken'</span> })
+
+<span class="c">// Everywhere else, ever after:</span>
+<span class="kw">const</span> lm = CassetteLM.replay(<span class="s">'cassettes/triage.json'</span>)</code></pre>
+    <p>
+      What it writes is a plain array of entries, each keyed by a hash of its
+      request, so a changed prompt reviews as a readable diff rather than an opaque
+      blob.
+    </p>
+    <pre class="code" data-lang="json"><code>[
+  {
+    <span class="s">"key"</span>: <span class="s">"6f1c3b0a9e7d5241"</span>,
+    <span class="s">"request"</span>: {
+      <span class="s">"kind"</span>: <span class="s">"chat"</span>,
+      <span class="s">"model"</span>: <span class="s">"gpt-4o-mini"</span>,
+      <span class="s">"messages"</span>: [{ <span class="s">"role"</span>: <span class="s">"user"</span>, <span class="s">"content"</span>: <span class="s">"Ticket: login broken\n..."</span> }],
+      <span class="s">"options"</span>: { <span class="s">"temperature"</span>: <span class="s">0</span> }
+    },
+    <span class="s">"response"</span>: <span class="s">"category: bug\nurgency: 3"</span>
+  }
+]</code></pre>
+    <p>
+      The key covers the messages, the model name, and the sampling options that
+      change a reply. <code>timeout</code> and <code>retries</code> are left out, so
+      re-running a test with a longer deadline still hits the recording. Identical
+      requests replay in the order they were recorded, and an unrecorded one fails
+      loudly rather than calling out.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Mode</th><th scope="col">Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">replay</td><td class="note">The default, and what CI runs. Never calls a live model; a miss throws <code>LMError</code>.</td></tr>
+          <tr><td class="sym">record</td><td class="note">Calls the wrapped model for everything and rewrites the file from scratch.</td></tr>
+          <tr><td class="sym">auto</td><td class="note">Replays what the file holds, calls the wrapped model for the rest and appends it.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Rolling your own</h3>
+    <p>
+      Anything implementing <code>ILanguageModel</code> will do; extend
+      <code>BaseLM</code> to inherit the usage accounting and the structured-output
+      fallback.
     </p>
     <pre class="code"><code><span class="kw">import</span> { BaseLM, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
 
 <span class="kw">class</span> <span class="ty">StubLM</span> <span class="kw">extends</span> <span class="ty">BaseLM</span> {
-  <span class="kw">constructor</span>(<span class="kw">private</span> reply: <span class="ty">string</span>) { <span class="kw">super</span>({ model: <span class="s">'stub'</span> }) }
+  <span class="kw">constructor</span>(<span class="kw">private</span> reply: <span class="ty">string</span>) { <span class="kw">super</span>(<span class="s">'stub'</span>, <span class="s">'stub-model'</span>) }
   <span class="kw">async</span> chat() { <span class="kw">return</span> <span class="kw">this</span>.reply }
   getCapabilities() {
     <span class="kw">return</span> { supportsStructuredOutput: <span class="kw">false</span>, supportsStreaming: <span class="kw">false</span>,
@@ -658,6 +1106,795 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
         0.5.0 fixed &mdash; 0.4.2 shipped providers that resolved a stale core.
       </p>
     </div>
+  </section>
+
+  <section id="tracing">
+    <p class="anchor">14</p>
+    <h2>Tracing and history</h2>
+    <p>
+      When a signature misbehaves the first question is always the same: what
+      prompt did it actually send? Turn tracing on and every module invocation
+      records one &mdash; the prompt, the raw reply, what was parsed out of it,
+      the tokens it cost, and how long it took.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { configure, inspectHistory, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+configure({ lm, tracing: <span class="kw">true</span> })
+
+<span class="kw">const</span> out = <span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket).forward({ ticket })
+
+out.trace?.rawLMInput    <span class="c">// the prompt as sent</span>
+out.trace?.rawLMOutput   <span class="c">// the reply, before parsing</span>
+out.trace?.usage         <span class="c">// tokens for this call, not the model's lifetime</span></code></pre>
+    <p>
+      The same entries land in a ring buffer, so you can read them after the
+      fact &mdash; including from a <code>catch</code> block, where the prediction
+      you would have inspected does not exist.
+    </p>
+    <pre class="code"><code><span class="kw">try</span> {
+  <span class="kw">await</span> triage.forward({ ticket })
+} <span class="kw">catch</span> (error) {
+  <span class="kw">const</span> [failed] = inspectHistory(<span class="s">1</span>)
+  console.error(failed.rawLMInput, <span class="s">'\n---\n'</span>, failed.rawLMOutput)
+}</code></pre>
+    <p>
+      <code>inspectHistory(n)</code> returns the last <code>n</code> entries,
+      oldest first; omit <code>n</code> for everything still retained. The buffer
+      holds 100 entries by default &mdash; raise or lower it with
+      <code>traceHistorySize</code> &mdash; and <code>clearHistory()</code> empties
+      it, which is what you want between tests.
+    </p>
+
+    <h3>What an entry holds</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Field</th><th scope="col">Contents</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">moduleId</td><td class="note">Which instance ran, e.g. <code>ChainOfThought#2</code>.</td></tr>
+          <tr><td class="sym">input<br>output</td><td class="note">Arguments in, parsed fields out. <code>output</code> is empty on failure.</td></tr>
+          <tr><td class="sym">rawLMInput<br>rawLMOutput</td><td class="note">The last call &mdash; the one that produced <code>output</code>.</td></tr>
+          <tr><td class="sym">calls</td><td class="note">Every round trip, in order, each with its own prompt, reply, duration, and usage.</td></tr>
+          <tr><td class="sym">usage</td><td class="note">Tokens for this invocation, differenced from the model's running totals. Exact for sequential calls; approximate when several run concurrently against one model.</td></tr>
+          <tr><td class="sym">duration<br>timestamp</td><td class="note">Milliseconds elapsed, and when it started.</td></tr>
+          <tr><td class="sym">error</td><td class="note">Set when the invocation threw instead of returning.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <code>ChainOfThought</code> makes two calls and <code>RespAct</code> makes
+      one per step, so <code>calls</code> is where a multi-step module becomes
+      readable. Failures are recorded too &mdash; a <code>ValidationError</code> is
+      precisely when the prompt is worth reading.
+    </p>
+
+    <h3>Forwarding entries</h3>
+    <p>
+      <code>onTrace</code> receives each entry as it is recorded. Send them to
+      Langfuse, an OpenTelemetry span, or your own logger; the library itself
+      never prints.
+    </p>
+    <pre class="code"><code>configure({
+  lm,
+  tracing: <span class="kw">true</span>,
+  onTrace: (entry) =&gt; span.addEvent(<span class="s">'lm.call'</span>, {
+    module: entry.moduleId,
+    tokens: entry.usage.totalTokens,
+    ms: entry.duration,
+  }),
+})</code></pre>
+    <div class="callout">
+      <span class="label">Off by default</span>
+      <p>
+        Tracing costs one boolean check while it is off &mdash; nothing is timed,
+        copied, or retained. A handler that throws is swallowed, so a broken
+        exporter cannot fail the run it is instrumenting.
+      </p>
+    </div>
+  </section>
+
+  <section id="caching">
+    <p class="anchor">15</p>
+    <h2>Caching</h2>
+    <p>
+      Repeated prompts are the common case &mdash; a test suite re-running the same
+      example, an optimiser sweeping a signature, a retry loop that re-asks a
+      question it already asked. <code>configure({ cache: true })</code> replays the
+      previous answer instead of paying for it again.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { configure, MemoryCache } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="c">// Process-wide LRU, 1000 entries.</span>
+configure({ cache: <span class="kw">true</span> })
+
+<span class="c">// Or size it yourself.</span>
+configure({ cache: <span class="kw">new</span> MemoryCache({ maxSize: 10_000 }) })</code></pre>
+
+    <div class="callout callout-warn">
+      <span class="label">Off by default</span>
+      <p>
+        Caching is opt-in. A cache that replays an old answer for a repeated
+        prompt changes what a program does &mdash; sampling stops varying, an agent
+        loop stops exploring &mdash; so it is never switched on behind your back.
+      </p>
+    </div>
+
+    <h3>What goes into a key</h3>
+    <p>
+      <code>generate</code>, <code>chat</code>, and <code>generateStructured</code> are
+      all cached, for every provider, because the wrapping lives in
+      <code>BaseLM</code>. The key is a SHA-256 hash of everything that can change
+      the answer.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">In the key</th><th scope="col">Not in the key</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="note">Provider and model, including a per-call <code>model</code> override</td>
+            <td class="note"><code>timeout</code> and <code>retries</code> &mdash; transport, not content</td>
+          </tr>
+          <tr>
+            <td class="note">The prompt, or every message with its role</td>
+            <td class="note"><code>metadata</code>, which the provider does not see</td>
+          </tr>
+          <tr>
+            <td class="note"><code>temperature</code>, <code>topP</code>, <code>maxTokens</code>, <code>stopSequences</code>, <code>frequencyPenalty</code>, <code>presencePenalty</code></td>
+            <td class="note">&mdash;</td>
+          </tr>
+          <tr>
+            <td class="note">The JSON schema for a structured call, with keys sorted so property order does not split an entry</td>
+            <td class="note">&mdash;</td>
+          </tr>
+          <tr>
+            <td class="note">Whatever the provider returns from <code>cacheScope()</code></td>
+            <td class="note">&mdash;</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Prompts and schemas run to tens of kilobytes, so the canonical form is
+      hashed rather than stored. Errors are never cached: a transient 429 must
+      not pin a failure to a prompt for the life of the process.
+    </p>
+    <p>
+      Provider and model alone do not identify a request. A client built with a
+      default <code>maxTokens</code>, non-default safety settings, or a
+      <code>baseURL</code> pointing at a proxy answers the same prompt
+      differently, so a custom provider extending <code>BaseLM</code> should
+      return those options from <code>cacheScope()</code> and keep its entries
+      apart from a differently configured sibling.
+    </p>
+
+    <h3>Usage accounting</h3>
+    <p>
+      A cache hit costs nothing, and <code>getUsage()</code> says so. Hits land in a
+      new <code>cacheHits</code> counter and are kept out of <code>requestCount</code>
+      and the token totals, so a figure you multiply by a published price still
+      reflects real provider traffic.
+    </p>
+    <pre class="code"><code>configure({ cache: <span class="kw">true</span> })
+
+<span class="kw">await</span> lm.generate(<span class="s">'Capital of France?'</span>)
+<span class="kw">await</span> lm.generate(<span class="s">'Capital of France?'</span>)
+
+lm.getUsage()
+<span class="c">// { requestCount: 1, cacheHits: 1, promptTokens: 10, completionTokens: 5, ... }</span></code></pre>
+
+    <h3>Bring your own store</h3>
+    <p>
+      <code>cache</code> accepts an implementation as well as a boolean. Both methods
+      may be async, so Redis, SQLite, or a directory of files fits without a
+      wrapper &mdash; useful when the cache should outlive the process or be shared
+      across workers.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { configure, <span class="kw">type</span> <span class="ty">Cache</span> } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> redisCache: <span class="ty">Cache</span> = {
+  <span class="kw">async</span> get(key) {
+    <span class="kw">const</span> hit = <span class="kw">await</span> redis.get(key)
+    <span class="kw">return</span> hit === <span class="kw">null</span> ? <span class="kw">undefined</span> : JSON.parse(hit)
+  },
+  <span class="kw">async</span> set(key, value) {
+    <span class="kw">await</span> redis.set(key, JSON.stringify(value), { EX: 86_400 })
+  },
+}
+
+configure({ cache: redisCache })</code></pre>
+
+    <div class="callout">
+      <span class="label">Contract</span>
+      <p>
+        <code>get</code> resolves to <code>undefined</code> for a key that was never
+        written, and <code>null</code> counts as a miss too, since that is what a
+        Redis client returns for an absent key. Cached values are model
+        responses, which are never either, so a miss cannot be mistaken for a
+        hit. An optional <code>clear()</code> backs <code>clearCache()</code>
+        &mdash; handy between test cases, since the built-in cache is
+        process-wide.
+      </p>
+    </div>
+  </section>
+
+  <section id="repair">
+    <p class="anchor">16</p>
+    <h2>Self-repair</h2>
+    <p>
+      A model that fails validation has usually understood the task and merely
+      fumbled the shape &mdash; a number written as <code>"very high"</code>, a
+      required field left off the end. Set <code>repairAttempts</code> and
+      ts-dspy spends that many extra round-trips telling the model exactly what
+      went wrong before it gives up.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> qa = <span class="kw">new</span> Predict(AnswerQuestion, lm)
+
+<span class="c">// One extra round-trip if the first response fails validation.</span>
+<span class="kw">const</span> result = <span class="kw">await</span> qa.forward(
+  { question: <span class="s">'Capital of France?'</span> },
+  { repairAttempts: <span class="s">1</span> }
+)</code></pre>
+    <p>
+      The default is <code>0</code>, so behaviour is unchanged unless you ask for
+      repair. Once the attempts are spent the last <code>ValidationError</code> is
+      rethrown, carrying the usual <code>issues</code> and <code>rawOutput</code>.
+    </p>
+
+    <h3>What the model is told</h3>
+    <p>
+      The follow-up prompt names every failing field with its declared type and
+      the value that actually arrived, so the correction is specific rather than a
+      bare &ldquo;try again&rdquo;. For a <code>confidence</code> field declared
+      <code>number</code> that came back as prose, the model is sent:
+    </p>
+    <pre class="code"><code><span class="c">// Your previous response failed validation for: confidence.</span>
+<span class="c">//   - confidence: expected number, received "very high"</span>
+<span class="c">//</span>
+<span class="c">// Previous response:</span>
+<span class="c">// answer: Paris</span>
+<span class="c">// confidence: very high</span>
+<span class="c">//</span>
+<span class="c">// Reply again with every required field on its own "field: value" line,</span>
+<span class="c">// using the declared type for each.</span></code></pre>
+    <p>
+      Each repair is built from the <em>original</em> prompt rather than the
+      previous repair prompt, so a multi-attempt loop does not accumulate every
+      earlier correction and drift off task.
+    </p>
+
+    <h3>Where it applies</h3>
+    <p>
+      Both of <code>Predict</code>'s paths are covered: the provider's native
+      structured-output mode and the labelled-text fallback. The structured path
+      asks for a corrected object instead of labelled lines, but the field detail
+      is identical.
+    </p>
+    <p>
+      <code>ChainOfThought</code> inherits it. Repair applies to the answering step
+      only &mdash; the reasoning is already settled, so it is reused rather than
+      regenerated, and a repair costs one call rather than two.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> cot = <span class="kw">new</span> ChainOfThought(Scored, lm)
+
+<span class="c">// Reason once, then answer - retrying only the answer.</span>
+<span class="kw">await</span> cot.forward({ question: q }, { repairAttempts: <span class="s">2</span> })</code></pre>
+    <p>
+      <code>RespAct</code> has always repaired a malformed <code>Final Answer</code>
+      inside its own reasoning loop, bounded by <code>maxSteps</code> rather than by
+      <code>repairAttempts</code>. All three modules now build that corrective
+      prompt from the same helper, so the wording never diverges.
+    </p>
+
+    <div class="callout">
+      <span class="label">Cost</span>
+      <p>
+        Every repair is a real completion. <code>repairAttempts: 1</code> is
+        usually enough &mdash; a model that gets the shape wrong twice is more
+        likely to be missing something in the signature's field descriptions than
+        to be one nudge from correct. Two guards keep the bill bounded: the value
+        is capped at <code>10</code>, and the loop stops as soon as an attempt
+        reproduces the previous failure exactly, since the next prompt would be
+        identical and a deterministic model would answer it identically.
+      </p>
+    </div>
+  </section>
+
+  <section id="batch">
+    <p class="anchor">17</p>
+    <h2>Batch &amp; concurrency</h2>
+    <p>
+      Every module inherits <code>batch()</code>, so <code>Predict</code>,
+      <code>ChainOfThought</code> and <code>RespAct</code> all take a list of inputs
+      and run them through a bounded worker pool. Eight calls in flight by default.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> rows = tickets.map((ticket) =&gt; ({ ticket }))
+<span class="kw">const</span> results = <span class="kw">await</span> triage.batch(rows, { concurrency: <span class="s">16</span> })
+
+<span class="kw">const</span> done = results.filter((r) =&gt; r.status === <span class="s">'fulfilled'</span>)
+console.log(<span class="s">`${done.length} of ${results.length} classified`</span>)</code></pre>
+    <p>
+      Results come back <strong>in input order</strong>, whatever order the calls
+      actually finished in. This is the detail a hand-written loop gets wrong:
+      <code>Promise.all</code> over fixed-size slices keeps the order but stalls
+      each slice on its slowest call, and a queue that pushes results as they
+      settle quietly loses the correspondence between row and answer.
+    </p>
+
+    <h3>One bad row does not kill the job</h3>
+    <p>
+      Each input settles independently, in the shape of
+      <code>Promise.allSettled</code>. A model that returns nonsense for row 4 812
+      of 10 000 costs you row 4 812, not the run.
+    </p>
+    <pre class="code"><code><span class="kw">for</span> (<span class="kw">const</span> [i, result] <span class="kw">of</span> results.entries()) {
+  <span class="kw">if</span> (result.status === <span class="s">'fulfilled'</span>) {
+    save(rows[i], result.value.category)
+  } <span class="kw">else</span> {
+    <span class="c">// result.reason is the ValidationError or LMError that was thrown</span>
+    quarantine(rows[i], result.reason)
+  }
+}</code></pre>
+    <p>
+      Pass <code>stopOnError: true</code> when a single failure means the whole run
+      is worthless &mdash; the batch then rejects and starts no further inputs.
+      Calls already in flight are still awaited, so nothing is left running behind
+      your back, and the rejection carries the lowest-indexed failure rather than
+      whichever one happened to land first.
+    </p>
+
+    <h3>Options</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Option</th><th scope="col">Effect</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">concurrency</td><td class="note">Maximum calls in flight. Defaults to 8. A value that is not a positive integer throws <code>RangeError</code> rather than hanging.</td></tr>
+          <tr><td class="sym">onProgress</td><td class="note"><code>(done, total)</code>, fired as each input settles &mdash; failures included. Advisory: if it throws, it is dropped and the batch carries on.</td></tr>
+          <tr><td class="sym">stopOnError</td><td class="note">Reject the batch on the first failure instead of capturing it. Defaults to <code>false</code>.</td></tr>
+          <tr><td class="sym">signal</td><td class="note">An <code>AbortSignal</code>. Once aborted, no further inputs start and the batch rejects with the abort reason.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Everything else &mdash; <code>temperature</code>, <code>timeout</code>,
+      <code>retries</code>, <code>model</code> &mdash; is passed through to every
+      underlying call unchanged.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> controller = <span class="kw">new</span> <span class="ty">AbortController</span>()
+setTimeout(() =&gt; controller.abort(), <span class="s">60_000</span>)
+
+<span class="kw">await</span> triage.batch(rows, {
+  concurrency: <span class="s">16</span>,
+  signal: controller.signal,
+  onProgress: (done, total) =&gt; bar.update(done / total),
+  temperature: <span class="s">0</span>,
+})</code></pre>
+    <div class="callout callout-warn">
+      <span class="label">Aborting discards</span>
+      <p>
+        An aborted batch rejects rather than returning the inputs that already
+        finished, in line with the rest of the platform&#8217;s
+        <code>AbortSignal</code> behaviour &mdash; so wrap a cancellable batch in a
+        <code>try</code>. If you need to keep completed work across a cancellation,
+        run the inputs in chunks and abort between them.
+      </p>
+    </div>
+
+    <h3>The pool on its own</h3>
+    <p>
+      The primitive underneath is exported, so anything else with a rate limit can
+      use it &mdash; embedding calls, database writes, an image API.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { mapWithConcurrency } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> embeddings = <span class="kw">await</span> mapWithConcurrency(
+  documents,
+  (doc) =&gt; embed(doc),
+  { concurrency: <span class="s">4</span>, onSettled: (done, total) =&gt; log(done, total) }
+)</code></pre>
+    <p>
+      Same guarantees: input order, per-item settlement, a hard ceiling on
+      in-flight work, and no dependency to install &mdash; it is roughly eighty
+      lines of core.
+    </p>
+  </section>
+
+  <section id="zod">
+    <p class="anchor">18</p>
+    <h2>Zod signatures</h2>
+    <p>
+      A third signature form, built from zod schemas. Decorators record their
+      fields at runtime, so TypeScript never learns them and results come back
+      typed loosely unless you write the output shape out by hand. A zod schema
+      carries that shape in the type system instead &mdash; so the result type is
+      inferred exactly, with no type argument and no
+      <code>experimentalDecorators</code>.
+    </p>
+
+    <pre class="code"><code><span class="kw">import</span> { z } <span class="kw">from</span> <span class="s">'zod'</span>
+<span class="kw">import</span> { signature, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> AnalyzeReview = signature({
+  description: <span class="s">'Analyze a product review.'</span>,
+  input: z.object({ review: z.string() }),
+  output: z.object({
+    sentiment: z.enum([<span class="s">'positive'</span>, <span class="s">'negative'</span>, <span class="s">'neutral'</span>]),
+    rating: z.number().int().min(<span class="kw">1</span>).max(<span class="kw">5</span>),
+    themes: z.array(z.string()),
+    followUp: z.string().optional(),
+  }),
+})
+
+<span class="kw">const</span> r = <span class="kw">await</span> <span class="kw">new</span> Predict(AnalyzeReview).forward({ review })
+
+r.sentiment       <span class="c">// 'positive' | 'negative' | 'neutral'</span>
+r.themes.join(<span class="s">', '</span>) <span class="c">// string[]</span>
+r.followUp?.trim() <span class="c">// string | undefined</span></code></pre>
+
+    <p>
+      Input keys are typed from the input schema too, so a misspelt input is a
+      compile error rather than a field the model never sees. Everything else
+      behaves as it always has: <code>Predict</code>,
+      <code>ChainOfThought</code> and <code>RespAct</code> all accept this form,
+      and decorated classes and string signatures keep working untouched.
+    </p>
+
+    <h3>What you can express</h3>
+    <p>
+      The zod schema is itself the validator, so every constraint you write is
+      enforced against the model's reply &mdash; including the kinds the flat
+      field-type list has no spelling for.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Written as</th><th scope="col">Enforced as</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="note"><code>z.enum(['p0', 'p1', 'p2'])</code></td>
+            <td class="note">A union of literals in TypeScript; the options are listed in the prompt and in the provider schema.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>z.number().int().min(1).max(5)</code></td>
+            <td class="note">Bounds checked after coercion; <code>"9"</code> fails rather than passing through as a number.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>z.object({ &hellip; })</code></td>
+            <td class="note">A nested object, parsed from JSON on the text path and typed all the way down.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>z.union([z.number(), z.literal('unknown')])</code></td>
+            <td class="note">Either branch, as an <code>anyOf</code> in the provider schema.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>.optional()</code></td>
+            <td class="note">Optional in the inferred type, and nullable in the provider schema.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>.refine(&hellip;)</code></td>
+            <td class="note">Object-level checks, run after every field has been coerced.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Coercion still applies</h3>
+    <p>
+      Models emit text, so the text path coerces before your schema sees the
+      value &mdash; <code>"42"</code> satisfies a number field and
+      <code>"a, b"</code> satisfies a <code>string[]</code>, exactly as with the
+      other two forms. Coercion happens field by field on the way in; your schema
+      is used verbatim, so defaults, optionality and refinements all survive.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> out = parseOutput(AnalyzeReview, <span class="s">'sentiment: positive\nrating: 5\nthemes: price, build'</span>)
+<span class="c">// { sentiment: 'positive', rating: 5, themes: ['price', 'build'] }</span></code></pre>
+
+    <h3>The schema sent to the provider</h3>
+    <p>
+      When the provider supports native structured output, the zod schema is
+      converted with <code>z.toJSONSchema()</code> and then rewritten for
+      OpenAI's strict mode: every property listed in <code>required</code>,
+      <code>additionalProperties: false</code> on every object including nested
+      ones, and optional fields expressed as <code>[base, 'null']</code> rather
+      than left out of <code>required</code>.
+    </p>
+    <pre class="code" data-lang="json"><code>{
+  "type": "object",
+  "properties": {
+    "sentiment": { "type": "string", "enum": ["positive", "negative", "neutral"] },
+    "rating": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "themes": { "type": "array", "items": { "type": "string" } },
+    "followUp": { "type": ["string", "null"] }
+  },
+  "required": ["sentiment", "rating", "themes", "followUp"],
+  "additionalProperties": false
+}</code></pre>
+
+    <div class="callout">
+      <span class="label">Which form to reach for</span>
+      <p>
+        Reach for a zod signature when you want the output type without writing
+        it twice, when a field is an enum or a nested object, or when your
+        project cannot enable <code>experimentalDecorators</code>. The class form
+        still reads best when per-field prompt descriptions are the point, and
+        the string form is still the fastest way to sketch something.
+      </p>
+    </div>
+
+    <div class="callout callout-warn">
+      <span class="label">Peer requirement</span>
+      <p>
+        <code>zod</code> 4 is already a dependency of
+        <code>@ts-dspy/core</code>, but import <code>z</code> from your own
+        <code>zod</code> so the schema classes match &mdash; two copies of zod in
+        one tree will fail <code>instanceof</code> checks.
+      </p>
+    </div>
+
+    <p>
+      A runnable version of everything above lives in
+      <code>examples/zod-signature.ts</code>:
+    </p>
+    <pre class="code" data-lang="bash"><code>npm run example:zod</code></pre>
+  </section>
+
+  <section id="evaluate">
+    <p class="anchor">20</p>
+    <h2>Evaluation</h2>
+    <p>
+      A prompt change either helped or it did not, and the only way to know is to
+      measure. <code>evaluate</code> runs a program over a dataset, grades every
+      prediction with a metric you choose, and hands back one number plus the
+      working behind it.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { evaluate, exactMatch, Example, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> dataset = [
+  <span class="kw">new</span> Example({ question: <span class="s">'Capital of France?'</span>, answer: <span class="s">'Paris'</span> }).withInputs(<span class="s">'question'</span>),
+  <span class="kw">new</span> Example({ question: <span class="s">'Capital of Japan?'</span>, answer: <span class="s">'Tokyo'</span> }).withInputs(<span class="s">'question'</span>),
+]
+
+<span class="kw">const</span> report = <span class="kw">await</span> evaluate(<span class="kw">new</span> Predict(AnswerQuestion), dataset, exactMatch, {
+  concurrency: <span class="s">8</span>,
+})
+
+report.score    <span class="c">// 0.5 &mdash; the mean across every example</span>
+report.results  <span class="c">// per example: inputs, expected, prediction, score, error?</span>
+report.usage    <span class="c">// tokens and latency for this run only</span></code></pre>
+
+    <h3>Datasets</h3>
+    <p>
+      A dataset is an array of <code>Example</code>.
+      <code>withInputs()</code> names the input fields; everything else is what
+      the program is expected to produce, which is exactly the split an
+      evaluation needs. Pass <code>inputKeys</code> instead if the whole dataset
+      shares one shape.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> dataset = rows.map((row) =&gt; <span class="kw">new</span> Example(row))
+
+<span class="kw">await</span> evaluate(program, dataset, exactMatch, { inputKeys: [<span class="s">'question'</span>] })</code></pre>
+
+    <h3>Metrics</h3>
+    <p>
+      A metric is <code>(example, prediction) =&gt; number | boolean</code>, awaited
+      if it returns a promise. That is the whole contract, and it is deliberately
+      small: the same function works unchanged as an optimiser's objective.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Metric</th><th scope="col">Grades</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">exactMatch</td><td class="note">Every expected field, compared as text, character for character.</td></tr>
+          <tr><td class="sym">normalizedMatch</td><td class="note">The same, ignoring case and runs of whitespace.</td></tr>
+          <tr><td class="sym">numericMatch(tolerance)</td><td class="note">Numeric fields within an absolute tolerance.</td></tr>
+          <tr><td class="sym">fieldAccuracy</td><td class="note">Fraction of fields that match, ignoring case and whitespace &mdash; partial credit for multi-output signatures.</td></tr>
+          <tr><td class="sym">tokenF1</td><td class="note">Token-level F1, for free text where exact match is too blunt.</td></tr>
+          <tr><td class="sym">matchMetric<br>fieldAccuracyMetric<br>tokenF1Metric</td><td class="note">Factories behind the above, taking <code>fields</code>, <code>normalize</code>, and <code>tolerance</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Anything else is a function you write.</p>
+    <pre class="code"><code><span class="kw">const</span> mentionsSource: <span class="ty">Metric</span> = (example, prediction) =&gt;
+  <span class="ty">String</span>(prediction.get(<span class="s">'answer'</span>)).includes(example.get(<span class="s">'citation'</span>))
+
+<span class="kw">const</span> report = <span class="kw">await</span> evaluate(program, dataset, mentionsSource)</code></pre>
+    <p>
+      Read the prediction through <code>get()</code> or <code>toObject()</code>.
+      <code>Prediction</code> defines its fields with
+      <code>Object.defineProperty</code>, so spreading it is not the same thing.
+    </p>
+
+    <h3>The report</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Field</th><th scope="col">Meaning</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">score</td><td class="note">Mean score across every example, failures included.</td></tr>
+          <tr><td class="sym">totalScore<br>count</td><td class="note">The sum and the denominator behind that mean.</td></tr>
+          <tr><td class="sym">errorCount</td><td class="note">How many examples threw.</td></tr>
+          <tr><td class="sym">results</td><td class="note">One entry per example, in dataset order.</td></tr>
+          <tr><td class="sym">usage</td><td class="note">Tokens, request count, mean latency, wall-clock duration.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Usage comes from diffing the model's own counters around the run, so it
+      counts this evaluation and nothing that came before it. There is no cost
+      figure, for the reason given under
+      <a href="#reliability">usage accounting</a>.
+    </p>
+
+    <h3>Failures are results</h3>
+    <p>
+      An example whose program or metric throws is recorded as a zero with the
+      error attached, and the run carries on. An evaluation that dies on row 40
+      of 500 tells you nothing at all.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> failures = report.results.filter((result) =&gt; result.error)
+
+failures[<span class="s">0</span>].error.message
+failures[<span class="s">0</span>].inputs       <span class="c">// what was fed in, to reproduce it</span></code></pre>
+
+    <h3>Printing</h3>
+    <p>
+      The library never writes to a console. <code>formatReport</code> returns a
+      string, and where it goes &mdash; a terminal, a log line, a CI annotation
+      &mdash; is your decision.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { formatReport } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+console.log(formatReport(report, { maxRows: <span class="s">20</span>, includePassing: <span class="kw">false</span> }))
+
+<span class="c">// score 0.800  (4.00 / 5)  errors 1</span>
+<span class="c">// tokens 3120 (2480 prompt + 640 completion)  requests 5  ...</span>
+<span class="c">//</span>
+<span class="c">// #  score  detail</span>
+<span class="c">// 4  0.000  Error: 429 rate limit exceeded</span></code></pre>
+
+    <div class="callout">
+      <span class="label">Concurrency</span>
+      <p>
+        Four examples run at once by default. Raise <code>concurrency</code> when
+        your rate limit allows it &mdash; a 500-row set at one call a second is
+        eight minutes you did not need to spend &mdash; and lower it to one when
+        you want the run to be reproducible against a scripted model.
+      </p>
+    </div>
+  </section>
+
+  <section id="optimizers">
+    <p class="anchor">21</p>
+    <h2>Few-shot and optimizers</h2>
+    <p>
+      Everything above writes prompts by hand. An optimizer writes them from data
+      instead: give it labelled examples and a metric, and it works out which
+      worked examples belong in the prompt. This is the idea TS-DSPy takes from
+      DSPy &mdash; a program that improves itself, rather than a prompt you keep
+      editing.
+    </p>
+
+    <h3>Demos</h3>
+    <p>
+      A demo is an <code>Example</code> rendered into the prompt before the real
+      input, showing the task performed correctly. Demos render in whichever
+      shape the reply is expected to take &mdash; labelled
+      <code>field: value</code> for a provider answering in text, JSON for one
+      whose decoding is constrained to a schema &mdash; so they teach the output
+      format as well as the task.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { Example, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> demos = [
+  <span class="kw">new</span> Example({ ticket: <span class="s">'My card was charged twice.'</span>, team: <span class="s">'billing'</span> }).withInputs(<span class="s">'ticket'</span>),
+  <span class="kw">new</span> Example({ ticket: <span class="s">'Export does nothing on Safari.'</span>, team: <span class="s">'bug'</span> }).withInputs(<span class="s">'ticket'</span>),
+]
+
+<span class="kw">const</span> router = <span class="kw">new</span> Predict(RouteTicket, { demos })</code></pre>
+    <p>
+      <code>withInputs()</code> marks which fields are the question; the rest is
+      the answer. Omit it and the signature decides the split instead. The
+      original two-argument form, <code>new Predict(Sig, lm)</code>, still works
+      &mdash; pass <code>{ lm, demos }</code> when you want both.
+      <code>withDemos()</code> returns a configured <em>copy</em>, leaving the
+      module you called it on alone.
+    </p>
+
+    <h3>LabeledFewShot</h3>
+    <p>
+      Selects <em>k</em> of your own labelled examples. No model calls, so
+      compiling is instant and free &mdash; try this before bootstrapping.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { LabeledFewShot } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> compiled = <span class="kw">new</span> LabeledFewShot({ k: <span class="s">3</span>, seed: <span class="s">42</span> })
+  .compile(<span class="kw">new</span> Predict(RouteTicket), { trainset })</code></pre>
+
+    <h3>BootstrapFewShot</h3>
+    <p>
+      Runs the module over the trainset, scores every attempt with your metric,
+      and promotes the runs that passed into demos. The program learns from its
+      own successes.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { BootstrapFewShot } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> optimizer = <span class="kw">new</span> BootstrapFewShot({
+  metric: (example, prediction) =&gt; example.get(<span class="s">'team'</span>) === prediction.get(<span class="s">'team'</span>),
+  maxBootstrappedDemos: <span class="s">4</span>,
+  teacher: strongLM,        <span class="c">// generates the demos, at compile time only</span>
+  concurrency: <span class="s">4</span>,
+  seed: <span class="s">42</span>,
+  onProgress: (event) =&gt; log(<span class="s">`${event.index + 1}/${event.total} ${event.status}`</span>),
+})
+
+<span class="kw">const</span> compiled = <span class="kw">await</span> optimizer.compile(<span class="kw">new</span> Predict(RouteTicket, cheapLM), { trainset })</code></pre>
+    <p>
+      With a <code>teacher</code>, a stronger model does the trainset runs and the
+      cheaper student ends up imitating its work. You pay for the strong model
+      once, when compiling &mdash; never at run time. Without one, the student
+      bootstraps from itself.
+    </p>
+    <p>
+      The run stops as soon as it has <code>maxBootstrappedDemos</code>, so a
+      trainset of five hundred rows does not cost five hundred calls to keep
+      four demos. Setting <code>maxBootstrappedDemos: 0</code> alongside
+      <code>maxLabeledDemos</code> compiles from labels alone and makes no model
+      calls whatsoever.
+    </p>
+
+    <h3>Metrics</h3>
+    <p>
+      A metric is <code>(example, prediction) =&gt; number | boolean</code>, and may
+      be async. Booleans are taken at face value; a number counts as a pass when
+      it reaches <code>threshold</code>, which defaults to <code>0.5</code>. The
+      metric is the entire definition of &ldquo;good&rdquo; &mdash; everything the
+      optimizer does follows from it.
+    </p>
+
+    <h3>Options</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Option</th><th scope="col">Default</th><th scope="col">Meaning</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">metric</td><td class="path">required</td><td class="note">Judges each attempt.</td></tr>
+          <tr><td class="sym">maxBootstrappedDemos</td><td class="path">4</td><td class="note">Demos to promote. The run stops once it has this many.</td></tr>
+          <tr><td class="sym">maxLabeledDemos</td><td class="path">0</td><td class="note">Plain labels shown alongside the bootstrapped ones.</td></tr>
+          <tr><td class="sym">concurrency</td><td class="path">4</td><td class="note">Trainset examples attempted at once.</td></tr>
+          <tr><td class="sym">seed</td><td class="path">0</td><td class="note">Seeds the trainset shuffle.</td></tr>
+          <tr><td class="sym">threshold</td><td class="path">0.5</td><td class="note">Score at which a numeric metric passes.</td></tr>
+          <tr><td class="sym">teacher</td><td class="path">&mdash;</td><td class="note">Stronger model used to generate demos.</td></tr>
+          <tr><td class="sym">inputKeys</td><td class="path">&mdash;</td><td class="note">Input fields, when examples declare none.</td></tr>
+          <tr><td class="sym">onProgress</td><td class="path">&mdash;</td><td class="note">Per-example outcome callback.</td></tr>
+          <tr><td class="sym">callOptions</td><td class="path">&mdash;</td><td class="note">Call options for the trainset runs.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <span class="label">Deterministic</span>
+      <p>
+        Both optimizers are seeded, so the same seed and the same trainset
+        compile to the same demos &mdash; a result you can reproduce, diff, and
+        write a stable test against. Progress events arrive in completion order,
+        which with concurrency above 1 is not trainset order; the demos are
+        deterministic regardless.
+      </p>
+    </div>
+
+    <div class="callout callout-warn">
+      <span class="label">Failures are skipped</span>
+      <p>
+        A trainset example whose attempt throws &mdash; a provider error, a reply
+        that fails validation &mdash; is reported as an <code>error</code> event
+        and skipped. One bad row must not throw away every demo already paid for.
+      </p>
+    </div>
+
+    <p>
+      A full run, including a baseline to compare against, is in
+      <code>examples/optimizer.ts</code>:
+    </p>
+    <pre class="code" data-lang="bash"><code>export OPENAI_API_KEY="sk-..."
+npm run example:optimizer</code></pre>
   </section>
 
   </div>

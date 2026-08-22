@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { BaseLM } from '../core/base-lm';
 import { Module } from '../core/module';
-import { Prediction } from '../core/prediction';
-import { type Signature } from '../core/signature';
+import { type Prediction } from '../core/prediction';
+import { type Signature, type SignatureSource } from '../core/signature';
 import type {
     ChatMessage,
     ILanguageModel,
@@ -12,7 +12,10 @@ import type {
 } from '../types/language-model';
 import type { SignatureOutput } from '../types/signature';
 import { parseOutput as utilParseOutput } from '../utils/parsing';
+import { getOutputFieldConfigs } from '../utils/schema';
 import { ValidationError } from '../core/errors';
+import { buildRepairObservation } from '../core/repair';
+import { type TraceSpan } from '../core/trace';
 
 export interface ToolFunction {
     (...args: any[]): Promise<any> | any;
@@ -96,7 +99,7 @@ export interface RespActOptions {
     forceTextMode?: boolean;
 }
 
-export class RespAct<TSignature extends typeof Signature = typeof Signature> extends Module {
+export class RespAct<TSignature extends SignatureSource = typeof Signature> extends Module {
     private tools: Record<string, NormalizedTool>;
     private maxSteps: number;
     private onEvent?: (event: RespActEvent) => void;
@@ -137,10 +140,14 @@ export class RespAct<TSignature extends typeof Signature = typeof Signature> ext
         Prediction<SignatureOutput<TSignature> & { steps: number }> &
             SignatureOutput<TSignature> & { steps: number }
     > {
-        if (this.usesNativeTools()) {
-            return this.forwardNative(inputs, options);
-        }
-        return this.forwardText(inputs, options);
+        const prediction = await this.traced(inputs, (span) =>
+            this.usesNativeTools()
+                ? this.nativeLoop(inputs, options, span)
+                : this.textLoop(inputs, options, span)
+        );
+
+        return prediction as Prediction<SignatureOutput<TSignature> & { steps: number }> &
+            SignatureOutput<TSignature> & { steps: number };
     }
 
     /**
@@ -167,13 +174,15 @@ export class RespAct<TSignature extends typeof Signature = typeof Signature> ext
 
     // ---------------------------------------------------------------- native
 
-    private async forwardNative(
+    /**
+     * The native tool-calling loop. Every model call is reported to `span` when
+     * tracing is on, so a trace holds each turn's prompt and reply.
+     */
+    private async nativeLoop(
         inputs: Record<string, any>,
-        options?: LLMCallOptions
-    ): Promise<
-        Prediction<SignatureOutput<TSignature> & { steps: number }> &
-            SignatureOutput<TSignature> & { steps: number }
-    > {
+        options: LLMCallOptions | undefined,
+        span: TraceSpan | undefined
+    ): Promise<Record<string, any>> {
         const messages: ChatMessage[] = [
             { role: 'system', content: this.buildNativePrompt() },
             { role: 'user', content: this.questionOf(inputs) },
@@ -182,7 +191,10 @@ export class RespAct<TSignature extends typeof Signature = typeof Signature> ext
         const callOptions: LLMCallOptions = { ...options, tools: this.toolSpecs() };
 
         for (let step = 0; step < this.maxSteps; step++) {
+            const prompt = messages.map((m) => `${m.role}: ${m.content}`).join('\n\n');
+            span?.startCall(prompt);
             const result = await this.lm.chatWithTools!(messages, callOptions);
+            span?.endCall(result.content ?? '');
             const text = result.content ?? '';
             if (text.trim().length > 0) {
                 this.emit({ type: 'thought', step, text });
@@ -232,7 +244,7 @@ export class RespAct<TSignature extends typeof Signature = typeof Signature> ext
                 throw error;
             }
 
-            return this.predict(parsed, step + 1);
+            return { ...parsed, steps: step + 1 };
         }
 
         throw this.exhaustedError();
@@ -285,18 +297,23 @@ export class RespAct<TSignature extends typeof Signature = typeof Signature> ext
 
     // ------------------------------------------------------------------ text
 
-    private async forwardText(
+    /**
+     * The text-prompting loop, used whenever native tool calling is unavailable.
+     * Every model call is reported to `span` when tracing is on.
+     */
+    private async textLoop(
         inputs: Record<string, any>,
-        options?: LLMCallOptions
-    ): Promise<
-        Prediction<SignatureOutput<TSignature> & { steps: number }> &
-            SignatureOutput<TSignature> & { steps: number }
-    > {
+        options: LLMCallOptions | undefined,
+        span: TraceSpan | undefined
+    ): Promise<Record<string, any>> {
         let conversation = this.buildInitialPrompt(inputs);
         const previousToolCalls = new Set<string>();
 
         for (let step = 0; step < this.maxSteps; step++) {
-            const response = await this.lm.generate(conversation + '\n\nThought:', options);
+            const prompt = conversation + '\n\nThought:';
+            span?.startCall(prompt);
+            const response = await this.lm.generate(prompt, options);
+            span?.endCall(response);
             conversation += `\n\nThought: ${response}`;
             this.emit({ type: 'thought', step, text: response });
 
@@ -342,13 +359,13 @@ export class RespAct<TSignature extends typeof Signature = typeof Signature> ext
                 // A malformed final answer is recoverable: tell the model what
                 // shape it owes us and let it try again on the next step.
                 if (error instanceof ValidationError && step < this.maxSteps - 1) {
-                    conversation += `\n\nObservation: ${this.malformedAnswerMessage(error)}`;
+                    conversation += `\n\nObservation: ${buildRepairObservation(error)}`;
                     continue;
                 }
                 throw error;
             }
 
-            return this.predict(parsed, step + 1);
+            return { ...parsed, steps: step + 1 };
         }
 
         throw this.exhaustedError();
@@ -363,14 +380,6 @@ export class RespAct<TSignature extends typeof Signature = typeof Signature> ext
         const outputText =
             typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput);
         return utilParseOutput(this.signature, outputText);
-    }
-
-    private predict(parsed: Record<string, any>, steps: number) {
-        const combinedOutput = { ...parsed, steps };
-        return new Prediction(combinedOutput) as Prediction<
-            SignatureOutput<TSignature> & { steps: number }
-        > &
-            SignatureOutput<TSignature> & { steps: number };
     }
 
     private exhaustedError(): Error {
@@ -394,7 +403,9 @@ export class RespAct<TSignature extends typeof Signature = typeof Signature> ext
 
     private outputFormatInstruction(): string {
         if (typeof this.signature === 'string' || !this.signature) return '';
-        const fieldNames = Object.keys(this.signature.getOutputFields());
+        // getOutputFieldConfigs, not getOutputFields: a zod signature has no
+        // getOutputFields, and would otherwise lose its field list here.
+        const fieldNames = Object.keys(getOutputFieldConfigs(this.signature));
         if (fieldNames.length === 0) return '';
 
         let instruction =
