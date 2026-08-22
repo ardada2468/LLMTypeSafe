@@ -1,4 +1,10 @@
-import { Predict } from './predict';
+import {
+    Predict,
+    throwIfAborted,
+    type PartialOutput,
+    type PredictionStream,
+    type StreamOptions,
+} from './predict';
 import { Prediction } from '../core/prediction';
 import { type Signature } from '../core/signature';
 import type { LLMCallOptions } from '../types/language-model';
@@ -31,6 +37,41 @@ export class ChainOfThought<
         const combinedOutput = { ...parsed, reasoning } as WithReasoning<TOutput>;
 
         return new Prediction(combinedOutput) as Prediction<WithReasoning<TOutput>> &
+            WithReasoning<TOutput>;
+    }
+
+    /**
+     * Stream the answer step.
+     *
+     * The reasoning step runs first and in full — its text is what the answer
+     * step is conditioned on, so there is nothing to show progressively until it
+     * has finished. Every snapshot from then on carries the finished `reasoning`
+     * alongside the output fields filled in so far.
+     */
+    async *stream(
+        inputs: Record<string, any>,
+        options?: StreamOptions
+    ): PredictionStream<WithReasoning<TOutput>> {
+        throwIfAborted(options?.signal);
+
+        const reasoning = await this.lm.generate(this.buildReasoningPrompt(inputs), options);
+        const finalPrompt = this.buildFinalPrompt(inputs, reasoning);
+
+        const inner = this.streamComplete(finalPrompt, options);
+        let step = await inner.next();
+        try {
+            while (!step.done) {
+                yield { ...step.value, reasoning } as PartialOutput<WithReasoning<TOutput>>;
+                step = await inner.next();
+            }
+        } finally {
+            // Abandoning this generator must close the one underneath it.
+            await inner.return({});
+        }
+
+        const combined = { ...step.value, reasoning } as WithReasoning<TOutput>;
+
+        return new Prediction(combined) as Prediction<WithReasoning<TOutput>> &
             WithReasoning<TOutput>;
     }
 

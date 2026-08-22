@@ -414,10 +414,89 @@ console.log(out.answer, out.steps)</code></pre>
     <p class="anchor">09</p>
     <h2>Streaming</h2>
     <p>
-      All three providers stream. Streaming bypasses signature validation by
-      design &mdash; you are consuming tokens as they arrive, before there is a
-      complete reply to check &mdash; so use it for display, and use a module when
-      you need the parsed object.
+      There are two levels. A module streams <em>fields</em>, so a value fills in
+      as its tokens arrive and is still validated at the end; a provider streams
+      <em>tokens</em>, which is raw text and validates nothing.
+    </p>
+
+    <h3>Streaming a module</h3>
+    <p>
+      <code>stream()</code> runs the same prediction as <code>forward()</code>.
+      Every yield is a snapshot of the output fields parsed so far, so the object
+      you render grows rather than appearing all at once.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> qa = <span class="kw">new</span> Predict(AnswerQuestion)
+
+<span class="kw">for</span> <span class="kw">await</span> (<span class="kw">const</span> partial <span class="kw">of</span> qa.stream({ question })) {
+  render(partial.answer)  <span class="c">// 'Par' &rarr; 'Paris' &rarr; 'Paris, France'</span>
+}</code></pre>
+    <p>
+      The <strong>last yield</strong> is the complete output, validated against
+      the signature exactly as <code>forward()</code> validates it &mdash; a stream
+      that ends in something the signature rejects still throws a
+      <code>ValidationError</code>, from the final pull. Streaming is not an
+      opt-out from the runtime checks. The generator's <strong>return value</strong>
+      is the <code>Prediction</code> wrapper, which <code>for await</code> discards;
+      reach it by driving the iterator yourself.
+    </p>
+    <p>
+      Only that last snapshot is guaranteed to match the declared types. Coercion
+      belongs to validation, so a field declared <code>number</code> may still be
+      the raw <code>'0.'</code> the model is part-way through writing &mdash; which
+      is why a snapshot is typed as <code>PartialOutput&lt;T&gt;</code>, every field
+      optional and possibly still a string.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> stream = qa.stream({ question }, { signal: controller.signal })
+
+<span class="kw">let</span> step = <span class="kw">await</span> stream.next()
+<span class="kw">while</span> (!step.done) {
+  render(step.value.answer)
+  step = <span class="kw">await</span> stream.next()
+}
+
+step.value.confidence  <span class="c">// the validated Prediction</span></code></pre>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Situation</th><th scope="col">Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">Native structured output</td><td class="note">Streams JSON, read by an incremental parser.</td></tr>
+          <tr><td class="sym">No structured output</td><td class="note">Streams labelled text, read by the usual heuristics.</td></tr>
+          <tr><td class="sym">supportsStreaming: false<br>or no chatStream</td><td class="note">One ordinary call, yielded once. It does not throw.</td></tr>
+          <tr><td class="sym">break</td><td class="note">Closes the provider's stream; nothing is left open.</td></tr>
+          <tr><td class="sym">signal</td><td class="note">Cancels the stream, which rejects with the signal's reason.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <code>ChainOfThought</code> streams too. The reasoning step has to finish
+      before the answer step can start, so nothing is yielded until it has; from
+      then on every snapshot carries the finished <code>reasoning</code> alongside
+      the fields filling in.
+    </p>
+
+    <h3>Reading truncated JSON</h3>
+    <p>
+      The parser behind the structured path is exported, dependency-free and
+      pure. Give it a JSON document cut off anywhere &mdash; mid-string, mid-key,
+      after a trailing comma, halfway through an escape &mdash; and it returns the
+      fields that are unambiguously there, without throwing. A number or keyword
+      cut off at the end is dropped, because <code>1</code> may still become
+      <code>12</code>.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { parsePartialJson } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+parsePartialJson(<span class="s">'{"answer": "Par'</span>)              <span class="c">// { answer: 'Par' }</span>
+parsePartialJson(<span class="s">'{"a": 1, "b": 2,'</span>)             <span class="c">// { a: 1, b: 2 }</span>
+parsePartialJson(<span class="s">'{"a": "he said \\"hi'</span>)         <span class="c">// { a: 'he said "hi' }</span>
+parsePartialJson(<span class="s">'{"score": 0.9'</span>)                <span class="c">// {} &mdash; 0.9 may become 0.95</span></code></pre>
+
+    <h3>Streaming a provider</h3>
+    <p>
+      One level down, all three providers yield raw chunks. This path bypasses
+      signature validation by design &mdash; you are consuming tokens before there
+      is a complete reply to check &mdash; so use it for display, and use a module
+      when you need the parsed object.
     </p>
     <pre class="code"><code><span class="kw">const</span> lm = <span class="kw">new</span> AnthropicLM({ apiKey })
 
