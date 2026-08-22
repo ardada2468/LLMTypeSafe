@@ -2,9 +2,12 @@ import {
     BaseLM,
     LMError,
     type ChatMessage,
+    type ChatResult,
+    type FinishReason,
     type LLMCallOptions,
     type ModelCapabilities,
     type StreamChunk,
+    type ToolCall,
 } from '@ts-dspy/core';
 import {
     GoogleGenAI,
@@ -13,6 +16,7 @@ import {
     type Content,
     type GenerateContentConfig,
     type GenerateContentResponse,
+    type Part,
     type SafetySetting,
 } from '@google/genai';
 
@@ -72,9 +76,27 @@ export class GeminiLM extends BaseLM {
     }
 
     async chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string> {
+        return (await this.chatWithTools(messages, options)).content;
+    }
+
+    async chatWithTools(
+        messages: ChatMessage[],
+        options?: LLMCallOptions
+    ): Promise<ChatResult> {
         const { contents, systemInstruction } = toGeminiContents(messages);
-        const response = await this.send(contents, systemInstruction, options);
-        return response.text ?? '';
+        const response = await this.send(
+            contents,
+            systemInstruction,
+            options,
+            toolConfig(options)
+        );
+
+        const toolCalls = toolCallsOf(response);
+        return {
+            content: response.text ?? '',
+            ...(toolCalls.length > 0 ? { toolCalls } : {}),
+            finishReason: finishReasonOf(response, toolCalls.length > 0),
+        };
     }
 
     async generateStructured<T>(
@@ -120,7 +142,10 @@ export class GeminiLM extends BaseLM {
             stream = await this.client.models.generateContentStream({
                 model: options?.model ?? this.model,
                 contents,
-                config: this.buildConfig(systemInstruction, options),
+                config: {
+                    ...this.buildConfig(systemInstruction, options),
+                    ...toolConfig(options),
+                },
             });
         } catch (error) {
             this.recordError();
@@ -244,6 +269,11 @@ function usageFrom(response: GenerateContentResponse | undefined) {
  * system role in `contents`. This does not mutate the caller's array — the
  * previous implementation called `messages.pop()`, destroying the last turn of
  * any array a caller reused.
+ *
+ * Consecutive `functionResponse` turns are folded into one user content: Gemini
+ * requires the replies to a parallel call turn to arrive together, matching the
+ * `functionCall` parts one for one, and rejects them spread across separate
+ * turns.
  */
 export function toGeminiContents(messages: ChatMessage[]): {
     contents: Content[];
@@ -257,9 +287,20 @@ export function toGeminiContents(messages: ChatMessage[]): {
             systemParts.push(message.content);
             continue;
         }
+
+        const parts = toGeminiParts(message);
+        const previous = contents.at(-1);
+
+        if (previous?.role === 'user' && isFunctionResponses(previous.parts)) {
+            if (isFunctionResponses(parts)) {
+                previous.parts = [...(previous.parts ?? []), ...parts];
+                continue;
+            }
+        }
+
         contents.push({
             role: message.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: message.content }],
+            parts,
         });
     }
 
@@ -267,6 +308,120 @@ export function toGeminiContents(messages: ChatMessage[]): {
         contents,
         systemInstruction: systemParts.length > 0 ? systemParts.join('\n\n') : undefined,
     };
+}
+
+/**
+ * Build the parts of one turn.
+ *
+ * Tool traffic is structural in Gemini too: an assistant turn's tool calls
+ * become `functionCall` parts, and a `tool` result turn becomes a
+ * `functionResponse` part. Both are keyed by function *name* — Gemini has no
+ * tool-call identifier, so results are correlated by name and position.
+ */
+function toGeminiParts(message: ChatMessage): Part[] {
+    if (message.role === 'assistant' && message.toolCalls?.length) {
+        const parts: Part[] = [];
+        if (message.content) parts.push({ text: message.content });
+        for (const call of message.toolCalls) {
+            parts.push({
+                functionCall: { name: call.name, args: call.arguments ?? {} },
+            });
+        }
+        return parts;
+    }
+
+    if (message.role === 'tool' || message.role === 'function') {
+        // Without a name there is nothing to correlate against, so the result
+        // degrades to ordinary text rather than an unaddressed response part.
+        if (!message.name) return [{ text: message.content }];
+        return [
+            {
+                functionResponse: {
+                    name: message.name,
+                    // `response` must be an object, not a bare string.
+                    response: { result: message.content },
+                },
+            },
+        ];
+    }
+
+    return [{ text: message.content }];
+}
+
+function isFunctionResponses(parts: Part[] | undefined): boolean {
+    return Boolean(parts?.length) && parts!.every((part) => Boolean(part.functionResponse));
+}
+
+/** Extract the `functionCall` parts of a response. Gemini sends `args` already parsed. */
+function toolCallsOf(response: GenerateContentResponse): ToolCall[] {
+    const parts = response.candidates?.[0]?.content?.parts ?? [];
+    const calls = parts
+        .map((part) => part.functionCall)
+        .filter((call): call is NonNullable<typeof call> => Boolean(call?.name));
+
+    return calls.map((call) => ({
+        // Gemini omits `id` on the Gemini API and populates it on some Vertex
+        // configurations; `ToolCall.id` is optional precisely for this.
+        ...(call.id ? { id: call.id } : {}),
+        name: call.name!,
+        arguments: (call.args ?? {}) as Record<string, unknown>,
+    }));
+}
+
+/** Translate tool declarations into the `generateContent` config shape. */
+function toolConfig(options?: LLMCallOptions): Partial<GenerateContentConfig> {
+    if (!options?.tools?.length) return {};
+
+    const config: Partial<GenerateContentConfig> = {
+        tools: [
+            {
+                functionDeclarations: options.tools.map((tool) => ({
+                    name: tool.name,
+                    ...(tool.description ? { description: tool.description } : {}),
+                    parametersJsonSchema: tool.parameters,
+                })),
+            },
+        ],
+    };
+
+    const choice = options.toolChoice;
+    if (choice !== undefined) {
+        config.toolConfig =
+            typeof choice === 'object'
+                ? {
+                      functionCallingConfig: {
+                          mode: 'ANY' as never,
+                          allowedFunctionNames: [choice.name],
+                      },
+                  }
+                : {
+                      functionCallingConfig: {
+                          mode: (choice === 'required' ? 'ANY' : choice.toUpperCase()) as never,
+                      },
+                  };
+    }
+
+    return config;
+}
+
+function finishReasonOf(
+    response: GenerateContentResponse,
+    hasToolCalls: boolean
+): FinishReason {
+    if (hasToolCalls) return 'tool_calls';
+    switch (response.candidates?.[0]?.finishReason) {
+        case 'STOP':
+            return 'stop';
+        case 'MAX_TOKENS':
+            return 'length';
+        case 'SAFETY':
+        case 'PROHIBITED_CONTENT':
+            return 'content_filter';
+        case undefined:
+            return 'stop';
+        default:
+            return 'other';
+    }
 }
 
 function toLMError(error: unknown): LMError {

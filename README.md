@@ -180,6 +180,29 @@ const agent = new RespAct(AnswerQuestion, {
 });
 ```
 
+Give a tool a `parameters` schema — JSON Schema or Zod — and it takes named,
+validated arguments instead of one string:
+
+```ts
+const agent = new RespAct(AnswerQuestion, {
+  tools: {
+    flights: {
+      description: 'Find flights between two airports on a date.',
+      parameters: z.object({ from: z.string(), to: z.string(), date: z.string() }),
+      function: ({ from, to, date }) => search(from, to, date),
+    },
+  },
+});
+```
+
+`RespAct` picks its execution path from the model's capabilities. Against a
+provider reporting `supportsFunctionCalling: true` — all three of ours do — tools
+are declared in the request and the model's calls come back as structured data,
+so several tools can run in one turn. Against anything else, the loop falls back
+to prompting for `Action:` / `Action Input:` and parsing the reply, which works on
+any completion model. Both paths run the same tools and emit the same events; pass
+`forceTextMode: true` to pin a tool-capable model to the text loop.
+
 Tool descriptions are what the model uses to decide when to call each tool, so
 they earn the detail. Never pass model output to `eval()` — see
 [`examples/utils.ts`](examples/utils.ts) for a bounded arithmetic evaluator.

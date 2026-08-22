@@ -124,6 +124,155 @@ describe('GeminiLM', () => {
             expect(systemInstruction).toBe('be terse');
             expect(contents).toHaveLength(1);
         });
+
+        it('turns an assistant tool call into a functionCall part', () => {
+            const { contents } = toGeminiContents([
+                {
+                    role: 'assistant',
+                    content: 'adding',
+                    toolCalls: [{ name: 'add', arguments: { a: 1, b: 2 } }],
+                },
+            ]);
+
+            expect(contents).toEqual([
+                {
+                    role: 'model',
+                    parts: [
+                        { text: 'adding' },
+                        { functionCall: { name: 'add', args: { a: 1, b: 2 } } },
+                    ],
+                },
+            ]);
+        });
+
+        it('turns a tool result into a functionResponse part', () => {
+            // Gemini has no tool-call id: results are correlated by name.
+            const { contents } = toGeminiContents([
+                { role: 'tool', name: 'add', content: '3' },
+            ]);
+
+            expect(contents).toEqual([
+                {
+                    role: 'user',
+                    parts: [{ functionResponse: { name: 'add', response: { result: '3' } } }],
+                },
+            ]);
+        });
+
+        it('folds parallel tool results into one user content', () => {
+            // Gemini requires the replies to a parallel call turn to arrive
+            // together, one functionResponse per functionCall.
+            const { contents } = toGeminiContents([
+                {
+                    role: 'assistant',
+                    content: '',
+                    toolCalls: [
+                        { name: 'left', arguments: {} },
+                        { name: 'right', arguments: {} },
+                    ],
+                },
+                { role: 'tool', name: 'left', content: 'L' },
+                { role: 'tool', name: 'right', content: 'R' },
+            ]);
+
+            expect(contents).toHaveLength(2);
+            expect(contents[1]).toEqual({
+                role: 'user',
+                parts: [
+                    { functionResponse: { name: 'left', response: { result: 'L' } } },
+                    { functionResponse: { name: 'right', response: { result: 'R' } } },
+                ],
+            });
+        });
+
+        it('does not fold ordinary user text into a tool result turn', () => {
+            const { contents } = toGeminiContents([
+                { role: 'tool', name: 'left', content: 'L' },
+                { role: 'user', content: 'and now?' },
+            ]);
+
+            expect(contents).toHaveLength(2);
+        });
+
+        it('degrades an unnamed tool result to plain text', () => {
+            const { contents } = toGeminiContents([{ role: 'tool', content: '3' }]);
+            expect(contents).toEqual([{ role: 'user', parts: [{ text: '3' }] }]);
+        });
+    });
+
+    describe('tool calling', () => {
+        it('sends tool declarations under config.tools', async () => {
+            mocks.generateContent.mockResolvedValue(response('ok'));
+
+            await new GeminiLM({ apiKey: 'k' }).chatWithTools(
+                [{ role: 'user', content: 'hi' }],
+                {
+                    tools: [
+                        {
+                            name: 'add',
+                            description: 'Add two numbers',
+                            parameters: { type: 'object', properties: {} },
+                        },
+                    ],
+                }
+            );
+
+            expect(mocks.generateContent.mock.calls[0][0].config.tools).toEqual([
+                {
+                    functionDeclarations: [
+                        {
+                            name: 'add',
+                            description: 'Add two numbers',
+                            parametersJsonSchema: { type: 'object', properties: {} },
+                        },
+                    ],
+                },
+            ]);
+        });
+
+        it('maps a forced choice onto functionCallingConfig', async () => {
+            mocks.generateContent.mockResolvedValue(response('ok'));
+
+            await new GeminiLM({ apiKey: 'k' }).chatWithTools(
+                [{ role: 'user', content: 'hi' }],
+                { tools: [{ name: 'add', parameters: {} }], toolChoice: { name: 'add' } }
+            );
+
+            expect(mocks.generateContent.mock.calls[0][0].config.toolConfig).toEqual({
+                functionCallingConfig: { mode: 'ANY', allowedFunctionNames: ['add'] },
+            });
+        });
+
+        it('reads functionCall parts off the candidate', async () => {
+            mocks.generateContent.mockResolvedValue(
+                response('', {
+                    candidates: [
+                        {
+                            content: {
+                                parts: [{ functionCall: { name: 'add', args: { a: 1 } } }],
+                            },
+                        },
+                    ],
+                })
+            );
+
+            const result = await new GeminiLM({ apiKey: 'k' }).chatWithTools([
+                { role: 'user', content: 'hi' },
+            ]);
+
+            expect(result.finishReason).toBe('tool_calls');
+            // No `id` key at all — Gemini does not issue one.
+            expect(result.toolCalls).toEqual([{ name: 'add', arguments: { a: 1 } }]);
+        });
+
+        it('omits tool config entirely when no tools are offered', async () => {
+            mocks.generateContent.mockResolvedValue(response('ok'));
+            await new GeminiLM({ apiKey: 'k' }).chat([{ role: 'user', content: 'hi' }]);
+
+            const config = mocks.generateContent.mock.calls[0][0].config;
+            expect(config).not.toHaveProperty('tools');
+            expect(config).not.toHaveProperty('toolConfig');
+        });
     });
 
     describe('safety blocking', () => {

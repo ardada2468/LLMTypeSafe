@@ -17,7 +17,14 @@ export type { FieldValidationIssue } from './core/errors';
 export { Predict } from './modules/predict';
 export { ChainOfThought } from './modules/chain-of-thought';
 export { RespAct } from './modules/respact';
-export type { ToolFunction, ToolWithDescription, ToolDefinition } from './modules/respact';
+export type {
+    ToolFunction,
+    ToolWithDescription,
+    ToolDefinition,
+    ToolParameterSchema,
+    RespActEvent,
+    RespActOptions,
+} from './modules/respact';
 
 // Utilities
 export { buildPrompt, parseOutput } from './utils/parsing';

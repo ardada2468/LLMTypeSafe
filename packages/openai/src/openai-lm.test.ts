@@ -264,5 +264,218 @@ describe('OpenAILM', () => {
             toOpenAIMessages(messages);
             expect(messages).toHaveLength(1);
         });
+
+        it('keeps a tool result on the tool role, keyed by its call id', () => {
+            expect(
+                toOpenAIMessages([
+                    { role: 'tool', name: 'lookup', toolCallId: 'call_1', content: '42' },
+                ])
+            ).toEqual([{ role: 'tool', tool_call_id: 'call_1', content: '42' }]);
+        });
+
+        it('downgrades an uncorrelated tool result to user content', () => {
+            // The API rejects a tool turn without `tool_call_id`, so a result
+            // that carries no id is surfaced rather than making the call fail.
+            expect(toOpenAIMessages([{ role: 'tool', content: '42' }])).toEqual([
+                { role: 'user', content: '42' },
+            ]);
+        });
+
+        it('re-encodes assistant tool calls as JSON-string arguments', () => {
+            expect(
+                toOpenAIMessages([
+                    {
+                        role: 'assistant',
+                        content: '',
+                        toolCalls: [{ id: 'call_1', name: 'add', arguments: { a: 1, b: 2 } }],
+                    },
+                ])
+            ).toEqual([
+                {
+                    role: 'assistant',
+                    content: null,
+                    tool_calls: [
+                        {
+                            id: 'call_1',
+                            type: 'function',
+                            function: { name: 'add', arguments: '{"a":1,"b":2}' },
+                        },
+                    ],
+                },
+            ]);
+        });
+
+        it('gives parallel calls to one tool distinct synthesized ids', () => {
+            // A Gemini-sourced turn carries no ids at all; two calls to the same
+            // tool must not collapse onto one tool_call_id.
+            const [message] = toOpenAIMessages([
+                {
+                    role: 'assistant',
+                    content: '',
+                    toolCalls: [
+                        { name: 'lookup', arguments: { id: 1 } },
+                        { name: 'lookup', arguments: { id: 2 } },
+                    ],
+                },
+            ]) as any[];
+
+            const ids = message.tool_calls.map((call: any) => call.id);
+            expect(new Set(ids).size).toBe(2);
+        });
+
+        it('replays the provider original argument bytes when present', () => {
+            const [message] = toOpenAIMessages([
+                {
+                    role: 'assistant',
+                    content: 'ok',
+                    toolCalls: [
+                        {
+                            id: 'call_1',
+                            name: 'add',
+                            arguments: { a: 1 },
+                            rawArguments: '{"a": 1}',
+                        },
+                    ],
+                },
+            ]) as any[];
+
+            expect(message.tool_calls[0].function.arguments).toBe('{"a": 1}');
+        });
+    });
+
+    describe('tool calling', () => {
+        it('sends tool declarations in the function-wrapped request shape', async () => {
+            mocks.create.mockResolvedValue(completion('ok'));
+
+            await new OpenAILM({ apiKey: 'k' }).chatWithTools(
+                [{ role: 'user', content: 'hi' }],
+                {
+                    tools: [
+                        {
+                            name: 'add',
+                            description: 'Add two numbers',
+                            parameters: { type: 'object', properties: {} },
+                        },
+                    ],
+                    toolChoice: 'required',
+                }
+            );
+
+            const body = mocks.create.mock.calls[0][0];
+            expect(body.tools).toEqual([
+                {
+                    type: 'function',
+                    function: {
+                        name: 'add',
+                        description: 'Add two numbers',
+                        parameters: { type: 'object', properties: {} },
+                    },
+                },
+            ]);
+            expect(body.tool_choice).toBe('required');
+        });
+
+        it('names a specific tool when the choice is an object', async () => {
+            mocks.create.mockResolvedValue(completion('ok'));
+
+            await new OpenAILM({ apiKey: 'k' }).chatWithTools(
+                [{ role: 'user', content: 'hi' }],
+                {
+                    tools: [{ name: 'add', parameters: {} }],
+                    toolChoice: { name: 'add' },
+                }
+            );
+
+            expect(mocks.create.mock.calls[0][0].tool_choice).toEqual({
+                type: 'function',
+                function: { name: 'add' },
+            });
+        });
+
+        it('omits tool parameters entirely when no tools are offered', async () => {
+            mocks.create.mockResolvedValue(completion('ok'));
+            await new OpenAILM({ apiKey: 'k' }).chat([{ role: 'user', content: 'hi' }]);
+
+            expect(mocks.create.mock.calls[0][0]).not.toHaveProperty('tools');
+            expect(mocks.create.mock.calls[0][0]).not.toHaveProperty('tool_choice');
+        });
+
+        it('parses the JSON argument string into an object', async () => {
+            mocks.create.mockResolvedValue(
+                completion('', {
+                    choices: [
+                        {
+                            message: {
+                                content: null,
+                                tool_calls: [
+                                    {
+                                        id: 'call_1',
+                                        type: 'function',
+                                        function: {
+                                            name: 'add',
+                                            arguments: '{"a": 1, "b": 2}',
+                                        },
+                                    },
+                                ],
+                            },
+                            finish_reason: 'tool_calls',
+                        },
+                    ],
+                })
+            );
+
+            const result = await new OpenAILM({ apiKey: 'k' }).chatWithTools([
+                { role: 'user', content: 'hi' },
+            ]);
+
+            expect(result.finishReason).toBe('tool_calls');
+            expect(result.toolCalls).toEqual([
+                {
+                    id: 'call_1',
+                    name: 'add',
+                    arguments: { a: 1, b: 2 },
+                    rawArguments: '{"a": 1, "b": 2}',
+                },
+            ]);
+        });
+
+        it('keeps unparseable arguments inspectable rather than throwing', async () => {
+            mocks.create.mockResolvedValue(
+                completion('', {
+                    choices: [
+                        {
+                            message: {
+                                content: null,
+                                tool_calls: [
+                                    {
+                                        id: 'call_1',
+                                        type: 'function',
+                                        function: { name: 'add', arguments: '{not json' },
+                                    },
+                                ],
+                            },
+                            finish_reason: 'tool_calls',
+                        },
+                    ],
+                })
+            );
+
+            const result = await new OpenAILM({ apiKey: 'k' }).chatWithTools([
+                { role: 'user', content: 'hi' },
+            ]);
+
+            expect(result.toolCalls?.[0].arguments).toEqual({});
+            expect(result.toolCalls?.[0].rawArguments).toBe('{not json');
+        });
+
+        it('reports no toolCalls key on an ordinary reply', async () => {
+            mocks.create.mockResolvedValue(completion('plain'));
+
+            const result = await new OpenAILM({ apiKey: 'k' }).chatWithTools([
+                { role: 'user', content: 'hi' },
+            ]);
+
+            expect(result).toEqual({ content: 'plain', finishReason: 'stop' });
+        });
     });
 });

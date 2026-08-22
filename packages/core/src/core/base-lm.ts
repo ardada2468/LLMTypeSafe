@@ -1,5 +1,6 @@
 import type {
     ChatMessage,
+    ChatResult,
     ILanguageModel,
     LLMCallOptions,
     ModelCapabilities,
@@ -36,6 +37,19 @@ export abstract class BaseLM implements ILanguageModel {
 
     async generate(prompt: string, options?: LLMCallOptions): Promise<string> {
         return this.chat([{ role: 'user', content: prompt }], options);
+    }
+
+    /**
+     * Default tool-calling implementation: run the turn as plain chat and report
+     * no tool calls. Providers with native tool calling override this; a provider
+     * that does must also report `supportsFunctionCalling: true`, since that flag
+     * is what callers such as `RespAct` branch on.
+     */
+    async chatWithTools(
+        messages: ChatMessage[],
+        options?: LLMCallOptions
+    ): Promise<ChatResult> {
+        return { content: await this.chat(messages, options), finishReason: 'stop' };
     }
 
     /**

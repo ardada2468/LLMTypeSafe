@@ -253,9 +253,9 @@ console.log(out.answer)     <span class="c">// validated as declared</span></cod
     <p class="anchor">06</p>
     <h2>Tools and RespAct</h2>
     <p>
-      Tools are plain functions taking a string and returning a string, or a
-      promise of one. Give each a description &mdash; the model picks from those
-      descriptions, so write them as instructions.
+      In their simplest form tools are plain functions taking a string and
+      returning a string, or a promise of one. Give each a description &mdash; the
+      model picks from those descriptions, so write them as instructions.
     </p>
 
     <pre class="code"><code><span class="kw">import</span> { RespAct } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
@@ -266,11 +266,11 @@ console.log(out.answer)     <span class="c">// validated as declared</span></cod
     tools: {
       lookupOrder: {
         description: <span class="s">'Look up an order by its ID. Input: the order ID.'</span>,
-        fn: <span class="kw">async</span> (id) =&gt; JSON.stringify(<span class="kw">await</span> db.orders.find(id)),
+        function: <span class="kw">async</span> (id) =&gt; JSON.stringify(<span class="kw">await</span> db.orders.find(id)),
       },
       today: {
         description: <span class="s">'Return today’s date. Input: ignored.'</span>,
-        fn: () =&gt; <span class="kw">new</span> Date().toISOString().slice(<span class="s">0</span>, <span class="s">10</span>),
+        function: () =&gt; <span class="kw">new</span> Date().toISOString().slice(<span class="s">0</span>, <span class="s">10</span>),
       },
     },
     maxSteps: <span class="s">8</span>,
@@ -280,6 +280,75 @@ console.log(out.answer)     <span class="c">// validated as declared</span></cod
 
 <span class="kw">const</span> out = <span class="kw">await</span> agent.forward({ question: <span class="s">'Has order A-4182 shipped?'</span> })
 console.log(out.answer, out.steps)</code></pre>
+
+    <h3>Typed tool arguments</h3>
+    <p>
+      One string is a thin pipe for a tool that really wants three fields. Add a
+      <code>parameters</code> schema &mdash; a JSON Schema object, or a Zod schema
+      &mdash; and the tool receives named arguments instead. Zod schemas are
+      validated before the tool runs, and a failure comes back to the model as an
+      observation it can correct rather than an exception you have to catch.
+    </p>
+
+    <pre class="code"><code><span class="kw">import</span> { z } <span class="kw">from</span> <span class="s">'zod'</span>
+
+<span class="kw">const</span> agent = <span class="kw">new</span> RespAct(
+  <span class="s">'question -&gt; answer'</span>,
+  {
+    tools: {
+      findFlights: {
+        description: <span class="s">'Find flights between two airports on a date.'</span>,
+        parameters: z.object({
+          from: z.string().describe(<span class="s">'departure IATA code'</span>),
+          to: z.string().describe(<span class="s">'arrival IATA code'</span>),
+          date: z.string().describe(<span class="s">'ISO date, e.g. 2026-03-14'</span>),
+        }),
+        function: ({ from, to, date }) =&gt; flights.search(from, to, date),
+      },
+    },
+  }
+)</code></pre>
+
+    <p>
+      Bare functions and <code>{ description, function }</code> keep working as
+      they always did; a tool without <code>parameters</code> is still called with
+      a single string.
+    </p>
+
+    <h3>Native vs. text-mode tool calling</h3>
+    <p>
+      <code>RespAct</code> chooses its path from the model, not from configuration.
+      When the language model reports
+      <code>supportsFunctionCalling: true</code> &mdash; every provider in this
+      repo does &mdash; the tool schemas travel in the request itself and the
+      model's calls come back as structured data. When it does not, the loop falls
+      back to prompting for <code>Action:</code> / <code>Action Input:</code> lines
+      and parsing them out of the completion, which works on any model that can
+      produce text.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">&nbsp;</th><th scope="col">Native</th><th scope="col">Text mode</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">Requires</td><td class="note"><code>supportsFunctionCalling</code></td><td class="note">any model that emits text</td></tr>
+          <tr><td class="sym">Tool schemas</td><td class="note">sent with the request</td><td class="note">described in the prompt</td></tr>
+          <tr><td class="sym">Arguments</td><td class="note">a parsed object from the provider</td><td class="note">JSON on the <code>Action Input</code> line</td></tr>
+          <tr><td class="sym">Calls per turn</td><td class="note">several, executed in order</td><td class="note">exactly one</td></tr>
+          <tr><td class="sym">Typical failure</td><td class="note">arguments fail your schema</td><td class="note">the model mis-formats and burns a step</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Both paths run the same tools, honour the same repeat guard, and emit the
+      same events, so a program written against one works against the other.
+      That is the point of keeping the text loop: a local model behind an
+      OpenAI-compatible endpoint still runs your agent. Pass
+      <code>forceTextMode: true</code> to pin a tool-capable model to the text
+      loop &mdash; useful for comparing the two, or when a particular model's tool
+      mode misbehaves.
+    </p>
 
     <div class="callout">
       <span class="label">Loop behaviour</span>
