@@ -138,6 +138,163 @@ describe('Predict', () => {
         });
     });
 
+    describe('self-repair', () => {
+        it('re-prompts and succeeds when repairAttempts allows one more round-trip', async () => {
+            const lm = new MockLM({
+                responses: [
+                    'answer: Paris\nconfidence: very high',
+                    'answer: Paris\nconfidence: 0.9',
+                ],
+            });
+
+            const result = await new Predict(QA, lm).forward(
+                { question: 'Q' },
+                { repairAttempts: 1 }
+            );
+
+            expect(lm.calls).toHaveLength(2);
+            expect(result.confidence).toBe(0.9);
+        });
+
+        it('names the failing field, its declared type and the received value', async () => {
+            const lm = new MockLM({
+                responses: [
+                    'answer: Paris\nconfidence: very high',
+                    'answer: Paris\nconfidence: 0.9',
+                ],
+            });
+
+            await new Predict(QA, lm).forward({ question: 'Q' }, { repairAttempts: 1 });
+
+            const repairPrompt = lm.lastPrompt();
+            expect(repairPrompt).toContain('failed validation for: confidence');
+            expect(repairPrompt).toContain('expected number');
+            expect(repairPrompt).toContain('"very high"');
+        });
+
+        it('reports a missing field as received nothing', async () => {
+            const lm = new MockLM({
+                responses: ['answer: Paris', 'answer: Paris\nconfidence: 0.5'],
+            });
+
+            await new Predict(QA, lm).forward({ question: 'Q' }, { repairAttempts: 1 });
+
+            expect(lm.lastPrompt()).toContain('confidence: expected number, received nothing');
+        });
+
+        it('keeps the original prompt in the repair prompt', async () => {
+            const lm = new MockLM({
+                responses: [
+                    'answer: Paris\nconfidence: very high',
+                    'answer: Paris\nconfidence: 0.9',
+                ],
+            });
+
+            await new Predict(QA, lm).forward(
+                { question: 'Capital of France?' },
+                { repairAttempts: 1 }
+            );
+
+            expect(lm.lastPrompt()).toContain('question: Capital of France?');
+        });
+
+        it('rethrows the last ValidationError once the attempts are spent', async () => {
+            const lm = new MockLM({
+                responses: [
+                    'answer: Paris\nconfidence: high',
+                    'answer: Paris\nconfidence: higher',
+                ],
+            });
+
+            await expect(
+                new Predict(QA, lm).forward({ question: 'Q' }, { repairAttempts: 1 })
+            ).rejects.toThrow(ValidationError);
+            expect(lm.calls).toHaveLength(2);
+        });
+
+        it('makes no extra call when the first response validates', async () => {
+            const lm = new MockLM({ responses: ['answer: Paris\nconfidence: 0.9'] });
+
+            await new Predict(QA, lm).forward({ question: 'Q' }, { repairAttempts: 3 });
+
+            expect(lm.calls).toHaveLength(1);
+        });
+
+        it('stops early when an attempt reproduces the previous failure exactly', async () => {
+            const lm = new MockLM({
+                responses: [
+                    'answer: Paris\nconfidence: high',
+                    'answer: Paris\nconfidence: high',
+                    'answer: Paris\nconfidence: 0.9',
+                ],
+            });
+
+            await expect(
+                new Predict(QA, lm).forward({ question: 'Q' }, { repairAttempts: 5 })
+            ).rejects.toThrow(ValidationError);
+            expect(lm.calls).toHaveLength(2);
+        });
+
+        it('does not stack earlier corrections onto later repair prompts', async () => {
+            const lm = new MockLM({
+                responses: [
+                    'answer: Paris\nconfidence: very high',
+                    'answer: Paris\nconfidence: quite high',
+                    'answer: Paris\nconfidence: 0.7',
+                ],
+            });
+
+            await new Predict(QA, lm).forward({ question: 'Q' }, { repairAttempts: 2 });
+
+            const occurrences = lm.lastPrompt().split('failed validation for:').length - 1;
+            expect(lm.calls).toHaveLength(3);
+            expect(occurrences).toBe(1);
+        });
+
+        it('repairs on the native structured path too', async () => {
+            const lm = new MockLM({
+                structuredResponses: [
+                    { answer: 'Paris', confidence: 'high' },
+                    { answer: 'Paris', confidence: 0.9 },
+                ],
+                capabilities: { supportsStructuredOutput: true },
+            });
+
+            const result = await new Predict(QA, lm).forward(
+                { question: 'Q' },
+                { repairAttempts: 1 }
+            );
+
+            expect(lm.structuredCalls).toHaveLength(2);
+            expect(result.confidence).toBe(0.9);
+            expect(lm.structuredCalls[1].prompt).toContain('failed validation for: confidence');
+            expect(lm.structuredCalls[1].prompt).toContain('Return the corrected object');
+        });
+
+        it('treats a repairAttempts of zero as no repair at all', async () => {
+            const lm = new MockLM({
+                responses: [
+                    'answer: Paris\nconfidence: very high',
+                    'answer: Paris\nconfidence: 0.9',
+                ],
+            });
+
+            await expect(
+                new Predict(QA, lm).forward({ question: 'Q' }, { repairAttempts: 0 })
+            ).rejects.toThrow(ValidationError);
+            expect(lm.calls).toHaveLength(1);
+        });
+
+        it('does not repair errors that are not validation failures', async () => {
+            const lm = new MockLM({ responses: [] });
+
+            await expect(
+                new Predict(QA, lm).forward({ question: 'Q' }, { repairAttempts: 2 })
+            ).rejects.toThrow('no more scripted responses');
+            expect(lm.calls).toHaveLength(1);
+        });
+    });
+
     it('throws a clear error when constructed without a signature', async () => {
         const lm = new MockLM({ responses: ['x'] });
         const predict = new Predict(undefined as any, lm);
