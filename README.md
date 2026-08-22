@@ -184,6 +184,46 @@ Tool descriptions are what the model uses to decide when to call each tool, so
 they earn the detail. Never pass model output to `eval()` — see
 [`examples/utils.ts`](examples/utils.ts) for a bounded arithmetic evaluator.
 
+### Caching
+
+`configure({ cache: true })` replays a previous answer instead of paying for a
+repeated prompt. It is off by default, because replaying an old answer changes
+what a program does.
+
+```ts
+import { configure, MemoryCache, type Cache } from '@ts-dspy/core';
+
+configure({ cache: true }); // process-wide LRU, 1000 entries
+configure({ cache: new MemoryCache({ maxSize: 10_000 }) }); // or size it yourself
+```
+
+`generate`, `chat`, and `generateStructured` are all cached for every provider.
+The key is a SHA-256 hash of the provider, the model, the prompt or messages,
+the sampling parameters (`temperature`, `topP`, `maxTokens`, `stopSequences`,
+and the penalties), and the JSON schema on structured calls — so two calls that
+differ in any of those never collide. Errors are never cached.
+
+A cache hit costs nothing, and `getUsage()` says so: hits land in a `cacheHits`
+counter and stay out of `requestCount` and the token totals, so cost accounting
+still reflects real provider traffic.
+
+`cache` also accepts your own implementation. Both methods may be async, so
+Redis, SQLite, or a directory of files fits without a wrapper:
+
+```ts
+const redisCache: Cache = {
+  async get(key) {
+    const hit = await redis.get(key);
+    return hit === null ? undefined : JSON.parse(hit);
+  },
+  async set(key, value) {
+    await redis.set(key, JSON.stringify(value), { EX: 86_400 });
+  },
+};
+
+configure({ cache: redisCache });
+```
+
 ## Examples
 
 ```bash

@@ -7,7 +7,19 @@ export { Module } from './core/module';
 export { BaseLM } from './core/base-lm';
 export { Prediction } from './core/prediction';
 export { Example } from './core/example';
-export { configure, getDefaultLM, isCacheEnabled, isTracingEnabled } from './core/config';
+export {
+    configure,
+    getDefaultLM,
+    getCache,
+    clearCache,
+    isCacheEnabled,
+    isTracingEnabled,
+} from './core/config';
+export type { ConfigureOptions } from './core/config';
+
+// Caching
+export { MemoryCache } from './core/cache';
+export type { Cache, MemoryCacheOptions, MaybePromise } from './core/cache';
 
 // Errors
 export { TsDspyError, ValidationError, LMError } from './core/errors';

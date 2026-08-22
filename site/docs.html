@@ -64,6 +64,7 @@
       <li><a href="#testing">Testing</a></li>
       <li><a href="#api">API reference</a></li>
       <li><a href="#migration">Migrating to 0.5</a></li>
+      <li><a href="#caching">Caching</a></li>
     </ol>
   </nav>
 
@@ -587,6 +588,132 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
         Upgrade core and every provider together. Providers declare
         <code>@ts-dspy/core@^0.5.0</code>, and a mismatched pair is exactly the bug
         0.5.0 fixed &mdash; 0.4.2 shipped providers that resolved a stale core.
+      </p>
+    </div>
+  </section>
+
+  <section id="caching">
+    <p class="anchor">15</p>
+    <h2>Caching</h2>
+    <p>
+      Repeated prompts are the common case &mdash; a test suite re-running the same
+      example, an optimiser sweeping a signature, a retry loop that re-asks a
+      question it already asked. <code>configure({ cache: true })</code> replays the
+      previous answer instead of paying for it again.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { configure, MemoryCache } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="c">// Process-wide LRU, 1000 entries.</span>
+configure({ cache: <span class="kw">true</span> })
+
+<span class="c">// Or size it yourself.</span>
+configure({ cache: <span class="kw">new</span> MemoryCache({ maxSize: 10_000 }) })</code></pre>
+
+    <div class="callout callout-warn">
+      <span class="label">Off by default</span>
+      <p>
+        Caching is opt-in. A cache that replays an old answer for a repeated
+        prompt changes what a program does &mdash; sampling stops varying, an agent
+        loop stops exploring &mdash; so it is never switched on behind your back.
+      </p>
+    </div>
+
+    <h3>What goes into a key</h3>
+    <p>
+      <code>generate</code>, <code>chat</code>, and <code>generateStructured</code> are
+      all cached, for every provider, because the wrapping lives in
+      <code>BaseLM</code>. The key is a SHA-256 hash of everything that can change
+      the answer.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">In the key</th><th scope="col">Not in the key</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="note">Provider and model, including a per-call <code>model</code> override</td>
+            <td class="note"><code>timeout</code> and <code>retries</code> &mdash; transport, not content</td>
+          </tr>
+          <tr>
+            <td class="note">The prompt, or every message with its role</td>
+            <td class="note"><code>metadata</code>, which the provider does not see</td>
+          </tr>
+          <tr>
+            <td class="note"><code>temperature</code>, <code>topP</code>, <code>maxTokens</code>, <code>stopSequences</code>, <code>frequencyPenalty</code>, <code>presencePenalty</code></td>
+            <td class="note">&mdash;</td>
+          </tr>
+          <tr>
+            <td class="note">The JSON schema for a structured call, with keys sorted so property order does not split an entry</td>
+            <td class="note">&mdash;</td>
+          </tr>
+          <tr>
+            <td class="note">Whatever the provider returns from <code>cacheScope()</code></td>
+            <td class="note">&mdash;</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Prompts and schemas run to tens of kilobytes, so the canonical form is
+      hashed rather than stored. Errors are never cached: a transient 429 must
+      not pin a failure to a prompt for the life of the process.
+    </p>
+    <p>
+      Provider and model alone do not identify a request. A client built with a
+      default <code>maxTokens</code>, non-default safety settings, or a
+      <code>baseURL</code> pointing at a proxy answers the same prompt
+      differently, so a custom provider extending <code>BaseLM</code> should
+      return those options from <code>cacheScope()</code> and keep its entries
+      apart from a differently configured sibling.
+    </p>
+
+    <h3>Usage accounting</h3>
+    <p>
+      A cache hit costs nothing, and <code>getUsage()</code> says so. Hits land in a
+      new <code>cacheHits</code> counter and are kept out of <code>requestCount</code>
+      and the token totals, so a figure you multiply by a published price still
+      reflects real provider traffic.
+    </p>
+    <pre class="code"><code>configure({ cache: <span class="kw">true</span> })
+
+<span class="kw">await</span> lm.generate(<span class="s">'Capital of France?'</span>)
+<span class="kw">await</span> lm.generate(<span class="s">'Capital of France?'</span>)
+
+lm.getUsage()
+<span class="c">// { requestCount: 1, cacheHits: 1, promptTokens: 10, completionTokens: 5, ... }</span></code></pre>
+
+    <h3>Bring your own store</h3>
+    <p>
+      <code>cache</code> accepts an implementation as well as a boolean. Both methods
+      may be async, so Redis, SQLite, or a directory of files fits without a
+      wrapper &mdash; useful when the cache should outlive the process or be shared
+      across workers.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { configure, <span class="kw">type</span> <span class="ty">Cache</span> } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> redisCache: <span class="ty">Cache</span> = {
+  <span class="kw">async</span> get(key) {
+    <span class="kw">const</span> hit = <span class="kw">await</span> redis.get(key)
+    <span class="kw">return</span> hit === <span class="kw">null</span> ? <span class="kw">undefined</span> : JSON.parse(hit)
+  },
+  <span class="kw">async</span> set(key, value) {
+    <span class="kw">await</span> redis.set(key, JSON.stringify(value), { EX: 86_400 })
+  },
+}
+
+configure({ cache: redisCache })</code></pre>
+
+    <div class="callout">
+      <span class="label">Contract</span>
+      <p>
+        <code>get</code> resolves to <code>undefined</code> for a key that was never
+        written, and <code>null</code> counts as a miss too, since that is what a
+        Redis client returns for an absent key. Cached values are model
+        responses, which are never either, so a miss cannot be mistaken for a
+        hit. An optional <code>clear()</code> backs <code>clearCache()</code>
+        &mdash; handy between test cases, since the built-in cache is
+        process-wide.
       </p>
     </div>
   </section>

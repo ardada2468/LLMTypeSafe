@@ -52,6 +52,12 @@ export interface UsageStats {
     totalCost?: number;
     requestCount?: number;
     errorCount?: number;
+    /**
+     * Responses served from the configured cache. Cache hits are counted here
+     * and deliberately excluded from `requestCount` and the token totals, so
+     * usage keeps reflecting real provider traffic and cost stays accurate.
+     */
+    cacheHits?: number;
     /** Mean round-trip latency in milliseconds across recorded requests. */
     averageLatency?: number;
 }
