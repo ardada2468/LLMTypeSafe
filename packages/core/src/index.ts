@@ -2,7 +2,20 @@
 export * from './types';
 
 // Core classes
-export { Signature, InputField, OutputField } from './core/signature';
+export {
+    Signature,
+    InputField,
+    OutputField,
+    signature,
+    isZodSignature,
+} from './core/signature';
+export type {
+    AnyZodSignature,
+    SignatureLike,
+    SignatureSource,
+    ZodSignature,
+    ZodSignatureDefinition,
+} from './core/signature';
 export { Module } from './core/module';
 export { BaseLM } from './core/base-lm';
 export { Prediction } from './core/prediction';
@@ -15,11 +28,15 @@ export {
     isCacheEnabled,
     isTracingEnabled,
 } from './core/config';
-export type { ConfigureOptions } from './core/config';
+export type { ConfigureOptions, TraceHandler } from './core/config';
 
 // Caching
 export { MemoryCache } from './core/cache';
 export type { Cache, MemoryCacheOptions, MaybePromise } from './core/cache';
+
+// Tracing
+export { inspectHistory, clearHistory } from './core/trace';
+export type { TraceSpan } from './core/trace';
 
 // Errors
 export { TsDspyError, ValidationError, LMError } from './core/errors';
