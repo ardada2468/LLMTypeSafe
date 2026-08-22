@@ -397,7 +397,7 @@ console.log(out.answer, out.steps)</code></pre>
         <thead><tr><th scope="col">Error</th><th scope="col">Means</th><th scope="col">Carries</th></tr></thead>
         <tbody>
           <tr><td class="sym">ValidationError</td><td class="note">The reply did not match the signature.</td><td class="note"><code>issues[]</code>, <code>rawOutput</code></td></tr>
-          <tr><td class="sym">LMError</td><td class="note">The provider call itself failed.</td><td class="note"><code>cause</code>, <code>provider</code></td></tr>
+          <tr><td class="sym">LMError</td><td class="note">The provider call itself failed.</td><td class="note"><code>cause</code>, <code>provider</code>, <code>status</code></td></tr>
           <tr><td class="sym">TsDspyError</td><td class="note">Base class for both.</td><td class="note">&mdash;</td></tr>
         </tbody>
       </table>
@@ -407,6 +407,84 @@ console.log(out.answer, out.steps)</code></pre>
       A validation failure is usually a prompt problem, not a bug. The field
       description is the lever: <code>'urgency from 0 to 1'</code> gets a number far
       more reliably than <code>'urgency'</code>.
+    </p>
+
+    <h3>The error taxonomy</h3>
+    <p>
+      A failed provider call throws something more specific than
+      <code>LMError</code> whenever the SDK gives us enough to tell &mdash; so
+      retry logic is a <code>catch</code> on a class, not a sniff at an HTTP
+      status number. Every one of these still extends <code>LMError</code>, so
+      existing handlers keep working unchanged.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Error</th><th scope="col">Thrown when</th><th scope="col">What each provider gives us</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="sym">RateLimitError</td>
+            <td class="note">A rate or quota limit was hit. Retry after a backoff.</td>
+            <td class="note">OpenAI 429; Anthropic <code>rate_limit_error</code>; Gemini 429.</td>
+          </tr>
+          <tr>
+            <td class="sym">AuthError</td>
+            <td class="note">The key is missing, wrong, or not entitled to the model. Retrying will not help.</td>
+            <td class="note">OpenAI 401/403; Anthropic <code>authentication_error</code> or <code>permission_error</code>; Gemini 401/403.</td>
+          </tr>
+          <tr>
+            <td class="sym">ContextLengthError</td>
+            <td class="note">The prompt did not fit the context window. Shorten it or move to a larger model.</td>
+            <td class="note">OpenAI <code>code: 'context_length_exceeded'</code> on a 400 &mdash; the only dependable signal. Anthropic has no such type, and Gemini has no code at all, so both fall back to matching the message on a 400.</td>
+          </tr>
+          <tr>
+            <td class="sym">ContentFilterError</td>
+            <td class="note">Safety classifiers declined the request or the reply. Carries <code>category</code> where one is reported.</td>
+            <td class="note">Not an SDK error at all &mdash; see below.</td>
+          </tr>
+          <tr>
+            <td class="sym">TimeoutError</td>
+            <td class="note">The request timed out before a reply arrived.</td>
+            <td class="note">OpenAI <code>APIConnectionTimeoutError</code>, which carries no status; Anthropic <code>timeout_error</code>; any 408.</td>
+          </tr>
+          <tr>
+            <td class="sym">LMError</td>
+            <td class="note">Anything else &mdash; a 500, a dropped connection, an unrecognised 400.</td>
+            <td class="note">The status, when the SDK reported one, plus <code>cause</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre class="code"><code><span class="kw">import</span> { RateLimitError, ContextLengthError, LMError } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">try</span> {
+  <span class="kw">return</span> <span class="kw">await</span> triage.forward({ ticket })
+} <span class="kw">catch</span> (err) {
+  <span class="kw">if</span> (err <span class="kw">instanceof</span> RateLimitError) <span class="kw">return</span> queue.retryLater(ticket)
+  <span class="kw">if</span> (err <span class="kw">instanceof</span> ContextLengthError) <span class="kw">return</span> triage.forward({ ticket: truncate(ticket) })
+  <span class="kw">if</span> (err <span class="kw">instanceof</span> LMError) log.error(err.provider, err.status, err.cause)
+  <span class="kw">throw</span> err
+}</code></pre>
+
+    <h3>Content filtering is a 200</h3>
+    <p>
+      None of the three providers throws when a reply is filtered &mdash; all
+      three answer <code>200 OK</code> and leave a marker in the body. Anthropic
+      sets <code>stop_reason: 'refusal'</code>, Gemini sets
+      <code>promptFeedback.blockReason</code> or
+      <code>finishReason: 'SAFETY'</code>, and OpenAI sets
+      <code>finish_reason: 'content_filter'</code>. Each provider inspects the
+      response and raises <code>ContentFilterError</code>, so a declined request
+      never comes back to you as a silently empty string.
+    </p>
+    <p>
+      <code>AnthropicRefusalError</code> was the older, Anthropic-only name for
+      this. It is now a deprecated alias of <code>ContentFilterError</code>
+      &mdash; an alias of that class, not a subclass of it, so an
+      <code>instanceof</code> check under the old name now matches an OpenAI or
+      Gemini filter too. Test <code>err.provider === 'anthropic'</code> if you
+      need to tell them apart, and prefer the new name.
     </p>
   </section>
 

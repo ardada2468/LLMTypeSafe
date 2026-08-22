@@ -10,8 +10,18 @@ export { Example } from './core/example';
 export { configure, getDefaultLM, isCacheEnabled, isTracingEnabled } from './core/config';
 
 // Errors
-export { TsDspyError, ValidationError, LMError } from './core/errors';
-export type { FieldValidationIssue } from './core/errors';
+export {
+    TsDspyError,
+    ValidationError,
+    LMError,
+    RateLimitError,
+    AuthError,
+    ContextLengthError,
+    ContentFilterError,
+    TimeoutError,
+    classify,
+} from './core/errors';
+export type { FieldValidationIssue, ErrorDiscriminators, LMErrorClass } from './core/errors';
 
 // Modules
 export { Predict } from './modules/predict';

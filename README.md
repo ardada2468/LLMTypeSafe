@@ -147,6 +147,48 @@ Coercion is deliberately lenient — models emit text, so `"42"` satisfies a
 failure: anything that cannot be coerced throws rather than silently passing
 through.
 
+### Provider errors
+
+A failed provider call throws a typed subclass of `LMError` whenever the SDK
+gives us enough to tell, so retry logic is a `catch` on a class rather than a
+sniff at an HTTP status number:
+
+```ts
+import { RateLimitError, ContextLengthError, LMError } from '@ts-dspy/core';
+
+try {
+  return await predict.forward({ question });
+} catch (error) {
+  if (error instanceof RateLimitError) return queue.retryLater(question);
+  if (error instanceof ContextLengthError)
+    return predict.forward({ question: shorten(question) });
+  if (error instanceof LMError) log.error(error.provider, error.status, error.cause);
+  throw error;
+}
+```
+
+| Error                | Thrown when                                                                      |
+| -------------------- | -------------------------------------------------------------------------------- |
+| `RateLimitError`     | A rate or quota limit was hit. Worth retrying after a backoff.                   |
+| `AuthError`          | The key is missing, wrong, or not entitled to the model. Retrying will not help. |
+| `ContextLengthError` | The prompt did not fit the context window.                                       |
+| `ContentFilterError` | Safety classifiers declined the request or the reply. Carries `category`.        |
+| `TimeoutError`       | The request timed out before a reply arrived.                                    |
+| `LMError`            | Anything else. Every class above extends it, so existing handlers still work.    |
+
+What each SDK reports differs, and the classification follows that rather than
+pretending otherwise: OpenAI's `code` is the only dependable signal for a
+context-length overflow, Anthropic's typed `error.type` union is the cleanest of
+the three, and Gemini reports nothing but an HTTP status.
+
+Content filtering is the exception — all three providers answer `200 OK` and
+leave a marker in the body (`stop_reason: 'refusal'`, `finishReason: 'SAFETY'`,
+`finish_reason: 'content_filter'`), so `ContentFilterError` comes from
+inspecting the response. `AnthropicRefusalError` is now a deprecated alias of
+`ContentFilterError` — an alias of that class rather than a subclass, so an
+`instanceof` check under the old name now matches any provider's filter. Test
+`error.provider` to tell them apart.
+
 ### Output types
 
 Decorators record fields at runtime, so TypeScript cannot infer per-field types

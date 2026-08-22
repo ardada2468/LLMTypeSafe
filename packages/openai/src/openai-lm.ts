@@ -1,12 +1,15 @@
 import {
     BaseLM,
+    ContentFilterError,
     LMError,
+    TimeoutError,
+    classify,
     type ChatMessage,
     type LLMCallOptions,
     type ModelCapabilities,
     type StreamChunk,
 } from '@ts-dspy/core';
-import OpenAI, { APIError } from 'openai';
+import OpenAI, { APIConnectionTimeoutError, APIError } from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 /**
@@ -83,7 +86,10 @@ export class OpenAILM extends BaseLM {
                 latencyMs: Date.now() - startedAt,
             });
 
-            return completion.choices[0]?.message?.content ?? '';
+            const choice = completion.choices[0];
+            assertNotFiltered(choice?.finish_reason);
+
+            return choice?.message?.content ?? '';
         } catch (error) {
             this.recordError();
             throw toLMError(error);
@@ -122,6 +128,8 @@ export class OpenAILM extends BaseLM {
             });
 
             const choice = completion.choices[0];
+            assertNotFiltered(choice?.finish_reason);
+
             if (choice?.finish_reason === 'length') {
                 throw new LMError(
                     'openai',
@@ -183,7 +191,12 @@ export class OpenAILM extends BaseLM {
                 promptTokens = chunk.usage.prompt_tokens ?? 0;
                 completionTokens = chunk.usage.completion_tokens ?? 0;
             }
-            const content = chunk.choices[0]?.delta?.content;
+            const choice = chunk.choices[0];
+            if (choice?.finish_reason === 'content_filter') {
+                this.recordError();
+                assertNotFiltered(choice.finish_reason);
+            }
+            const content = choice?.delta?.content;
             if (content) {
                 yield { content, done: false };
             }
@@ -273,10 +286,33 @@ function requestOptions(options?: LLMCallOptions): { timeout?: number; maxRetrie
     return request;
 }
 
+/**
+ * A filtered completion comes back as a normal 200 response whose only tell is
+ * `finish_reason: 'content_filter'`. The previous implementation checked only
+ * `'length'`, so a filtered reply was returned as an empty string in silence.
+ */
+function assertNotFiltered(finishReason: string | null | undefined): void {
+    if (finishReason !== 'content_filter') return;
+    throw new ContentFilterError('openai', 'Response was blocked by the content filter.', {
+        category: 'content_filter',
+    });
+}
+
 function toLMError(error: unknown): LMError {
     if (error instanceof LMError) return error;
+    // Checked before APIError: this is a subclass of it, and it carries no
+    // status of its own to classify by.
+    if (error instanceof APIConnectionTimeoutError) {
+        return new TimeoutError('openai', error.message, { cause: error });
+    }
     if (error instanceof APIError) {
-        return new LMError('openai', error.message, { cause: error, status: error.status });
+        // `code` is what separates a context-length 400 from any other 400.
+        const ErrorClass = classify(error.status, {
+            code: error.code,
+            type: error.type,
+            message: error.message,
+        });
+        return new ErrorClass('openai', error.message, { cause: error, status: error.status });
     }
     const message = error instanceof Error ? error.message : String(error);
     return new LMError('openai', message, { cause: error });
