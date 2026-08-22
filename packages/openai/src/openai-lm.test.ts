@@ -1,5 +1,9 @@
 import { LMError } from '@ts-dspy/core';
 import { OpenAILM, toOpenAIMessages, DEFAULT_OPENAI_MODEL } from './openai-lm';
+import { imagePart, textPart } from '@ts-dspy/core';
+
+const PNG = 'iVBORw0KGgo=';
+const DATA_URI = `data:image/png;base64,${PNG}`;
 
 // Everything the hoisted vi.mock factory touches must itself be hoisted.
 const mocks = vi.hoisted(() => {
@@ -222,6 +226,23 @@ describe('OpenAILM', () => {
             expect(capabilities.supportsStreaming).toBe(true);
             expect(capabilities.supportsStructuredOutput).toBe(true);
             expect(capabilities.supportsFunctionCalling).toBe(true);
+            expect(capabilities.supportsVision).toBe(true);
+        });
+
+        it('reports no vision for text-only model families', () => {
+            const models = [
+                'gpt-3.5-turbo',
+                'gpt-4-0613',
+                'gpt-4-32k',
+                'o1-mini',
+                'o1-preview',
+                'o3-mini',
+            ];
+            for (const model of models) {
+                expect(
+                    new OpenAILM({ apiKey: 'k', model }).getCapabilities().supportsVision
+                ).toBe(false);
+            }
         });
 
         it('reports a context length matching the configured model', () => {
@@ -263,6 +284,66 @@ describe('OpenAILM', () => {
             const messages = [{ role: 'user' as const, content: 'u' }];
             toOpenAIMessages(messages);
             expect(messages).toHaveLength(1);
+        });
+
+        it('sends a user image as an image_url part', () => {
+            expect(
+                toOpenAIMessages([
+                    { role: 'user', content: [textPart('what is this?'), imagePart(DATA_URI)] },
+                ])
+            ).toEqual([
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: 'what is this?' },
+                        { type: 'image_url', image_url: { url: DATA_URI } },
+                    ],
+                },
+            ]);
+        });
+
+        it('passes a remote URL and a detail hint straight through', () => {
+            const [message] = toOpenAIMessages([
+                {
+                    role: 'user',
+                    content: [imagePart('https://example.com/a.png', 'low')],
+                },
+            ]);
+
+            expect(message.content).toEqual([
+                {
+                    type: 'image_url',
+                    image_url: { url: 'https://example.com/a.png', detail: 'low' },
+                },
+            ]);
+        });
+
+        it('flattens images in system and assistant turns, which take text only', () => {
+            // ChatCompletionMessageParam is a discriminated union: only the user
+            // variant accepts image parts, so anything else has to degrade to text.
+            expect(
+                toOpenAIMessages([
+                    { role: 'system', content: [textPart('logo: '), imagePart(DATA_URI)] },
+                    { role: 'assistant', content: [textPart('seen')] },
+                ])
+            ).toEqual([
+                { role: 'system', content: 'logo: [image: image/png]' },
+                { role: 'assistant', content: 'seen' },
+            ]);
+        });
+
+        it('sends an image through a chat call', async () => {
+            mocks.create.mockResolvedValue(completion('a logo'));
+            await new OpenAILM({ apiKey: 'k' }).chat([
+                { role: 'user', content: [imagePart(DATA_URI)] },
+            ]);
+
+            expect(mocks.create.mock.calls[0][0].messages).toEqual([
+                {
+                    role: 'user',
+                    content: [{ type: 'image_url', image_url: { url: DATA_URI } }],
+                },
+            ]);
         });
     });
 });

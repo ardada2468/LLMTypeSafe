@@ -184,6 +184,39 @@ Tool descriptions are what the model uses to decide when to call each tool, so
 they earn the detail. Never pass model output to `eval()` — see
 [`examples/utils.ts`](examples/utils.ts) for a bounded arithmetic evaluator.
 
+### Images
+
+`ChatMessage.content` is `string | ContentPart[]`, so one message can carry text
+and images together. Declare an image input with `@ImageField` — or the `image`
+type in a string signature — and render the message with `buildPromptContent`:
+
+```ts
+import { Signature, ImageField, OutputField, buildPromptContent } from '@ts-dspy/core';
+
+class ReadSign extends Signature {
+  static description = 'Read the sign in the photo.';
+
+  @ImageField({ description: 'photo of the sign' })
+  photo!: string;
+
+  @OutputField({ description: 'the words on the sign' })
+  words!: string;
+}
+
+const content = buildPromptContent(ReadSign, { photo: 'data:image/png;base64,...' });
+await lm.chat([{ role: 'user', content }]);
+```
+
+`imagePart()` accepts an `https://` URL, a `data:` URI, or an explicit
+`{ kind: 'base64', data, mediaType }` source. OpenAI receives `image_url` parts,
+Anthropic `image` blocks, and Gemini `inlineData` (Gemini fetches no arbitrary
+web URLs, so pass bytes or a Files API URI). Only user turns can carry an image,
+so system and assistant content is flattened to text. Modules still build string
+prompts, where an image input renders as an `[image: image/png]` placeholder —
+send images through `lm.chat()` for now. A plain string content behaves exactly
+as it did, and `supportsVision` is reported per model instead of being hardcoded
+to `true`.
+
 ## Examples
 
 ```bash

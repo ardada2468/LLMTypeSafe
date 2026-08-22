@@ -1,4 +1,4 @@
-import { LMError } from '@ts-dspy/core';
+import { LMError, imagePart, textPart } from '@ts-dspy/core';
 import {
     AnthropicLM,
     AnthropicRefusalError,
@@ -19,6 +19,9 @@ const mocks = vi.hoisted(() => {
 });
 
 const { MockAPIError } = mocks;
+
+const PNG = 'iVBORw0KGgo=';
+const DATA_URI = `data:image/png;base64,${PNG}`;
 
 vi.mock('@anthropic-ai/sdk', () => ({
     default: class {
@@ -255,9 +258,82 @@ describe('AnthropicLM', () => {
                 { role: 'assistant', content: 'reply' },
             ]);
 
+            // Merged content is now a block array rather than a joined string:
+            // image turns can only be expressed as blocks, and merging on one
+            // representation instead of two is what keeps a text turn followed
+            // by an image turn from being sent as two adjacent user messages.
+            // The blank line between the two texts is preserved.
             expect(messages).toEqual([
-                { role: 'user', content: 'one\n\ntwo' },
+                { role: 'user', content: [{ type: 'text', text: 'one\n\ntwo' }] },
                 { role: 'assistant', content: 'reply' },
+            ]);
+        });
+
+        it('merges a text turn and an adjacent image turn into one user message', () => {
+            const { messages } = toAnthropicMessages([
+                { role: 'user', content: 'what is this?' },
+                { role: 'user', content: [imagePart(DATA_URI)] },
+                { role: 'assistant', content: 'a logo' },
+            ]);
+
+            // Two adjacent user messages would be rejected outright: the
+            // Messages API requires strict user/assistant alternation.
+            expect(messages).toHaveLength(2);
+            expect(messages[0]).toEqual({
+                role: 'user',
+                content: [
+                    { type: 'text', text: 'what is this?' },
+                    {
+                        type: 'image',
+                        source: { type: 'base64', media_type: 'image/png', data: PNG },
+                    },
+                ],
+            });
+            expect(messages[1].role).toBe('assistant');
+        });
+
+        it('sends an image as a base64 block', () => {
+            const { messages } = toAnthropicMessages([
+                { role: 'user', content: [textPart('look'), imagePart(DATA_URI)] },
+            ]);
+
+            expect(messages[0].content).toEqual([
+                { type: 'text', text: 'look' },
+                {
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/png', data: PNG },
+                },
+            ]);
+        });
+
+        it('sends a remote image as a url block', () => {
+            const { messages } = toAnthropicMessages([
+                { role: 'user', content: [imagePart('https://example.com/a.png')] },
+            ]);
+
+            expect(messages[0].content).toEqual([
+                { type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } },
+            ]);
+        });
+
+        it('flattens an image in a system message, which is text-only', () => {
+            const { system } = toAnthropicMessages([
+                { role: 'system', content: [textPart('logo: '), imagePart(DATA_URI)] },
+                { role: 'user', content: 'hi' },
+            ]);
+
+            expect(system).toBe('logo: [image: image/png]');
+        });
+
+        it('leaves a text-only conversation as plain strings', () => {
+            const { messages } = toAnthropicMessages([
+                { role: 'user', content: 'hi' },
+                { role: 'assistant', content: 'hello' },
+            ]);
+
+            expect(messages).toEqual([
+                { role: 'user', content: 'hi' },
+                { role: 'assistant', content: 'hello' },
             ]);
         });
 
@@ -308,6 +384,12 @@ describe('AnthropicLM', () => {
         expect(capabilities.supportsStreaming).toBe(true);
         expect(capabilities.supportsStructuredOutput).toBe(true);
         expect(capabilities.supportsFunctionCalling).toBe(true);
+        expect(capabilities.supportsVision).toBe(true);
         expect(capabilities.maxContextLength).toBe(1_000_000);
+    });
+
+    it('reports no vision for the models that cannot read images', () => {
+        const haiku = new AnthropicLM({ apiKey: 'k', model: 'claude-3-5-haiku-latest' });
+        expect(haiku.getCapabilities().supportsVision).toBe(false);
     });
 });

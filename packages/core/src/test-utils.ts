@@ -1,4 +1,5 @@
 import { BaseLM } from './core/base-lm';
+import { contentToText } from './utils/content';
 import type { ChatMessage, LLMCallOptions, ModelCapabilities } from './types/language-model';
 
 export interface MockLMOptions {
@@ -71,9 +72,12 @@ export class MockLM extends BaseLM {
         return this.capabilities;
     }
 
-    /** The prompt text of the most recent chat call. */
+    /**
+     * The prompt text of the most recent chat call. Image parts are flattened to
+     * their `[image: …]` placeholder so this stays a string.
+     */
     lastPrompt(): string {
         const last = this.calls.at(-1);
-        return last?.messages.map((message) => message.content).join('\n') ?? '';
+        return last?.messages.map((message) => contentToText(message.content)).join('\n') ?? '';
     }
 }

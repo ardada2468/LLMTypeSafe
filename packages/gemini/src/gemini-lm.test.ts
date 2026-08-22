@@ -1,4 +1,4 @@
-import { LMError } from '@ts-dspy/core';
+import { LMError, imagePart, textPart } from '@ts-dspy/core';
 import { GeminiLM, toGeminiContents, DEFAULT_GEMINI_MODEL } from './gemini-lm';
 
 const mocks = vi.hoisted(() => ({
@@ -25,6 +25,9 @@ vi.mock('@google/genai', () => ({
     },
     HarmBlockThreshold: { BLOCK_MEDIUM_AND_ABOVE: 'BLOCK_MEDIUM_AND_ABOVE' },
 }));
+
+const PNG = 'iVBORw0KGgo=';
+const DATA_URI = `data:image/png;base64,${PNG}`;
 
 function response(text: string, extra: Record<string, unknown> = {}) {
     return {
@@ -123,6 +126,48 @@ describe('GeminiLM', () => {
 
             expect(systemInstruction).toBe('be terse');
             expect(contents).toHaveLength(1);
+        });
+
+        it('sends inline bytes as inlineData alongside the text part', () => {
+            const { contents } = toGeminiContents([
+                { role: 'user', content: [textPart('what is this?'), imagePart(DATA_URI)] },
+            ]);
+
+            expect(contents).toEqual([
+                {
+                    role: 'user',
+                    parts: [
+                        { text: 'what is this?' },
+                        { inlineData: { mimeType: 'image/png', data: PNG } },
+                    ],
+                },
+            ]);
+        });
+
+        it('sends a Files API URI as fileData', () => {
+            const uri = 'https://generativelanguage.googleapis.com/v1beta/files/abc123';
+            const { contents } = toGeminiContents([
+                { role: 'user', content: [imagePart(uri)] },
+            ]);
+
+            expect(contents[0].parts).toEqual([{ fileData: { fileUri: uri } }]);
+        });
+
+        it('refuses an arbitrary web URL, which fileData cannot dereference', () => {
+            expect(() =>
+                toGeminiContents([
+                    { role: 'user', content: [imagePart('https://example.com/a.png')] },
+                ])
+            ).toThrow(LMError);
+        });
+
+        it('flattens an image in a system message, which is text-only', () => {
+            const { systemInstruction } = toGeminiContents([
+                { role: 'system', content: [textPart('logo: '), imagePart(DATA_URI)] },
+                { role: 'user', content: 'hi' },
+            ]);
+
+            expect(systemInstruction).toBe('logo: [image: image/png]');
         });
     });
 
@@ -268,8 +313,14 @@ describe('GeminiLM', () => {
             expect(capabilities.supportsStreaming).toBe(true);
             expect(capabilities.supportsStructuredOutput).toBe(true);
             expect(capabilities.supportsFunctionCalling).toBe(true);
+            expect(capabilities.supportsVision).toBe(true);
             // The old implementation hardcoded 32768 with a "Gemini 1.0 Pro" comment.
             expect(capabilities.maxContextLength).toBe(1_000_000);
+        });
+
+        it('reports no vision for embedding models', () => {
+            const lm = new GeminiLM({ apiKey: 'k', model: 'gemini-embedding-001' });
+            expect(lm.getCapabilities().supportsVision).toBe(false);
         });
     });
 

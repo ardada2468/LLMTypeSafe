@@ -1,4 +1,4 @@
-import { Signature, InputField, OutputField } from './signature';
+import { Signature, ImageField, InputField, OutputField, isImageFieldType } from './signature';
 
 describe('Signature', () => {
     describe('parseStringSignature', () => {
@@ -132,6 +132,25 @@ describe('Signature', () => {
             // ...without writing into the map Base reads from.
             expect(Object.keys(Base.getOutputFields())).toEqual(['answer']);
             expect(Object.keys(Extended.getInputFields())).toEqual(['question']);
+        });
+    });
+
+    describe('ImageField', () => {
+        it('records an input field typed image', () => {
+            class Caption extends Signature {
+                @ImageField({ description: 'the picture' })
+                picture!: string;
+
+                @OutputField({ description: 'one sentence' })
+                caption!: string;
+            }
+
+            const picture = Caption.getInputFields().picture;
+            expect(picture.type).toBe('image');
+            expect(picture.description).toBe('the picture');
+            expect(isImageFieldType(picture.type)).toBe(true);
+            // Images are inputs only: a model replies in text.
+            expect(Caption.getOutputFields().caption.type).toBe('string');
         });
     });
 

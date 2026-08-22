@@ -2,7 +2,14 @@
 export * from './types';
 
 // Core classes
-export { Signature, InputField, OutputField } from './core/signature';
+export {
+    Signature,
+    InputField,
+    OutputField,
+    ImageField,
+    IMAGE_FIELD_TYPE,
+    isImageFieldType,
+} from './core/signature';
 export { Module } from './core/module';
 export { BaseLM } from './core/base-lm';
 export { Prediction } from './core/prediction';
@@ -20,5 +27,16 @@ export { RespAct } from './modules/respact';
 export type { ToolFunction, ToolWithDescription, ToolDefinition } from './modules/respact';
 
 // Utilities
-export { buildPrompt, parseOutput } from './utils/parsing';
+export { buildPrompt, buildPromptContent, parseOutput } from './utils/parsing';
+export {
+    textPart,
+    imagePart,
+    isImagePart,
+    imageToUrl,
+    imageMediaType,
+    normalizeImageSource,
+    toContentParts,
+    hasImageContent,
+    contentToText,
+} from './utils/content';
 export { fieldConfigToZod, buildOutputSchema, buildOutputJsonSchema } from './utils/schema';

@@ -1,5 +1,5 @@
-import { buildPrompt, parseOutput } from './parsing';
-import { Signature, InputField, OutputField } from '../core/signature';
+import { buildPrompt, buildPromptContent, parseOutput } from './parsing';
+import { Signature, ImageField, InputField, OutputField } from '../core/signature';
 import { ValidationError } from '../core/errors';
 
 describe('Parsing Utils', () => {
@@ -190,6 +190,82 @@ describe('Parsing Utils', () => {
             expect(() => parseOutput('input -> count: int', 'count: 4.5')).toThrow(
                 ValidationError
             );
+        });
+    });
+
+    describe('buildPromptContent', () => {
+        const PNG = 'iVBORw0KGgo=';
+        const DATA_URI = `data:image/png;base64,${PNG}`;
+
+        class ReadSign extends Signature {
+            static description = 'Read the sign in the photo.';
+
+            @ImageField({ description: 'photo of the sign' })
+            photo!: string;
+
+            @InputField({ description: 'the language to answer in' })
+            language!: string;
+
+            @OutputField({ description: 'the words on the sign' })
+            words!: string;
+        }
+
+        it('returns a plain string when every input is text', () => {
+            const content = buildPromptContent('question -> answer', { question: 'why?' });
+
+            expect(content).toBe(buildPrompt('question -> answer', { question: 'why?' }));
+            expect(typeof content).toBe('string');
+        });
+
+        it('emits content parts when a class input field is an image', () => {
+            const content = buildPromptContent(ReadSign, {
+                photo: DATA_URI,
+                language: 'French',
+            });
+
+            expect(content).toEqual([
+                { type: 'text', text: 'Read the sign in the photo.\n\nphoto: ' },
+                {
+                    type: 'image',
+                    source: { kind: 'base64', mediaType: 'image/png', data: PNG },
+                },
+                {
+                    type: 'text',
+                    text: '\nlanguage: French\n\nProvide:\nwords (the words on the sign):',
+                },
+            ]);
+        });
+
+        it('emits content parts for a string signature declaring an image input', () => {
+            const content = buildPromptContent('photo: image, question -> answer', {
+                photo: 'https://example.com/sign.png',
+                question: 'what does it say?',
+            });
+
+            expect(Array.isArray(content)).toBe(true);
+            expect(content[1]).toEqual({
+                type: 'image',
+                source: { kind: 'url', url: 'https://example.com/sign.png' },
+            });
+        });
+
+        it('skips an image input that was not supplied', () => {
+            const content = buildPromptContent(ReadSign, { language: 'French' });
+
+            expect(content).toBe(
+                'Read the sign in the photo.\n\nlanguage: French\n\n' +
+                    'Provide:\nwords (the words on the sign):'
+            );
+        });
+    });
+
+    describe('buildPrompt with images', () => {
+        it('flattens an image input to a placeholder, since a string has no pixels', () => {
+            const prompt = buildPrompt('photo: image -> caption', {
+                photo: 'data:image/png;base64,iVBORw0KGgo=',
+            });
+
+            expect(prompt).toContain('photo: [image: image/png]');
         });
     });
 });
