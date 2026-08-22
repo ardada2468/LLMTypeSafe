@@ -139,7 +139,10 @@ export function buildCacheKey(input: CacheKeyInput): string {
                 role: message.role,
                 content: message.content,
                 name: message.name ?? null,
-                functionCall: message.functionCall ?? null,
+                // The dead `functionCall` field went away with native tool
+                // calling; `toolCallId` correlates a tool result to the call it
+                // answers, so two otherwise-identical turns are not conflated.
+                toolCallId: message.toolCallId ?? null,
                 toolCalls: message.toolCalls ?? null,
             })) ?? null,
         schema: input.schema ?? null,

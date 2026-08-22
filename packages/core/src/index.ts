@@ -70,7 +70,14 @@ export type { PredictOptions } from './modules/predict';
 export type { StreamOptions, PredictionStream, PartialOutput } from './modules/predict';
 export { ChainOfThought } from './modules/chain-of-thought';
 export { RespAct } from './modules/respact';
-export type { ToolFunction, ToolWithDescription, ToolDefinition } from './modules/respact';
+export type {
+    ToolFunction,
+    ToolWithDescription,
+    ToolDefinition,
+    ToolParameterSchema,
+    RespActEvent,
+    RespActOptions,
+} from './modules/respact';
 
 // Optimizers
 export { LabeledFewShot, BootstrapFewShot } from './optimizers';

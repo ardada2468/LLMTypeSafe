@@ -5,9 +5,12 @@ import {
     TimeoutError,
     classify,
     type ChatMessage,
+    type ChatResult,
+    type FinishReason,
     type LLMCallOptions,
     type ModelCapabilities,
     type StreamChunk,
+    type ToolCall,
 } from '@ts-dspy/core';
 import OpenAI, { APIConnectionTimeoutError, APIError } from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
@@ -68,6 +71,13 @@ export class OpenAILM extends BaseLM {
     }
 
     async chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string> {
+        return (await this.chatWithTools(messages, options)).content;
+    }
+
+    async chatWithTools(
+        messages: ChatMessage[],
+        options?: LLMCallOptions
+    ): Promise<ChatResult> {
         const startedAt = Date.now();
 
         try {
@@ -76,6 +86,7 @@ export class OpenAILM extends BaseLM {
                     model: options?.model ?? this.model,
                     messages: toOpenAIMessages(messages),
                     ...samplingParams(options),
+                    ...toolParams(options),
                 },
                 requestOptions(options)
             );
@@ -89,7 +100,13 @@ export class OpenAILM extends BaseLM {
             const choice = completion.choices[0];
             assertNotFiltered(choice?.finish_reason);
 
-            return choice?.message?.content ?? '';
+            const toolCalls = fromOpenAIToolCalls(choice?.message?.tool_calls);
+
+            return {
+                content: choice?.message?.content ?? '',
+                ...(toolCalls.length > 0 ? { toolCalls } : {}),
+                finishReason: finishReasonOf(choice?.finish_reason),
+            };
         } catch (error) {
             this.recordError();
             throw toLMError(error);
@@ -242,16 +259,128 @@ export function toOpenAIMessages(messages: ChatMessage[]): ChatCompletionMessage
             case 'system':
                 return { role: 'system', content: message.content };
             case 'assistant':
+                if (message.toolCalls?.length) {
+                    return {
+                        role: 'assistant',
+                        // The API rejects an empty string alongside tool_calls.
+                        content: message.content || null,
+                        tool_calls: message.toolCalls.map(toOpenAIToolCall),
+                    };
+                }
                 return { role: 'assistant', content: message.content };
             case 'tool':
             case 'function':
-                // The core ChatMessage shape has no tool_call_id, so a tool
-                // result is surfaced as user content rather than dropped.
+                // `tool_call_id` is what pairs a result with its call. Without
+                // one the API would reject the turn, so an uncorrelated result
+                // is still surfaced as user content rather than dropped.
+                if (message.toolCallId) {
+                    return {
+                        role: 'tool',
+                        tool_call_id: message.toolCallId,
+                        content: message.content,
+                    };
+                }
                 return { role: 'user', content: message.content };
             default:
                 return { role: 'user', content: message.content };
         }
     });
+}
+
+function toOpenAIToolCall(call: ToolCall, index: number) {
+    return {
+        // OpenAI requires an id; a call relayed from a provider without one
+        // (Gemini) gets a placeholder. The position is part of it because two
+        // parallel calls to the same tool would otherwise share an id, and
+        // results would then pair up with the wrong call.
+        id: call.id ?? `call_${index}_${call.name}`,
+        type: 'function' as const,
+        function: {
+            name: call.name,
+            // The wire format is a JSON *string*. Replay the provider's original
+            // bytes when we have them, so a round trip is lossless.
+            arguments: call.rawArguments ?? JSON.stringify(call.arguments ?? {}),
+        },
+    };
+}
+
+function fromOpenAIToolCalls(
+    toolCalls:
+        Array<{ id?: string; function?: { name?: string; arguments?: string } }> | undefined
+): ToolCall[] {
+    if (!toolCalls?.length) return [];
+
+    return toolCalls
+        .filter((call) => typeof call.function?.name === 'string')
+        .map((call) => {
+            const raw = call.function?.arguments ?? '';
+            return {
+                id: call.id,
+                name: call.function!.name!,
+                arguments: parseArguments(raw),
+                rawArguments: raw,
+            };
+        });
+}
+
+/**
+ * OpenAI sends arguments as a JSON string. A model can emit one that does not
+ * parse; that is a tool-argument problem for the caller to report back to the
+ * model, not a transport failure, so it yields empty arguments with the original
+ * text preserved in `rawArguments`.
+ */
+function parseArguments(raw: string): Record<string, unknown> {
+    if (!raw.trim()) return {};
+    try {
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : {};
+    } catch {
+        return {};
+    }
+}
+
+/** Translate tool declarations into the Chat Completions request shape. */
+function toolParams(options?: LLMCallOptions): Record<string, unknown> {
+    if (!options?.tools?.length) return {};
+
+    const params: Record<string, unknown> = {
+        tools: options.tools.map((tool) => ({
+            type: 'function',
+            function: {
+                name: tool.name,
+                ...(tool.description ? { description: tool.description } : {}),
+                parameters: tool.parameters,
+            },
+        })),
+    };
+
+    const choice = options.toolChoice;
+    if (choice !== undefined) {
+        params.tool_choice =
+            typeof choice === 'string'
+                ? choice
+                : { type: 'function', function: { name: choice.name } };
+    }
+
+    return params;
+}
+
+function finishReasonOf(reason: string | null | undefined): FinishReason {
+    switch (reason) {
+        case 'stop':
+            return 'stop';
+        case 'tool_calls':
+        case 'function_call':
+            return 'tool_calls';
+        case 'length':
+            return 'length';
+        case 'content_filter':
+            return 'content_filter';
+        default:
+            return 'other';
+    }
 }
 
 /**
