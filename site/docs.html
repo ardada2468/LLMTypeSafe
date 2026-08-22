@@ -515,9 +515,9 @@ console.log(out.answer, out.steps)</code></pre>
     <h2>Timeouts and retries</h2>
     <p>
       <code>LLMCallOptions</code> flows from a module through to the provider SDK,
-      which owns retries and honours <code>retry-after</code>. There is no
-      hand-rolled backoff in this library, so you never get two retry loops
-      fighting each other.
+      which owns retries and honours <code>retry-after</code>. There is no second
+      retry layer stacked on top, so you never get two loops fighting each other
+      &mdash; with one documented exception on Gemini, below.
     </p>
     <pre class="code"><code><span class="kw">const</span> out = <span class="kw">await</span> triage.forward(
   { ticket },
@@ -528,13 +528,74 @@ console.log(out.answer, out.steps)</code></pre>
       <table>
         <thead><tr><th scope="col">Option</th><th scope="col">Effect</th></tr></thead>
         <tbody>
-          <tr><td class="sym">timeout</td><td class="note">Per-request deadline in milliseconds.</td></tr>
-          <tr><td class="sym">retries</td><td class="note">Passed to the SDK's own retry policy.</td></tr>
+          <tr><td class="sym">timeout</td><td class="note">Deadline in milliseconds. It bounds each attempt, so a retried call gets a fresh one.</td></tr>
+          <tr><td class="sym">retries</td><td class="note">Passed to the SDK's own retry policy. Defaults to 2 on all three providers.</td></tr>
+          <tr><td class="sym">signal</td><td class="note">An <code>AbortSignal</code> that cancels the call in flight.</td></tr>
           <tr><td class="sym">maxTokens</td><td class="note">Output cap for the call.</td></tr>
           <tr><td class="sym">temperature<br>topP</td><td class="note">Sent only when set, so reasoning models are unaffected.</td></tr>
           <tr><td class="sym">model</td><td class="note">Override the provider's model for one call.</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <h3>Cancellation</h3>
+    <p>
+      A timeout ends a call that is taking too long. <code>signal</code> ends one
+      whose answer nobody is waiting for any more &mdash; a React component that
+      unmounted, a server request whose client hung up. Pass any
+      <code>AbortSignal</code> and the call rejects the moment it aborts, instead of
+      running on to a reply that gets thrown away.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> controller = <span class="kw">new</span> AbortController()
+<span class="c">// React: return () =&gt; controller.abort() from the effect.</span>
+
+<span class="kw">const</span> out = <span class="kw">await</span> triage.forward(
+  { ticket },
+  { signal: controller.signal, timeout: <span class="s">30_000</span> }
+)</code></pre>
+
+    <p>
+      <code>signal</code> and <code>timeout</code> compose: pass both and whichever
+      fires first ends the call. OpenAI and Anthropic hand each to the SDK
+      separately; Gemini exposes a single <code>abortSignal</code> slot, so ts-dspy
+      folds the two into one with <code>AbortSignal.any()</code>, freshly per
+      request.
+    </p>
+
+    <div class="callout">
+      <span class="label">One controller per unit of work</span>
+      <p>
+        The signal is read when the request goes out, and aborting a controller
+        aborts every call still attached to it. That is exactly what you want for
+        a screen full of parallel calls, and exactly what you do not want when
+        one retry should outlive an earlier cancellation &mdash; make a fresh
+        <code>AbortController</code> for each piece of work you might cancel
+        independently.
+      </p>
+    </div>
+
+    <h3>Provider defaults</h3>
+    <p>
+      The same two knobs are available at construction on all three providers, and
+      per-call options override them. <code>GeminiLM</code> accepted neither before
+      v0.6, and ignored <code>retries</code> on the call options as well.
+    </p>
+    <pre class="code"><code><span class="kw">new</span> OpenAILM({ apiKey, timeout: <span class="s">20_000</span>, maxRetries: <span class="s">2</span> })
+<span class="kw">new</span> AnthropicLM({ apiKey, timeout: <span class="s">20_000</span>, maxRetries: <span class="s">2</span> })
+<span class="kw">new</span> GeminiLM({ apiKey, timeout: <span class="s">20_000</span>, maxRetries: <span class="s">2</span> })</code></pre>
+
+    <div class="callout callout-warn">
+      <span class="label">Gemini is the exception</span>
+      <p>
+        <code>@google/genai</code> reads its retry policy from client-level options
+        only, so a per-call <code>retries</code> cannot be expressed through it &mdash;
+        and its retry wrapper replaces API errors with generic ones, losing the
+        status code, and keeps retrying after an abort. The Gemini provider
+        therefore runs the loop itself: exponential backoff on 408/409/429/5xx and
+        network failures, never on an abort or a client error. It is the one place
+        ts-dspy does not simply hand retries to the SDK, and it exists so
+        <code>retries: 2</code> means the same thing on all three providers.
+      </p>
     </div>
 
     <h3>Usage accounting</h3>

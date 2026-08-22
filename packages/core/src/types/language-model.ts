@@ -16,6 +16,13 @@ export interface LLMCallOptions {
      * ts-dspy does not add a second retry layer on top.
      */
     retries?: number;
+    /**
+     * Cancellation signal for this request. Aborting it rejects the call — use
+     * it to drop work a React unmount or a cancelled server request no longer
+     * needs. Combined with `timeout` when both are supplied, so whichever fires
+     * first wins.
+     */
+    signal?: AbortSignal;
     metadata?: Record<string, any>;
 }
 
