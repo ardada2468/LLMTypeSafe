@@ -70,6 +70,9 @@ export { ChainOfThought } from './modules/chain-of-thought';
 export { RespAct } from './modules/respact';
 export type { ToolFunction, ToolWithDescription, ToolDefinition } from './modules/respact';
 
+// Evaluation
+export * from './evaluate';
+
 // Utilities
 export { buildPrompt, parseOutput } from './utils/parsing';
 export { fieldConfigToZod, buildOutputSchema, buildOutputJsonSchema } from './utils/schema';
