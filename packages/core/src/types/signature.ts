@@ -3,6 +3,14 @@ export interface FieldConfig {
     prefix?: string;
     type?: string;
     required?: boolean;
+    /**
+     * The closed set of values allowed for a field declared `type: 'enum'`.
+     * Ignored for every other type.
+     *
+     * String signatures declare the same thing inline, pipe-separated, because
+     * the signature parser splits fields on commas: `sentiment: enum(a|b|c)`.
+     */
+    values?: string[];
 }
 
 export interface ISignature {
@@ -47,7 +55,9 @@ export type FieldTypeMapping<FieldTypeStr extends string | undefined> =
                               ? Record<string, any>
                               : FieldTypeStr extends 'json'
                                 ? Record<string, any>
-                                : string; // Default to string for unknown or undefined types
+                                : // An enum's members are carried on `values`, not in the type
+                                  // string, so the best this mapping can say is `string`.
+                                  string; // Default to string for unknown or undefined types
 
 // Type-only import: erased at compile time, so it introduces no runtime cycle
 // with core/signature.ts, which imports the types in this file.

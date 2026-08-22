@@ -104,8 +104,19 @@ class AnalyzeReview extends Signature {
 Or a string, for quick work: `'question -> answer: string, confidence: float'`.
 
 Field types: `string` (default), `number`/`float`, `int`/`integer`,
-`boolean`/`bool`, `string[]`, `number[]`, `array`/`list`, `object`/`json`.
+`boolean`/`bool`, `string[]`, `number[]`, `array`/`list`, `object`/`json`, `enum`.
 Set `required: false` to make a field optional.
+
+An `enum` field pins the answer to a closed set, so the model cannot invent a
+fourth value that still passes validation:
+
+```ts
+@OutputField({ description: 'overall sentiment', type: 'enum', values: ['positive', 'negative', 'neutral'] })
+sentiment!: string;
+```
+
+String signatures declare the same thing inline, pipe-separated:
+`'review -> sentiment: enum(positive|negative|neutral)'`.
 
 Class signatures need `experimentalDecorators` in your `tsconfig.json`.
 

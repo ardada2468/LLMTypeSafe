@@ -60,7 +60,11 @@ function buildPromptFromClass(
     prompt += '\nProvide:\n';
     Object.entries(outputFields).forEach(([key, config]) => {
         const desc = config.description ? ` (${config.description})` : '';
-        prompt += `${key}${desc}:\n`;
+        // A closed set is worth nothing if the model is never told what is in it.
+        // The structured path gets the members as a JSON Schema `enum`; on the text
+        // path the prompt is the only place they can appear.
+        const allowed = config.values?.length ? ` [one of: ${config.values.join(', ')}]` : '';
+        prompt += `${key}${desc}${allowed}:\n`;
     });
 
     return prompt.trim();
@@ -100,7 +104,12 @@ export function parseOutput(
 
     const issues: FieldValidationIssue[] = result.error.issues.map((issue) => {
         const field = String(issue.path[0] ?? '(root)');
-        const declaredType = fields[field]?.type ?? 'string';
+        const declared = fields[field];
+        // Report an enum's members, not the bare word `enum` — the set is the part
+        // that tells the reader why the value was refused.
+        const declaredType = declared?.values?.length
+            ? `enum(${declared.values.join('|')})`
+            : (declared?.type ?? 'string');
         const received = extracted[field];
         const message =
             received === undefined
