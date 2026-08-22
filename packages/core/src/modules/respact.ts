@@ -1,9 +1,10 @@
 import { Module } from '../core/module';
 import { type Prediction } from '../core/prediction';
-import { type Signature } from '../core/signature';
+import { type Signature, type SignatureSource } from '../core/signature';
 import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
 import type { SignatureOutput } from '../types/signature';
 import { parseOutput as utilParseOutput } from '../utils/parsing';
+import { getOutputFieldConfigs } from '../utils/schema';
 import { ValidationError } from '../core/errors';
 import { type TraceSpan } from '../core/trace';
 
@@ -36,7 +37,7 @@ export interface RespActOptions {
     onEvent?: (event: RespActEvent) => void;
 }
 
-export class RespAct<TSignature extends typeof Signature = typeof Signature> extends Module {
+export class RespAct<TSignature extends SignatureSource = typeof Signature> extends Module {
     private tools: Record<string, ToolWithDescription>;
     private maxSteps: number;
     private onEvent?: (event: RespActEvent) => void;
@@ -167,7 +168,7 @@ export class RespAct<TSignature extends typeof Signature = typeof Signature> ext
 
         let outputFormatInstruction = '';
         if (typeof this.signature !== 'string' && this.signature) {
-            const fieldNames = Object.keys(this.signature.getOutputFields());
+            const fieldNames = Object.keys(getOutputFieldConfigs(this.signature));
             if (fieldNames.length > 0) {
                 outputFormatInstruction =
                     '\n\nWhen providing your Final Answer, include all of the following fields, each on its own line:\n\n';

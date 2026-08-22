@@ -1,8 +1,8 @@
 import { Predict } from './predict';
 import { type Prediction } from '../core/prediction';
-import { type Signature } from '../core/signature';
+import { type Signature, type SignatureSource } from '../core/signature';
 import type { LLMCallOptions } from '../types/language-model';
-import type { SignatureOutput } from '../types/signature';
+import type { SignatureInput, SignatureOutput } from '../types/signature';
 
 type WithReasoning<TOutput> = TOutput & { reasoning: string };
 
@@ -13,11 +13,11 @@ type WithReasoning<TOutput> = TOutput & { reasoning: string };
  * Like {@link Predict}, `TOutput` can be supplied for precise output types.
  */
 export class ChainOfThought<
-    TSignature extends typeof Signature = typeof Signature,
+    TSignature extends SignatureSource = typeof Signature,
     TOutput extends Record<string, any> = SignatureOutput<TSignature>,
 > extends Predict<TSignature, TOutput> {
     async forward(
-        inputs: Record<string, any>,
+        inputs: SignatureInput<TSignature>,
         options?: LLMCallOptions
     ): Promise<Prediction<WithReasoning<TOutput>> & WithReasoning<TOutput>> {
         const prediction = await this.traced<WithReasoning<TOutput>>(inputs, async (span) => {

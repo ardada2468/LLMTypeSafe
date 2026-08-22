@@ -1,4 +1,4 @@
-import { type Signature } from './signature';
+import { type SignatureLike } from './signature';
 import { Prediction } from './prediction';
 import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
 import { getDefaultLM } from './config';
@@ -6,12 +6,12 @@ import { beginTrace, nextModuleId, type TraceSpan } from './trace';
 
 export abstract class Module {
     protected lm: ILanguageModel;
-    protected signature?: typeof Signature | string;
+    protected signature?: SignatureLike;
 
     /** Identifies this instance in trace entries, e.g. `Predict#1`. */
     readonly moduleId: string;
 
-    constructor(signature?: typeof Signature | string, lm?: ILanguageModel) {
+    constructor(signature?: SignatureLike, lm?: ILanguageModel) {
         this.signature = signature;
         this.lm = lm || getDefaultLM();
         this.moduleId = nextModuleId(this.constructor.name);
