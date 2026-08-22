@@ -1,16 +1,19 @@
 import { Module } from '../core/module';
 import { Prediction } from '../core/prediction';
-import { type Signature } from '../core/signature';
+import { type Signature, type SignatureLike, type SignatureSource } from '../core/signature';
 import type { ChatMessage, ILanguageModel, LLMCallOptions } from '../types/language-model';
 import { parseOutput, buildPrompt } from '../utils/parsing';
 import {
     buildOutputSchema,
     buildOutputJsonSchema,
     getOutputFieldConfigs,
+    stripAbsentNulls,
 } from '../utils/schema';
 import { parsePartialJson } from '../utils/partial-json';
 import { ValidationError, type FieldValidationIssue } from '../core/errors';
-import type { FieldConfig, SignatureOutput } from '../types/signature';
+import { buildRepairPrompt, isRepeatedFailure, normaliseRepairAttempts } from '../core/repair';
+import { type TraceSpan } from '../core/trace';
+import type { FieldConfig, SignatureInput, SignatureOutput } from '../types/signature';
 
 /** Options for {@link Predict.stream}, on top of the usual call options. */
 export interface StreamOptions extends LLMCallOptions {
@@ -47,13 +50,20 @@ export type PredictionStream<TOutput extends Record<string, any>> = AsyncGenerat
     Prediction<TOutput> & TOutput,
     void
 >;
-
 /**
  * Single-shot prediction against a signature.
  *
- * `TOutput` defaults to whatever can be inferred from the signature. Decorated
- * classes carry no per-field literal types at compile time, so that inference
- * yields `Record<string, any>`; supply `TOutput` when you want precise types:
+ * `TOutput` defaults to whatever can be inferred from the signature. A zod
+ * signature carries its shape in the type system, so inference is exact and no
+ * type argument is needed:
+ *
+ * ```ts
+ * const review = await new Predict(AnalyzeReview).forward({ review: text });
+ * review.sentiment; // 'positive' | 'negative' | 'neutral'
+ * ```
+ *
+ * Decorated classes carry no per-field literal types at compile time, so that
+ * inference yields `Record<string, any>`; supply `TOutput` for precise types:
  *
  * ```ts
  * type QAOutput = { answer: string; confidence: number };
@@ -63,7 +73,7 @@ export type PredictionStream<TOutput extends Record<string, any>> = AsyncGenerat
  * Runtime validation always comes from the signature, whatever `TOutput` says.
  */
 export class Predict<
-    TSignature extends typeof Signature = typeof Signature,
+    TSignature extends SignatureSource = typeof Signature,
     TOutput extends Record<string, any> = SignatureOutput<TSignature>,
 > extends Module {
     constructor(signature: TSignature | string, lm?: ILanguageModel) {
@@ -71,13 +81,15 @@ export class Predict<
     }
 
     async forward(
-        inputs: Record<string, any>,
+        inputs: SignatureInput<TSignature>,
         options?: LLMCallOptions
     ): Promise<Prediction<TOutput> & TOutput> {
-        const prompt = this.buildPrompt(inputs);
-        const parsed = (await this.complete(prompt, options)) as TOutput;
+        const prediction = await this.traced<TOutput>(inputs, async (span) => {
+            const prompt = this.buildPrompt(inputs);
+            return (await this.complete(prompt, options, span)) as TOutput;
+        });
 
-        return new Prediction(parsed) as Prediction<TOutput> & TOutput;
+        return prediction as Prediction<TOutput> & TOutput;
     }
 
     /**
@@ -236,29 +248,81 @@ export class Predict<
     }
 
     /**
-     * Run one completion and validate it against the signature.
+     * Run a completion, validate it against the signature, and optionally spend
+     * `options.repairAttempts` further round-trips fixing a response that fails.
      *
      * Uses the provider's native structured-output mode when it has one — that
      * constrains decoding rather than merely asking for JSON — and falls back to
-     * parsing labelled text otherwise. Both paths end in the same validation.
+     * parsing labelled text otherwise. Both paths end in the same validation, so
+     * both are repairable.
+     *
+     * `span` is supplied when tracing is on, and records the call either way.
      */
     protected async complete(
         prompt: string,
-        options?: LLMCallOptions
+        options?: LLMCallOptions,
+        span?: TraceSpan
+    ): Promise<Record<string, any>> {
+        const repairAttempts = normaliseRepairAttempts(options?.repairAttempts);
+        const structured = this.lm.getCapabilities().supportsStructuredOutput;
+        let attemptPrompt = prompt;
+        let previousError: ValidationError | undefined;
+
+        for (let attempt = 0; ; attempt++) {
+            try {
+                return await this.completeOnce(attemptPrompt, structured, options, span);
+            } catch (error) {
+                if (!(error instanceof ValidationError) || attempt >= repairAttempts) {
+                    throw error;
+                }
+                // An identical failure would produce an identical repair prompt, so
+                // every remaining attempt is guaranteed to fail the same way against
+                // a deterministic model. Stop rather than bill for the repeats.
+                if (previousError && isRepeatedFailure(previousError, error)) {
+                    throw error;
+                }
+                previousError = error;
+
+                // Repair from the original prompt, not the previous repair prompt,
+                // so successive attempts do not stack up every earlier correction.
+                attemptPrompt = buildRepairPrompt(
+                    prompt,
+                    error,
+                    structured ? 'structured' : 'text'
+                );
+            }
+        }
+    }
+
+    /**
+     * One completion plus validation, with no repair loop around it.
+     *
+     * Each repair attempt reports its own call to `span`, so a trace shows every
+     * round trip that was paid for rather than only the one that succeeded.
+     */
+    protected async completeOnce(
+        prompt: string,
+        structured: boolean,
+        options?: LLMCallOptions,
+        span?: TraceSpan
     ): Promise<Record<string, any>> {
         const signature = this.requireSignature();
 
-        if (this.lm.getCapabilities().supportsStructuredOutput) {
+        if (structured) {
             const schema = buildOutputJsonSchema(signature);
+            span?.startCall(prompt);
             const raw = await this.lm.generateStructured<Record<string, any>>(
                 prompt,
                 schema,
                 options
             );
+            span?.endCall(JSON.stringify(raw));
             return this.validateStructured(raw);
         }
 
+        span?.startCall(prompt);
         const rawOutput = await this.lm.generate(prompt, options);
+        span?.endCall(rawOutput);
         return parseOutput(signature, rawOutput);
     }
 
@@ -266,20 +330,15 @@ export class Predict<
     protected validateStructured(raw: Record<string, any>): Record<string, any> {
         const signature = this.requireSignature();
         // Optional fields are expressed as nullable in the JSON Schema, so strip
-        // nulls before validating rather than failing on them.
-        const cleaned: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(raw ?? {})) {
-            if (value !== null) {
-                cleaned[key] = value;
-            }
-        }
+        // the nulls that stand in for absent values before validating.
+        const cleaned = stripAbsentNulls(signature, raw);
 
         const result = buildOutputSchema(signature).safeParse(cleaned);
         if (result.success) {
             return result.data as Record<string, any>;
         }
 
-        const fields = typeof signature === 'string' ? {} : signature.getOutputFields();
+        const fields = getOutputFieldConfigs(signature);
         const issues: FieldValidationIssue[] = result.error.issues.map((issue) => {
             const field = String(issue.path[0] ?? '(root)');
             return {
@@ -292,7 +351,7 @@ export class Predict<
         throw new ValidationError(issues, JSON.stringify(raw));
     }
 
-    protected requireSignature(): typeof Signature | string {
+    protected requireSignature(): SignatureLike {
         if (!this.signature) {
             throw new Error('No signature provided');
         }
@@ -365,7 +424,7 @@ function snapshotKey(snapshot: Record<string, any>): string {
  * same extraction heuristics run over a half-written buffer and return whatever
  * is legible so far; the real signature validates the final text.
  */
-function lenientOutputView(signature: typeof Signature | string): typeof Signature {
+function lenientOutputView(signature: SignatureLike): typeof Signature {
     const fields: Record<string, FieldConfig> = {};
     for (const [name, config] of Object.entries(getOutputFieldConfigs(signature))) {
         fields[name] = { ...config, type: 'string', required: false };

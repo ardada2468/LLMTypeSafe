@@ -45,15 +45,33 @@ console.log(result.confidence); // 0.98 — a number, verified at runtime
 
 ## Packages
 
-| Package                                    | Provider                                                     |
-| ------------------------------------------ | ------------------------------------------------------------ |
-| [`@ts-dspy/core`](packages/core)           | Signatures, modules, validation. No provider.                |
-| [`@ts-dspy/openai`](packages/openai)       | OpenAI, via the official `openai` SDK                        |
-| [`@ts-dspy/gemini`](packages/gemini)       | Google Gemini, via `@google/genai` (Gemini API or Vertex AI) |
-| [`@ts-dspy/anthropic`](packages/anthropic) | Anthropic Claude, via `@anthropic-ai/sdk`                    |
+| Package                                    | Provider                                                                   |
+| ------------------------------------------ | -------------------------------------------------------------------------- |
+| [`@ts-dspy/core`](packages/core)           | Signatures, modules, validation. No provider.                              |
+| [`@ts-dspy/openai`](packages/openai)       | OpenAI, plus any OpenAI-compatible endpoint, via the official `openai` SDK |
+| [`@ts-dspy/gemini`](packages/gemini)       | Google Gemini, via `@google/genai` (Gemini API or Vertex AI)               |
+| [`@ts-dspy/anthropic`](packages/anthropic) | Anthropic Claude, via `@anthropic-ai/sdk`                                  |
 
 Install core plus whichever providers you use. Each provider defaults to a current
 model for that vendor; pass `model` to pin one yourself.
+
+`@ts-dspy/openai` also exports `OpenAICompatibleLM` for the many servers that speak
+the OpenAI chat-completions API — Ollama, LM Studio, vLLM, Groq, Together, and
+OpenRouter. It requires `baseURL` and `model`, defaults the API key to a
+placeholder for local servers that ignore it, and takes model capabilities from
+config rather than assuming OpenAI's:
+
+```ts
+import { OpenAICompatibleLM } from '@ts-dspy/openai';
+
+const lm = new OpenAICompatibleLM({
+  baseURL: 'http://localhost:11434/v1',
+  model: 'llama3.2',
+});
+```
+
+`npm run example:ollama` runs it end to end against a local Ollama, with no cloud
+key involved.
 
 Requires Node.js 22 or newer. Packages ship both ESM and CommonJS builds.
 
@@ -104,10 +122,24 @@ class AnalyzeReview extends Signature {
 Or a string, for quick work: `'question -> answer: string, confidence: float'`.
 
 Field types: `string` (default), `number`/`float`, `int`/`integer`,
-`boolean`/`bool`, `string[]`, `number[]`, `array`/`list`, `object`/`json`.
+`boolean`/`bool`, `string[]`, `number[]`, `array`/`list`, `object`/`json`, `enum`.
 Set `required: false` to make a field optional.
 
+An `enum` field pins the answer to a closed set, so the model cannot invent a
+fourth value that still passes validation:
+
+```ts
+@OutputField({ description: 'overall sentiment', type: 'enum', values: ['positive', 'negative', 'neutral'] })
+sentiment!: string;
+```
+
+String signatures declare the same thing inline, pipe-separated:
+`'review -> sentiment: enum(positive|negative|neutral)'`.
+
 Class signatures need `experimentalDecorators` in your `tsconfig.json`.
+
+Or zod schemas, which need no decorators and infer their own types — see
+[Zod signatures](#zod-signatures).
 
 ### Modules
 
@@ -119,6 +151,17 @@ All three accept per-call options that are passed through to the provider SDK:
 
 ```ts
 await predict.forward({ question: '...' }, { temperature: 0, timeout: 30_000, retries: 2 });
+```
+
+Pass `signal` to cancel a call that is already in flight — a React effect tearing
+down, or a server request whose client disconnected. It composes with `timeout`:
+whichever fires first ends the call.
+
+```ts
+const controller = new AbortController();
+// React: return () => controller.abort() from the effect.
+
+await predict.forward({ question: '...' }, { signal: controller.signal, timeout: 30_000 });
 ```
 
 When a provider supports native structured output, `Predict` and `ChainOfThought`
@@ -163,6 +206,66 @@ A model that cannot stream falls back to a single call, yielded once, rather tha
 failing. Pass an `AbortSignal` to cancel; `break`ing out of the loop closes the
 provider's stream.
 
+### Batch and concurrency
+
+Every module inherits `batch()`, a bounded worker pool over a list of inputs.
+Results come back **in input order**, whatever order the calls finished in, and a
+failing input is captured rather than thrown — one bad row does not destroy a
+ten-thousand-row job.
+
+```ts
+const results = await predict.batch(rows, {
+  concurrency: 16, // in flight at once; defaults to 8
+  onProgress: (done, total) => bar.update(done / total),
+});
+
+for (const [i, result] of results.entries()) {
+  if (result.status === 'fulfilled') save(rows[i], result.value);
+  else quarantine(rows[i], result.reason);
+}
+```
+
+Pass `stopOnError: true` to reject the whole batch on the first failure instead,
+or a `signal` to stop starting new inputs on cancellation — both reject rather
+than returning the inputs that already finished, so wrap a cancellable batch in a
+`try`. Every other option is passed through to each underlying call. The pool
+itself is exported as `mapWithConcurrency(items, worker, options)` for anything
+else with a rate limit.
+
+### Evaluation
+
+`evaluate` runs a program over a dataset of `Example`s and grades every
+prediction, so a prompt or signature change comes with a number attached rather
+than a hunch.
+
+```ts
+import { evaluate, exactMatch, Example, Predict, formatReport } from '@ts-dspy/core';
+
+const dataset = [
+  new Example({ question: 'Capital of France?', answer: 'Paris' }).withInputs('question'),
+  new Example({ question: 'Capital of Japan?', answer: 'Tokyo' }).withInputs('question'),
+];
+
+const report = await evaluate(new Predict(AnswerQuestion), dataset, exactMatch, {
+  concurrency: 8,
+});
+
+report.score; // mean across every example
+report.results; // per example: inputs, expected, prediction, score, error?
+report.usage; // tokens and latency for this run only
+
+console.log(formatReport(report));
+```
+
+A metric is `(example, prediction) => number | boolean`, so writing your own is a
+one-line function. Built in: `exactMatch`, `normalizedMatch`, `numericMatch`,
+`fieldAccuracy` for per-field partial credit, and `tokenF1` for free text.
+
+An example whose program or metric throws is recorded as a zero with the error
+attached and the run continues — an evaluation that dies on row 40 of 500 tells
+you nothing. Usage is measured by diffing the model's own counters around the
+run; as everywhere else, there is no cost estimate.
+
 ### Validation
 
 ```ts
@@ -185,11 +288,113 @@ Coercion is deliberately lenient — models emit text, so `"42"` satisfies a
 failure: anything that cannot be coerced throws rather than silently passing
 through.
 
+### Self-repair
+
+A model that fails validation has often understood the task and merely fumbled
+the shape. Pass `repairAttempts` to spend that many extra round-trips telling it
+exactly what went wrong before giving up:
+
+```ts
+const result = await predict.forward({ question: '...' }, { repairAttempts: 1 });
+```
+
+The follow-up prompt names each failing field with its declared type and the
+value that actually arrived. It works on both of `Predict`'s paths — native
+structured output and labelled text — and `ChainOfThought` inherits it, retrying
+only the answering step rather than reasoning again. The default is `0`, so
+validation failures throw immediately unless you opt in; once the attempts are
+spent the last `ValidationError` is rethrown. Attempts are capped at 10, and the
+loop stops early if an attempt reproduces the previous failure exactly.
+
+### Provider errors
+
+A failed provider call throws a typed subclass of `LMError` whenever the SDK
+gives us enough to tell, so retry logic is a `catch` on a class rather than a
+sniff at an HTTP status number:
+
+```ts
+import { RateLimitError, ContextLengthError, LMError } from '@ts-dspy/core';
+
+try {
+  return await predict.forward({ question });
+} catch (error) {
+  if (error instanceof RateLimitError) return queue.retryLater(question);
+  if (error instanceof ContextLengthError)
+    return predict.forward({ question: shorten(question) });
+  if (error instanceof LMError) log.error(error.provider, error.status, error.cause);
+  throw error;
+}
+```
+
+| Error                | Thrown when                                                                      |
+| -------------------- | -------------------------------------------------------------------------------- |
+| `RateLimitError`     | A rate or quota limit was hit. Worth retrying after a backoff.                   |
+| `AuthError`          | The key is missing, wrong, or not entitled to the model. Retrying will not help. |
+| `ContextLengthError` | The prompt did not fit the context window.                                       |
+| `ContentFilterError` | Safety classifiers declined the request or the reply. Carries `category`.        |
+| `TimeoutError`       | The request timed out before a reply arrived.                                    |
+| `LMError`            | Anything else. Every class above extends it, so existing handlers still work.    |
+
+What each SDK reports differs, and the classification follows that rather than
+pretending otherwise: OpenAI's `code` is the only dependable signal for a
+context-length overflow, Anthropic's typed `error.type` union is the cleanest of
+the three, and Gemini reports nothing but an HTTP status.
+
+Content filtering is the exception — all three providers answer `200 OK` and
+leave a marker in the body (`stop_reason: 'refusal'`, `finishReason: 'SAFETY'`,
+`finish_reason: 'content_filter'`), so `ContentFilterError` comes from
+inspecting the response. `AnthropicRefusalError` is now a deprecated alias of
+`ContentFilterError` — an alias of that class rather than a subclass, so an
+`instanceof` check under the old name now matches any provider's filter. Test
+`error.provider` to tell them apart.
+
+### Zod signatures
+
+`signature()` builds a signature from zod schemas. The shape lives in the type
+system rather than in runtime metadata, so results are inferred exactly — no
+type argument, and no `experimentalDecorators`:
+
+```ts
+import { z } from 'zod';
+import { signature, Predict } from '@ts-dspy/core';
+
+const AnalyzeReview = signature({
+  description: 'Analyze a product review.',
+  input: z.object({ review: z.string() }),
+  output: z.object({
+    sentiment: z.enum(['positive', 'negative', 'neutral']),
+    rating: z.number().int().min(1).max(5),
+    themes: z.array(z.string()),
+    followUp: z.string().optional(),
+  }),
+});
+
+const r = await new Predict(AnalyzeReview).forward({ review });
+
+r.sentiment; // 'positive' | 'negative' | 'neutral' — inferred
+r.themes.join(', '); // string[]
+r.followUp?.trim(); // string | undefined
+```
+
+The zod schema is the validator, so anything you can express is enforced:
+enums, unions, nested objects, numeric bounds, string formats, and
+object-level refinements — none of which the flat decorator field-type list can
+spell. Input keys are typed too, so a misspelt input is a compile error.
+
+On the provider structured-output path the same schema becomes the JSON Schema
+sent to the model, rewritten for OpenAI strict mode: every property in
+`required`, `additionalProperties: false` at every level of nesting, and
+optional fields expressed as `type: [base, 'null']`.
+
+Decorator and string signatures keep working unchanged; this is a third form,
+not a replacement.
+
 ### Output types
 
-Decorators record fields at runtime, so TypeScript cannot infer per-field types
-from the class. Results are therefore typed loosely by default. Name the shape
-when you want precise types:
+A zod signature infers its output type, as above. Decorators record fields at
+runtime, so TypeScript cannot infer per-field types from the class — results
+from a class signature are typed loosely by default. Name the shape when you
+want precise types:
 
 ```ts
 type ReviewAnalysis = { sentiment: string; rating: number; themes: string[] };
@@ -222,6 +427,109 @@ Tool descriptions are what the model uses to decide when to call each tool, so
 they earn the detail. Never pass model output to `eval()` — see
 [`examples/utils.ts`](examples/utils.ts) for a bounded arithmetic evaluator.
 
+### Testing
+
+`@ts-dspy/core/testing` ships the test doubles the library's own suite uses, so
+you never have to hand-roll a fake model. Nothing there touches the network.
+
+```ts
+import { MockLM, CassetteLM } from '@ts-dspy/core/testing';
+
+const lm = new MockLM({ responses: ['answer: Paris\nconfidence: 0.95'] });
+const result = await new Predict(AnswerQuestion, lm).forward({ question: 'Capital?' });
+
+lm.lastPrompt(); // the prompt the module actually sent
+```
+
+`CassetteLM` records real provider replies into a JSON file once, then replays
+them forever:
+
+```ts
+// Once, with a key:
+const recorder = CassetteLM.record('cassettes/answer.json', new OpenAILM({ apiKey }));
+await new Predict(AnswerQuestion, recorder).forward({ question: 'Capital?' });
+
+// In CI, with no key and no network:
+const replay = CassetteLM.replay('cassettes/answer.json');
+```
+
+Cassettes are an array of `{ key, request, response }` entries keyed by a hash
+of the request, so they review like any other fixture and an unrecorded request
+fails loudly instead of calling out.
+
+### Tracing
+
+`configure({ tracing: true })` records every module invocation: the prompt as
+sent, the raw reply, the parsed output, the tokens that call cost, and how long
+it took. `inspectHistory(n)` reads the last `n` back out of a bounded in-memory
+buffer — including inside a `catch`, which is where you usually want it.
+
+```ts
+import { clearHistory, configure, inspectHistory } from '@ts-dspy/core';
+
+configure({ lm, tracing: true });
+
+try {
+  await triage.forward({ ticket });
+} catch (error) {
+  const [failed] = inspectHistory(1);
+  console.error(failed.rawLMInput, '\n---\n', failed.rawLMOutput);
+}
+```
+
+Multi-step modules record each call under `calls`, so a `ChainOfThought` trace
+holds both the reasoning prompt and the final one. The buffer keeps 100 entries
+by default (`traceHistorySize`), and `clearHistory()` empties it.
+
+Pass `onTrace` to forward entries to Langfuse, OpenTelemetry, or your own
+logger as they are recorded — the library never prints:
+
+```ts
+configure({ lm, tracing: true, onTrace: (entry) => logger.debug(entry) });
+```
+
+Tracing is off by default and costs a single boolean check while off.
+
+### Caching
+
+`configure({ cache: true })` replays a previous answer instead of paying for a
+repeated prompt. It is off by default, because replaying an old answer changes
+what a program does.
+
+```ts
+import { configure, MemoryCache, type Cache } from '@ts-dspy/core';
+
+configure({ cache: true }); // process-wide LRU, 1000 entries
+configure({ cache: new MemoryCache({ maxSize: 10_000 }) }); // or size it yourself
+```
+
+`generate`, `chat`, and `generateStructured` are all cached for every provider.
+The key is a SHA-256 hash of the provider, the model, the prompt or messages,
+the sampling parameters (`temperature`, `topP`, `maxTokens`, `stopSequences`,
+and the penalties), and the JSON schema on structured calls — so two calls that
+differ in any of those never collide. Errors are never cached.
+
+A cache hit costs nothing, and `getUsage()` says so: hits land in a `cacheHits`
+counter and stay out of `requestCount` and the token totals, so cost accounting
+still reflects real provider traffic.
+
+`cache` also accepts your own implementation. Both methods may be async, so
+Redis, SQLite, or a directory of files fits without a wrapper:
+
+```ts
+const redisCache: Cache = {
+  async get(key) {
+    const hit = await redis.get(key);
+    return hit === null ? undefined : JSON.parse(hit);
+  },
+  async set(key, value) {
+    await redis.set(key, JSON.stringify(value), { EX: 86_400 });
+  },
+};
+
+configure({ cache: redisCache });
+```
+
 ## Examples
 
 ```bash
@@ -232,9 +540,11 @@ npm run build
 
 export OPENAI_API_KEY="sk-..."
 npm run example:openai
+npm run example:zod
 ```
 
-See [`examples/`](examples) for OpenAI, Gemini, Anthropic, and tool-use programs.
+See [`examples/`](examples) for OpenAI, Gemini, Anthropic, zod-signature, and
+tool-use programs.
 
 ## Development
 
