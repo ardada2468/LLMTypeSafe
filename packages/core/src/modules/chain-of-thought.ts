@@ -10,7 +10,10 @@ type WithReasoning<TOutput> = TOutput & { reasoning: string };
  * Two-step prediction: reason in free text, then answer with that reasoning in
  * context. The result carries the signature's output fields plus `reasoning`.
  *
- * Like {@link Predict}, `TOutput` can be supplied for precise output types.
+ * Like {@link Predict}, `TOutput` can be supplied for precise output types, and
+ * `options.repairAttempts` buys extra round-trips when the answer fails
+ * validation. Repair applies to the answering step only — the reasoning is
+ * already settled by then, so it is reused rather than regenerated.
  */
 export class ChainOfThought<
     TSignature extends typeof Signature = typeof Signature,
@@ -24,7 +27,9 @@ export class ChainOfThought<
         const reasoningPrompt = this.buildReasoningPrompt(inputs);
         const reasoning = await this.lm.generate(reasoningPrompt, options);
 
-        // Step 2: answer with that reasoning in context, validated against the signature.
+        // Step 2: answer with that reasoning in context, validated against the
+        // signature. `complete` owns the repair loop, so a failed answer is
+        // retried against this same prompt without reasoning again.
         const finalPrompt = this.buildFinalPrompt(inputs, reasoning);
         const parsed = (await this.complete(finalPrompt, options)) as TOutput;
 

@@ -13,6 +13,17 @@ export { configure, getDefaultLM, isCacheEnabled, isTracingEnabled } from './cor
 export { TsDspyError, ValidationError, LMError } from './core/errors';
 export type { FieldValidationIssue } from './core/errors';
 
+// Validation self-repair
+export {
+    buildRepairPrompt,
+    buildRepairObservation,
+    describeValidationIssues,
+    isRepeatedFailure,
+    listFailingFields,
+    MAX_REPAIR_ATTEMPTS,
+} from './core/repair';
+export type { RepairFormat } from './core/repair';
+
 // Modules
 export { Predict } from './modules/predict';
 export { ChainOfThought } from './modules/chain-of-thought';

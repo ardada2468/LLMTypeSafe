@@ -147,6 +147,24 @@ Coercion is deliberately lenient — models emit text, so `"42"` satisfies a
 failure: anything that cannot be coerced throws rather than silently passing
 through.
 
+### Self-repair
+
+A model that fails validation has often understood the task and merely fumbled
+the shape. Pass `repairAttempts` to spend that many extra round-trips telling it
+exactly what went wrong before giving up:
+
+```ts
+const result = await predict.forward({ question: '...' }, { repairAttempts: 1 });
+```
+
+The follow-up prompt names each failing field with its declared type and the
+value that actually arrived. It works on both of `Predict`'s paths — native
+structured output and labelled text — and `ChainOfThought` inherits it, retrying
+only the answering step rather than reasoning again. The default is `0`, so
+validation failures throw immediately unless you opt in; once the attempts are
+spent the last `ValidationError` is rethrown. Attempts are capped at 10, and the
+loop stops early if an attempt reproduces the previous failure exactly.
+
 ### Output types
 
 Decorators record fields at runtime, so TypeScript cannot infer per-field types

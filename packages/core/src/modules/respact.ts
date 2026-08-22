@@ -5,6 +5,7 @@ import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
 import type { SignatureOutput } from '../types/signature';
 import { parseOutput as utilParseOutput } from '../utils/parsing';
 import { ValidationError } from '../core/errors';
+import { buildRepairObservation } from '../core/repair';
 
 export interface ToolFunction {
     (...args: any[]): Promise<any> | any;
@@ -111,8 +112,7 @@ export class RespAct<TSignature extends typeof Signature = typeof Signature> ext
                 // A malformed final answer is recoverable: tell the model what
                 // shape it owes us and let it try again on the next step.
                 if (error instanceof ValidationError && step < this.maxSteps - 1) {
-                    const fieldList = error.issues.map((issue) => issue.field).join(', ');
-                    conversation += `\n\nObservation: Your Final Answer was missing or malformed for: ${fieldList}. Provide a Final Answer with every required field on its own "field: value" line.`;
+                    conversation += `\n\nObservation: ${buildRepairObservation(error)}`;
                     continue;
                 }
                 throw error;

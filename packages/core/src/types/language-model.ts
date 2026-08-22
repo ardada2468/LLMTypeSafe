@@ -16,6 +16,16 @@ export interface LLMCallOptions {
      * ts-dspy does not add a second retry layer on top.
      */
     retries?: number;
+    /**
+     * Extra round-trips to spend repairing a response that fails validation.
+     *
+     * On a `ValidationError` the model is re-prompted with the offending field
+     * names, their declared types and the values it actually sent, then the
+     * result is re-validated. Defaults to `0` — validation failures rethrow
+     * immediately, so self-repair is strictly opt-in. Capped at 10, and cut
+     * short when an attempt reproduces the previous failure exactly.
+     */
+    repairAttempts?: number;
     metadata?: Record<string, any>;
 }
 
