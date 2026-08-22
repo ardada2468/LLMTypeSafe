@@ -51,21 +51,20 @@ export interface AnthropicConfig {
 /**
  * Raised when Claude's safety classifiers decline a request.
  *
- * @deprecated Renamed to `ContentFilterError` in `@ts-dspy/core`, which every
- * provider now throws for the same condition. This is an alias of that class,
- * not a subclass of it, so two things changed: the constructor now takes
- * `(provider, message, options)` rather than `(category, explanation)`, and an
- * `instanceof` check now also matches an OpenAI or Gemini content filter. Check
- * `error.provider === 'anthropic'` if you need to tell them apart. The alias
- * will be removed in a future release.
+ * @deprecated Prefer `ContentFilterError` from `@ts-dspy/core`, which every
+ * provider throws for the same condition. This is a **subclass** of it, so
+ * `catch (e) { if (e instanceof ContentFilterError) … }` handles all three
+ * providers while `instanceof AnthropicRefusalError` still means Anthropic
+ * specifically. The constructor did change, though: it now takes
+ * `(provider, message, options)` rather than `(category, explanation)`. This
+ * subclass will be removed in a future release.
  */
-export const AnthropicRefusalError = ContentFilterError;
-/** @deprecated Renamed to `ContentFilterError` in `@ts-dspy/core`. */
-export type AnthropicRefusalError = ContentFilterError;
+export class AnthropicRefusalError extends ContentFilterError {}
 
 export class AnthropicLM extends BaseLM {
     private readonly client: Anthropic;
     private readonly defaultMaxTokens: number;
+    private readonly baseURL?: string;
 
     constructor(config: AnthropicConfig = {}) {
         super('anthropic', config.model ?? DEFAULT_ANTHROPIC_MODEL);
@@ -77,6 +76,15 @@ export class AnthropicLM extends BaseLM {
             maxRetries: config.maxRetries,
         });
         this.defaultMaxTokens = config.maxTokens ?? DEFAULT_MAX_TOKENS;
+        this.baseURL = config.baseURL;
+    }
+
+    /**
+     * `maxTokens` is part of the request, so a client that truncates at 64
+     * tokens must not serve a cache entry recorded by one that allows 8192.
+     */
+    protected cacheScope(): unknown {
+        return { maxTokens: this.defaultMaxTokens, baseURL: this.baseURL ?? null };
     }
 
     async chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string> {
@@ -283,7 +291,7 @@ export class AnthropicLM extends BaseLM {
         const category = details?.category ?? undefined;
         const explanation = details?.explanation ?? undefined;
 
-        throw new ContentFilterError(
+        throw new AnthropicRefusalError(
             'anthropic',
             `Request was declined by safety classifiers${category ? ` (${category})` : ''}` +
                 `${explanation ? `: ${explanation}` : ''}`,

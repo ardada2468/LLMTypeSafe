@@ -2,8 +2,15 @@ import { Module } from '../core/module';
 import { Prediction } from '../core/prediction';
 import { type Signature, type SignatureLike, type SignatureSource } from '../core/signature';
 import { type Example } from '../core/example';
-import type { ChatMessage, ILanguageModel, LLMCallOptions } from '../types/language-model';
-import { parseOutput, buildPrompt } from '../utils/parsing';
+import { contentToText, textPart } from '../utils/content';
+import type {
+    ChatMessage,
+    ContentPart,
+    ILanguageModel,
+    LLMCallOptions,
+    MessageContent,
+} from '../types/language-model';
+import { parseOutput, buildPrompt, buildPromptContent } from '../utils/parsing';
 import {
     buildOutputSchema,
     buildOutputJsonSchema,
@@ -188,7 +195,7 @@ export class Predict<
         options?: LLMCallOptions
     ): Promise<Prediction<TOutput> & TOutput> {
         const prediction = await this.traced<TOutput>(inputs, async (span) => {
-            const prompt = this.buildPrompt(inputs);
+            const prompt = this.buildPromptContent(inputs);
             return (await this.complete(prompt, options, span)) as TOutput;
         });
 
@@ -362,13 +369,13 @@ export class Predict<
      * `span` is supplied when tracing is on, and records the call either way.
      */
     protected async complete(
-        prompt: string,
+        prompt: MessageContent,
         options?: LLMCallOptions,
         span?: TraceSpan
     ): Promise<Record<string, any>> {
         const repairAttempts = normaliseRepairAttempts(options?.repairAttempts);
         const structured = this.lm.getCapabilities().supportsStructuredOutput;
-        let attemptPrompt = prompt;
+        let attemptPrompt: MessageContent = prompt;
         let previousError: ValidationError | undefined;
 
         for (let attempt = 0; ; attempt++) {
@@ -388,11 +395,14 @@ export class Predict<
 
                 // Repair from the original prompt, not the previous repair prompt,
                 // so successive attempts do not stack up every earlier correction.
-                attemptPrompt = buildRepairPrompt(
-                    prompt,
-                    error,
-                    structured ? 'structured' : 'text'
-                );
+                const format = structured ? 'structured' : 'text';
+                attemptPrompt =
+                    typeof prompt === 'string'
+                        ? buildRepairPrompt(prompt, error, format)
+                        : // Rebuilding a content prompt would re-send the image on
+                          // every attempt. Appending the correction as a trailing
+                          // text part keeps the parts, and their order, intact.
+                          [...prompt, textPart(`\n${buildRepairPrompt('', error, format)}`)];
             }
         }
     }
@@ -404,12 +414,19 @@ export class Predict<
      * round trip that was paid for rather than only the one that succeeded.
      */
     protected async completeOnce(
-        prompt: string,
+        prompt: MessageContent,
         structured: boolean,
         options?: LLMCallOptions,
         span?: TraceSpan
     ): Promise<Record<string, any>> {
         const signature = this.requireSignature();
+
+        // A prompt carrying images has to travel as chat content: neither
+        // `generate` nor `generateStructured` takes anything but a string, and
+        // flattening would reduce the image to its placeholder.
+        if (typeof prompt !== 'string') {
+            return this.completeFromContent(prompt, structured, options, span);
+        }
 
         if (structured) {
             const schema = buildOutputJsonSchema(signature);
@@ -427,6 +444,34 @@ export class Predict<
         const rawOutput = await this.lm.generate(prompt, options);
         span?.endCall(rawOutput);
         return parseOutput(signature, rawOutput);
+    }
+
+    /**
+     * The multimodal path: one `chat` turn carrying text and image parts.
+     *
+     * Native structured output is unavailable here because the provider methods
+     * that constrain decoding take a string prompt, so the schema is requested
+     * in the prompt instead — the same fallback `BaseLM.generateStructured` uses
+     * for providers without a JSON-schema mode. Validation is identical either
+     * way.
+     */
+    protected async completeFromContent(
+        content: ContentPart[],
+        structured: boolean,
+        options?: LLMCallOptions,
+        span?: TraceSpan
+    ): Promise<Record<string, any>> {
+        const signature = this.requireSignature();
+        const parts = structured ? withSchemaInstruction(content, signature) : content;
+
+        span?.startCall(contentToText(parts));
+        const rawOutput = await this.lm.chat([{ role: 'user', content: parts }], options);
+        span?.endCall(rawOutput);
+
+        if (!structured) {
+            return parseOutput(signature, rawOutput);
+        }
+        return this.validateStructured(extractJsonObject(rawOutput));
     }
 
     /** Validate a provider's structured response against the signature. */
@@ -459,6 +504,16 @@ export class Predict<
             throw new Error('No signature provided');
         }
         return this.signature;
+    }
+
+    /**
+     * The prompt as chat content: a plain string when every input is text, and
+     * content parts when a field is declared `image`, so the image reaches the
+     * provider instead of the `[image: …]` placeholder a string is limited to.
+     */
+    protected buildPromptContent(inputs: Record<string, any>): MessageContent {
+        const format = this.lm.getCapabilities().supportsStructuredOutput ? 'json' : 'labelled';
+        return buildPromptContent(this.requireSignature(), inputs, this.demos, { format });
     }
 
     protected buildPrompt(inputs: Record<string, any>): string {
@@ -558,4 +613,50 @@ function readPartialJsonFields(buffer: string): Record<string, any> {
         }
     }
     return fields;
+}
+
+/** Append the JSON-schema request as a trailing text part. */
+function withSchemaInstruction(
+    content: ContentPart[],
+    signature: SignatureLike
+): ContentPart[] {
+    const schema = buildOutputJsonSchema(signature);
+    return [
+        ...content,
+        textPart(
+            `\n\nRespond with JSON matching this schema. ` +
+                `Output only the JSON object, with no surrounding prose or code fences.\n` +
+                `${JSON.stringify(schema, null, 2)}`
+        ),
+    ];
+}
+
+/** Read a JSON object out of a reply, tolerating code fences and stray prose. */
+function extractJsonObject(raw: string): Record<string, any> {
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = (fenced?.[1] ?? raw).trim();
+    try {
+        return JSON.parse(candidate) as Record<string, any>;
+    } catch {
+        const start = candidate.indexOf('{');
+        const end = candidate.lastIndexOf('}');
+        if (start !== -1 && end > start) {
+            try {
+                return JSON.parse(candidate.slice(start, end + 1)) as Record<string, any>;
+            } catch {
+                // fall through
+            }
+        }
+        throw new ValidationError(
+            [
+                {
+                    field: '(root)',
+                    expected: 'object',
+                    received: raw,
+                    message: 'model did not return a JSON object',
+                },
+            ],
+            raw
+        );
+    }
 }

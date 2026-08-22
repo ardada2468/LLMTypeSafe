@@ -83,10 +83,17 @@ function supportsVisionFor(model: string): boolean {
 
 export class OpenAILM extends BaseLM {
     private readonly client: OpenAI;
+    /** Constructor settings that change what a given prompt returns. */
+    protected readonly scope: Record<string, unknown>;
 
     constructor(config: OpenAIConfig = {}) {
         super('openai', config.model ?? DEFAULT_OPENAI_MODEL);
 
+        this.scope = {
+            baseURL: config.baseURL ?? null,
+            organization: config.organization ?? null,
+            project: config.project ?? null,
+        };
         this.client = new OpenAI({
             apiKey: config.apiKey,
             organization: config.organization,
@@ -95,6 +102,15 @@ export class OpenAILM extends BaseLM {
             timeout: config.timeout,
             maxRetries: config.maxRetries,
         });
+    }
+
+    /**
+     * A proxy or an alternate organization can answer the same prompt
+     * differently, so two clients configured that way must not share cache
+     * entries.
+     */
+    protected cacheScope(): unknown {
+        return this.scope;
     }
 
     async chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string> {

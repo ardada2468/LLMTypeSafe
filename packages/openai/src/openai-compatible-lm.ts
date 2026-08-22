@@ -138,6 +138,16 @@ export class OpenAICompatibleLM extends OpenAILM {
     }
 
     /**
+     * The declared capabilities decide whether a strict `json_schema` request is
+     * sent at all, so two clients pointed at the same endpoint with different
+     * capability declarations ask different questions and must not share cache
+     * entries.
+     */
+    protected cacheScope(): unknown {
+        return { ...this.scope, capabilities: this.capabilities };
+    }
+
+    /**
      * Native JSON-schema mode when the endpoint has it, prompt-based JSON when
      * it does not. Calling this directly must not send a `response_format` the
      * server will reject, so the capability is honoured here too and not only

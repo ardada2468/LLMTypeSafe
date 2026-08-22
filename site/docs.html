@@ -1692,18 +1692,26 @@ r.followUp?.trim() <span class="c">// string | undefined</span></code></pre>
 
 <span class="c">// string signatures take a type too</span>
 buildPromptContent(<span class="s">'photo: image, question -&gt; answer'</span>, { photo, question })</code></pre>
-    <div class="callout callout-warn">
-      <span class="label">Modules send text</span>
+    <div class="callout">
+      <span class="label">Strings stay strings</span>
       <p>
         <code>buildPromptContent()</code> returns a plain <code>string</code>
         when every input is text, byte for byte what <code>buildPrompt()</code>
-        produces. <code>buildPrompt()</code> always returns a
-        <code>string</code>, rendering an image input as an
-        <code>[image: image/png]</code> placeholder &mdash; and that placeholder
-        is what <code>Predict</code>, <code>ChainOfThought</code> and
-        <code>RespAct</code> send, because they build string prompts. Until the
-        modules carry content parts, send images through <code>lm.chat()</code>
-        yourself.
+        produces; it returns content parts only once a field declared
+        <code>image</code> is supplied. <code>Predict</code> and
+        <code>ChainOfThought</code> follow the same rule, so a text-only program
+        sends exactly what it always did.
+      </p>
+    </div>
+
+    <div class="callout callout-warn">
+      <span class="label">Structured output with images</span>
+      <p>
+        The provider methods that constrain decoding to a schema take a string
+        prompt, so a prompt carrying an image asks for the schema in the prompt
+        instead &mdash; the same fallback used for providers with no JSON-schema
+        mode. Validation is identical either way; only the guarantee that the
+        model <em>cannot</em> emit the wrong shape is lost.
       </p>
     </div>
 

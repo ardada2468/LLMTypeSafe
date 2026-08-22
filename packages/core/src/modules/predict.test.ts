@@ -1,5 +1,5 @@
 import { Predict } from './predict';
-import { Signature, InputField, OutputField } from '../core/signature';
+import { Signature, InputField, OutputField, ImageField } from '../core/signature';
 import { ValidationError } from '../core/errors';
 import { MockLM } from '../test-utils';
 
@@ -300,5 +300,46 @@ describe('Predict', () => {
         const predict = new Predict(undefined as any, lm);
 
         await expect(predict.forward({})).rejects.toThrow('No signature provided');
+    });
+});
+
+describe('image inputs', () => {
+    const PNG = 'iVBORw0KGgo=';
+
+    class DescribeImage extends Signature {
+        static description = 'Describe the picture.';
+
+        @ImageField({ description: 'the picture' })
+        picture!: string;
+
+        @OutputField({ description: 'what it shows' })
+        caption!: string;
+    }
+
+    it('sends the image as content rather than a placeholder', async () => {
+        const lm = new MockLM({ responses: ['caption: a cat'] });
+
+        const result = await new Predict(DescribeImage, lm).forward({
+            picture: `data:image/png;base64,${PNG}`,
+        });
+
+        expect(result.caption).toBe('a cat');
+
+        // Predict used to flatten the image to "[image: image/png]", so the
+        // model never actually saw it.
+        const content = lm.calls.at(-1)?.messages[0]?.content;
+        expect(Array.isArray(content)).toBe(true);
+        expect(content).toContainEqual({
+            type: 'image',
+            source: { kind: 'base64', mediaType: 'image/png', data: PNG },
+        });
+    });
+
+    it('leaves a text-only prompt as a plain string', async () => {
+        const lm = new MockLM({ responses: ['answer: Paris\nconfidence: 0.9'] });
+
+        await new Predict(QA, lm).forward({ question: 'Capital of France?' });
+
+        expect(typeof lm.calls.at(-1)?.messages[0]?.content).toBe('string');
     });
 });
