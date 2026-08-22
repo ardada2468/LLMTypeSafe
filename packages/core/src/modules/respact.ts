@@ -1,11 +1,12 @@
 import { Module } from '../core/module';
-import { Prediction } from '../core/prediction';
+import { type Prediction } from '../core/prediction';
 import { type Signature, type SignatureSource } from '../core/signature';
 import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
 import type { SignatureOutput } from '../types/signature';
 import { parseOutput as utilParseOutput } from '../utils/parsing';
 import { getOutputFieldConfigs } from '../utils/schema';
 import { ValidationError } from '../core/errors';
+import { type TraceSpan } from '../core/trace';
 
 export interface ToolFunction {
     (...args: any[]): Promise<any> | any;
@@ -62,11 +63,31 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
         Prediction<SignatureOutput<TSignature> & { steps: number }> &
             SignatureOutput<TSignature> & { steps: number }
     > {
+        const prediction = await this.traced(inputs, (span) =>
+            this.loop(inputs, options, span)
+        );
+
+        return prediction as Prediction<SignatureOutput<TSignature> & { steps: number }> &
+            SignatureOutput<TSignature> & { steps: number };
+    }
+
+    /**
+     * The reason-and-act loop. Every language-model call is reported to `span`
+     * when tracing is on, so a trace holds each step's prompt and reply.
+     */
+    private async loop(
+        inputs: Record<string, any>,
+        options: LLMCallOptions | undefined,
+        span: TraceSpan | undefined
+    ): Promise<Record<string, any>> {
         let conversation = this.buildInitialPrompt(inputs);
         const previousToolCalls = new Set<string>();
 
         for (let step = 0; step < this.maxSteps; step++) {
-            const response = await this.lm.generate(conversation + '\n\nThought:', options);
+            const prompt = conversation + '\n\nThought:';
+            span?.startCall(prompt);
+            const response = await this.lm.generate(prompt, options);
+            span?.endCall(response);
             conversation += `\n\nThought: ${response}`;
             this.emit({ type: 'thought', step, text: response });
 
@@ -119,11 +140,7 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
                 throw error;
             }
 
-            const combinedOutput = { ...parsed, steps: step + 1 };
-            return new Prediction(combinedOutput) as Prediction<
-                SignatureOutput<TSignature> & { steps: number }
-            > &
-                SignatureOutput<TSignature> & { steps: number };
+            return { ...parsed, steps: step + 1 };
         }
 
         throw new Error(

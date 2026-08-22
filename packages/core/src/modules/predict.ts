@@ -1,5 +1,5 @@
 import { Module } from '../core/module';
-import { Prediction } from '../core/prediction';
+import { type Prediction } from '../core/prediction';
 import { type Signature, type SignatureLike, type SignatureSource } from '../core/signature';
 import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
 import { parseOutput, buildPrompt } from '../utils/parsing';
@@ -10,6 +10,7 @@ import {
     stripAbsentNulls,
 } from '../utils/schema';
 import { ValidationError, type FieldValidationIssue } from '../core/errors';
+import { type TraceSpan } from '../core/trace';
 import type { SignatureInput, SignatureOutput } from '../types/signature';
 
 /**
@@ -46,10 +47,12 @@ export class Predict<
         inputs: SignatureInput<TSignature>,
         options?: LLMCallOptions
     ): Promise<Prediction<TOutput> & TOutput> {
-        const prompt = this.buildPrompt(inputs);
-        const parsed = (await this.complete(prompt, options)) as TOutput;
+        const prediction = await this.traced<TOutput>(inputs, async (span) => {
+            const prompt = this.buildPrompt(inputs);
+            return (await this.complete(prompt, options, span)) as TOutput;
+        });
 
-        return new Prediction(parsed) as Prediction<TOutput> & TOutput;
+        return prediction as Prediction<TOutput> & TOutput;
     }
 
     /**
@@ -58,24 +61,31 @@ export class Predict<
      * Uses the provider's native structured-output mode when it has one — that
      * constrains decoding rather than merely asking for JSON — and falls back to
      * parsing labelled text otherwise. Both paths end in the same validation.
+     *
+     * `span` is supplied when tracing is on, and records the call either way.
      */
     protected async complete(
         prompt: string,
-        options?: LLMCallOptions
+        options?: LLMCallOptions,
+        span?: TraceSpan
     ): Promise<Record<string, any>> {
         const signature = this.requireSignature();
 
         if (this.lm.getCapabilities().supportsStructuredOutput) {
             const schema = buildOutputJsonSchema(signature);
+            span?.startCall(prompt);
             const raw = await this.lm.generateStructured<Record<string, any>>(
                 prompt,
                 schema,
                 options
             );
+            span?.endCall(JSON.stringify(raw));
             return this.validateStructured(raw);
         }
 
+        span?.startCall(prompt);
         const rawOutput = await this.lm.generate(prompt, options);
+        span?.endCall(rawOutput);
         return parseOutput(signature, rawOutput);
     }
 
