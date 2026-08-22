@@ -269,3 +269,38 @@ describe('Parsing Utils', () => {
         });
     });
 });
+
+describe('enum fields', () => {
+    it('names the allowed members in the prompt of a class signature', () => {
+        class Classify extends Signature {
+            @InputField({ description: 'the review' })
+            review!: string;
+
+            @OutputField({
+                description: 'overall sentiment',
+                type: 'enum',
+                values: ['positive', 'negative'],
+            })
+            sentiment!: string;
+        }
+
+        const prompt = buildPrompt(Classify, { review: 'lovely' });
+
+        // The structured path gets the members as a JSON Schema `enum`; on the text
+        // path the prompt is the only place they can appear, and without them the
+        // model is being marked against a rubric it was never shown.
+        expect(prompt).toContain('[one of: positive, negative]');
+    });
+
+    it('reports the members, not the bare word enum, when a value is refused', () => {
+        expect(() => parseOutput('review -> sentiment: enum(a|b)', 'sentiment: c')).toThrow(
+            ValidationError
+        );
+
+        try {
+            parseOutput('review -> sentiment: enum(a|b)', 'sentiment: c');
+        } catch (error) {
+            expect((error as ValidationError).issues[0].expected).toBe('enum(a|b)');
+        }
+    });
+});

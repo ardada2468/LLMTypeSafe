@@ -1,4 +1,13 @@
-import { LMError, imagePart, textPart } from '@ts-dspy/core';
+import {
+    AuthError,
+    ContentFilterError,
+    ContextLengthError,
+    LMError,
+    RateLimitError,
+    TimeoutError,
+    imagePart,
+    textPart,
+} from '@ts-dspy/core';
 import {
     AnthropicLM,
     AnthropicRefusalError,
@@ -10,18 +19,31 @@ import {
 const mocks = vi.hoisted(() => {
     class MockAPIError extends Error {
         status: number;
-        constructor(status: number, message: string) {
+        // The real APIError lifts `error.type` out of the response body; it is
+        // the cleanest discriminator any of the three SDKs offers.
+        type: string | null;
+        constructor(status: number, message: string, type: string | null = null) {
             super(message);
             this.status = status;
+            this.type = type;
         }
     }
-    return { create: vi.fn(), stream: vi.fn(), MockAPIError };
+    // The real class extends APIConnectionError extends APIError, and carries
+    // neither a status nor a type.
+    class MockAPIConnectionTimeoutError extends MockAPIError {
+        constructor(message = 'Request timed out.') {
+            super(undefined as unknown as number, message);
+        }
+    }
+    return {
+        create: vi.fn(),
+        stream: vi.fn(),
+        MockAPIError,
+        MockAPIConnectionTimeoutError,
+    };
 });
 
-const { MockAPIError } = mocks;
-
-const PNG = 'iVBORw0KGgo=';
-const DATA_URI = `data:image/png;base64,${PNG}`;
+const { MockAPIError, MockAPIConnectionTimeoutError } = mocks;
 
 vi.mock('@anthropic-ai/sdk', () => ({
     default: class {
@@ -29,6 +51,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
         constructor(public options: unknown) {}
     },
     APIError: mocks.MockAPIError,
+    APIConnectionTimeoutError: mocks.MockAPIConnectionTimeoutError,
 }));
 
 function message(text: string, extra: Record<string, unknown> = {}) {
@@ -44,6 +67,9 @@ beforeEach(() => {
     mocks.create.mockReset();
     mocks.stream.mockReset();
 });
+
+const PNG = 'iVBORw0KGgo=';
+const DATA_URI = `data:image/png;base64,${PNG}`;
 
 describe('AnthropicLM', () => {
     it('defaults to the current Opus model with no date suffix', () => {
@@ -125,6 +151,21 @@ describe('AnthropicLM', () => {
                 AnthropicRefusalError
             );
         });
+
+        it('throws the shared ContentFilterError, which AnthropicRefusalError now aliases', async () => {
+            mocks.create.mockResolvedValue({
+                content: [],
+                stop_reason: 'refusal',
+                stop_details: { type: 'refusal', category: 'cyber' },
+                usage: { input_tokens: 5, output_tokens: 0 },
+            });
+
+            const error = await new AnthropicLM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
+
+            expect(error).toBeInstanceOf(ContentFilterError);
+            expect(AnthropicRefusalError).toBe(ContentFilterError);
+            expect(error.provider).toBe('anthropic');
+        });
     });
 
     describe('sampling parameters', () => {
@@ -164,6 +205,24 @@ describe('AnthropicLM', () => {
             });
 
             expect(mocks.create.mock.calls[0][1]).toEqual({ timeout: 3000, maxRetries: 4 });
+        });
+
+        it('forwards an abort signal to the SDK request options', async () => {
+            mocks.create.mockResolvedValue(message('ok'));
+            const controller = new AbortController();
+
+            await new AnthropicLM({ apiKey: 'k' }).generate('Hi', {
+                signal: controller.signal,
+            });
+
+            expect(mocks.create.mock.calls[0][1]).toEqual({ signal: controller.signal });
+        });
+
+        it('omits the signal when no cancellation is requested', async () => {
+            mocks.create.mockResolvedValue(message('ok'));
+            await new AnthropicLM({ apiKey: 'k' }).generate('Hi');
+
+            expect(mocks.create.mock.calls[0][1]).not.toHaveProperty('signal');
         });
     });
 
@@ -238,6 +297,153 @@ describe('AnthropicLM', () => {
                 usage: { promptTokens: 14, completionTokens: 9, totalTokens: 23 },
             });
         });
+
+        it('counts a refused stream exactly once', async () => {
+            // assertNotRefused records the error itself, and it used to sit
+            // inside the try, so the catch counted the same refusal twice.
+            mocks.stream.mockReturnValue({
+                async *[Symbol.asyncIterator]() {},
+                finalMessage: async () =>
+                    message('', { stop_reason: 'refusal', stop_details: null }),
+            });
+            const lm = new AnthropicLM({ apiKey: 'k' });
+
+            const consume = async () => {
+                for await (const _chunk of lm.generateStream('Hi')) {
+                    // drain
+                }
+            };
+
+            await expect(consume()).rejects.toBeInstanceOf(ContentFilterError);
+            expect(lm.getUsage().errorCount).toBe(1);
+        });
+
+        it('forwards tool-argument deltas and the assembled calls', async () => {
+            const events = [
+                { type: 'content_block_delta', delta: { type: 'text_delta', text: 'ok' } },
+                {
+                    type: 'content_block_delta',
+                    index: 1,
+                    delta: { type: 'input_json_delta', partial_json: '{"a":' },
+                },
+                {
+                    type: 'content_block_delta',
+                    index: 1,
+                    delta: { type: 'input_json_delta', partial_json: '1}' },
+                },
+            ];
+            mocks.stream.mockReturnValue({
+                async *[Symbol.asyncIterator]() {
+                    yield* events;
+                },
+                finalMessage: async () =>
+                    message('ok', {
+                        content: [
+                            { type: 'text', text: 'ok' },
+                            { type: 'tool_use', id: 'toolu_1', name: 'add', input: { a: 1 } },
+                        ],
+                        stop_reason: 'tool_use',
+                    }),
+            });
+
+            const chunks = [];
+            for await (const chunk of new AnthropicLM({ apiKey: 'k' }).generateStream('Hi')) {
+                chunks.push(chunk);
+            }
+
+            // Argument fragments are not text, so they travel in metadata.
+            expect(chunks.filter((c) => !c.done).map((c) => c.content)).toEqual(['ok', '', '']);
+            expect(chunks[1].metadata).toEqual({
+                toolInputDelta: { index: 1, partialJson: '{"a":' },
+            });
+            expect(chunks.at(-1)?.metadata).toEqual({
+                toolCalls: [{ id: 'toolu_1', name: 'add', arguments: { a: 1 } }],
+            });
+        });
+    });
+
+    describe('tool calling', () => {
+        it('sends tool declarations as name/description/input_schema', async () => {
+            mocks.create.mockResolvedValue(message('ok'));
+
+            await new AnthropicLM({ apiKey: 'k' }).chatWithTools(
+                [{ role: 'user', content: 'hi' }],
+                {
+                    tools: [
+                        {
+                            name: 'add',
+                            description: 'Add two numbers',
+                            parameters: { type: 'object', properties: {} },
+                        },
+                    ],
+                }
+            );
+
+            expect(mocks.create.mock.calls[0][0].tools).toEqual([
+                {
+                    name: 'add',
+                    description: 'Add two numbers',
+                    input_schema: { type: 'object', properties: {} },
+                },
+            ]);
+        });
+
+        it('spells a forced tool call as tool_choice any', async () => {
+            mocks.create.mockResolvedValue(message('ok'));
+
+            await new AnthropicLM({ apiKey: 'k' }).chatWithTools(
+                [{ role: 'user', content: 'hi' }],
+                { tools: [{ name: 'add', parameters: {} }], toolChoice: 'required' }
+            );
+
+            expect(mocks.create.mock.calls[0][0].tool_choice).toEqual({ type: 'any' });
+        });
+
+        it('names a specific tool when the choice is an object', async () => {
+            mocks.create.mockResolvedValue(message('ok'));
+
+            await new AnthropicLM({ apiKey: 'k' }).chatWithTools(
+                [{ role: 'user', content: 'hi' }],
+                { tools: [{ name: 'add', parameters: {} }], toolChoice: { name: 'add' } }
+            );
+
+            expect(mocks.create.mock.calls[0][0].tool_choice).toEqual({
+                type: 'tool',
+                name: 'add',
+            });
+        });
+
+        it('surfaces tool_use blocks alongside the text', async () => {
+            mocks.create.mockResolvedValue(
+                message('ignored', {
+                    content: [
+                        { type: 'text', text: 'Let me add those.' },
+                        { type: 'tool_use', id: 'toolu_1', name: 'add', input: { a: 1, b: 2 } },
+                    ],
+                    stop_reason: 'tool_use',
+                })
+            );
+
+            const result = await new AnthropicLM({ apiKey: 'k' }).chatWithTools([
+                { role: 'user', content: 'hi' },
+            ]);
+
+            // textOf() keeps only text blocks; the tool_use block used to be
+            // silently discarded here with nothing to replace it.
+            expect(result.content).toBe('Let me add those.');
+            expect(result.finishReason).toBe('tool_calls');
+            expect(result.toolCalls).toEqual([
+                { id: 'toolu_1', name: 'add', arguments: { a: 1, b: 2 } },
+            ]);
+        });
+
+        it('omits tool parameters entirely when no tools are offered', async () => {
+            mocks.create.mockResolvedValue(message('ok'));
+            await new AnthropicLM({ apiKey: 'k' }).chat([{ role: 'user', content: 'hi' }]);
+
+            expect(mocks.create.mock.calls[0][0]).not.toHaveProperty('tools');
+            expect(mocks.create.mock.calls[0][0]).not.toHaveProperty('tool_choice');
+        });
     });
 
     describe('toAnthropicMessages', () => {
@@ -258,17 +464,208 @@ describe('AnthropicLM', () => {
                 { role: 'assistant', content: 'reply' },
             ]);
 
-            // Merged content is now a block array rather than a joined string:
-            // image turns can only be expressed as blocks, and merging on one
-            // representation instead of two is what keeps a text turn followed
-            // by an image turn from being sent as two adjacent user messages.
-            // The blank line between the two texts is preserved.
             expect(messages).toEqual([
-                { role: 'user', content: [{ type: 'text', text: 'one\n\ntwo' }] },
+                { role: 'user', content: 'one\n\ntwo' },
                 { role: 'assistant', content: 'reply' },
             ]);
         });
 
+        it('does not mutate the caller array', () => {
+            const input = [
+                { role: 'user' as const, content: 'a' },
+                { role: 'assistant' as const, content: 'b' },
+            ];
+            toAnthropicMessages(input);
+            expect(input).toHaveLength(2);
+        });
+
+        it('turns an assistant tool call into text and tool_use blocks', () => {
+            const { messages } = toAnthropicMessages([
+                {
+                    role: 'assistant',
+                    content: 'Let me add those.',
+                    toolCalls: [{ id: 'toolu_1', name: 'add', arguments: { a: 1, b: 2 } }],
+                },
+            ]);
+
+            expect(messages).toEqual([
+                {
+                    role: 'assistant',
+                    content: [
+                        { type: 'text', text: 'Let me add those.' },
+                        { type: 'tool_use', id: 'toolu_1', name: 'add', input: { a: 1, b: 2 } },
+                    ],
+                },
+            ]);
+        });
+
+        it('gives parallel calls to one tool distinct synthesized ids', () => {
+            // A Gemini-sourced turn carries no ids at all; two calls to the same
+            // tool must not collapse onto one tool_use_id.
+            const { messages } = toAnthropicMessages([
+                {
+                    role: 'assistant',
+                    content: '',
+                    toolCalls: [
+                        { name: 'lookup', arguments: { id: 1 } },
+                        { name: 'lookup', arguments: { id: 2 } },
+                    ],
+                },
+            ]);
+
+            const ids = (messages[0].content as any[]).map((block) => block.id);
+            expect(new Set(ids).size).toBe(2);
+        });
+
+        it('turns a tool result into a user turn holding a tool_result block', () => {
+            const { messages } = toAnthropicMessages([
+                { role: 'tool', name: 'add', toolCallId: 'toolu_1', content: '3' },
+            ]);
+
+            expect(messages).toEqual([
+                {
+                    role: 'user',
+                    content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '3' }],
+                },
+            ]);
+        });
+
+        it('merges a tool result onto a preceding user turn as blocks, not text', () => {
+            // String merging is still the behaviour for two plain user turns
+            // (see above), but concatenating a tool result into prose would
+            // destroy the `tool_use_id` the API correlates on, so a mixed pair
+            // is promoted to block form instead.
+            const { messages } = toAnthropicMessages([
+                { role: 'user', content: 'context' },
+                { role: 'tool', name: 'add', toolCallId: 'toolu_1', content: '3' },
+            ]);
+
+            expect(messages).toEqual([
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: 'context' },
+                        { type: 'tool_result', tool_use_id: 'toolu_1', content: '3' },
+                    ],
+                },
+            ]);
+        });
+
+        it('degrades an uncorrelated tool result to plain user text', () => {
+            const { messages } = toAnthropicMessages([{ role: 'tool', content: '3' }]);
+            expect(messages).toEqual([{ role: 'user', content: '3' }]);
+        });
+
+        it('passes the system parameter through on a chat call', async () => {
+            mocks.create.mockResolvedValue(message('ok'));
+            await new AnthropicLM({ apiKey: 'k' }).chat([
+                { role: 'system', content: 'be terse' },
+                { role: 'user', content: 'hi' },
+            ]);
+
+            expect(mocks.create.mock.calls[0][0].system).toBe('be terse');
+        });
+    });
+
+    describe('error handling', () => {
+        it('wraps SDK errors in LMError preserving the status', async () => {
+            mocks.create.mockRejectedValue(new MockAPIError(429, 'rate limited'));
+            const lm = new AnthropicLM({ apiKey: 'k' });
+
+            await expect(lm.generate('Hi')).rejects.toThrow(LMError);
+            await expect(lm.generate('Hi')).rejects.toMatchObject({
+                provider: 'anthropic',
+                status: 429,
+            });
+        });
+
+        it('counts failures', async () => {
+            mocks.create.mockRejectedValue(new MockAPIError(500, 'boom'));
+            const lm = new AnthropicLM({ apiKey: 'k' });
+
+            await expect(lm.generate('Hi')).rejects.toThrow();
+            expect(lm.getUsage().errorCount).toBe(1);
+        });
+
+        it('classifies by the typed error union', async () => {
+            const lm = new AnthropicLM({ apiKey: 'k' });
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(429, 'rate limited', 'rate_limit_error')
+            );
+            const rateLimited = await lm.generate('Hi').catch((e) => e);
+            expect(rateLimited).toBeInstanceOf(RateLimitError);
+            // The new classes are still LMError, so old catch blocks hold.
+            expect(rateLimited).toBeInstanceOf(LMError);
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(401, 'bad key', 'authentication_error')
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(AuthError);
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(403, 'no access', 'permission_error')
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(AuthError);
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(408, 'took too long', 'timeout_error')
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(TimeoutError);
+        });
+
+        it('classifies a client-side timeout, which carries no status or type', async () => {
+            // `timeout_error` only covers a server-side gateway timeout, so a
+            // client timeout reached classify() with nothing to go on and came
+            // back as a plain LMError.
+            mocks.create.mockRejectedValue(new MockAPIConnectionTimeoutError());
+
+            const error = await new AnthropicLM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
+
+            expect(error).toBeInstanceOf(TimeoutError);
+            expect(error.status).toBeUndefined();
+        });
+
+        it('recognises an over-long prompt despite there being no context-length type', async () => {
+            const lm = new AnthropicLM({ apiKey: 'k' });
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(
+                    400,
+                    'prompt is too long: 250000 tokens > 200000 maximum',
+                    'invalid_request_error'
+                )
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(ContextLengthError);
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(400, 'max_tokens is required', 'invalid_request_error')
+            );
+            const other = await lm.generate('Hi').catch((e) => e);
+            expect(other).toBeInstanceOf(LMError);
+            expect(other).not.toBeInstanceOf(ContextLengthError);
+        });
+
+        it('leaves an unrecognised failure as a plain LMError', async () => {
+            mocks.create.mockRejectedValue(new MockAPIError(500, 'boom', 'api_error'));
+
+            const error = await new AnthropicLM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
+
+            expect(error.constructor.name).toBe('LMError');
+            expect(error.status).toBe(500);
+        });
+    });
+
+    it('advertises full capabilities', () => {
+        const capabilities = new AnthropicLM({ apiKey: 'k' }).getCapabilities();
+
+        expect(capabilities.supportsStreaming).toBe(true);
+        expect(capabilities.supportsStructuredOutput).toBe(true);
+        expect(capabilities.supportsFunctionCalling).toBe(true);
+        expect(capabilities.maxContextLength).toBe(1_000_000);
+    });
+
+    describe('image content', () => {
         it('merges a text turn and an adjacent image turn into one user message', () => {
             const { messages } = toAnthropicMessages([
                 { role: 'user', content: 'what is this?' },
@@ -324,72 +721,5 @@ describe('AnthropicLM', () => {
 
             expect(system).toBe('logo: [image: image/png]');
         });
-
-        it('leaves a text-only conversation as plain strings', () => {
-            const { messages } = toAnthropicMessages([
-                { role: 'user', content: 'hi' },
-                { role: 'assistant', content: 'hello' },
-            ]);
-
-            expect(messages).toEqual([
-                { role: 'user', content: 'hi' },
-                { role: 'assistant', content: 'hello' },
-            ]);
-        });
-
-        it('does not mutate the caller array', () => {
-            const input = [
-                { role: 'user' as const, content: 'a' },
-                { role: 'assistant' as const, content: 'b' },
-            ];
-            toAnthropicMessages(input);
-            expect(input).toHaveLength(2);
-        });
-
-        it('passes the system parameter through on a chat call', async () => {
-            mocks.create.mockResolvedValue(message('ok'));
-            await new AnthropicLM({ apiKey: 'k' }).chat([
-                { role: 'system', content: 'be terse' },
-                { role: 'user', content: 'hi' },
-            ]);
-
-            expect(mocks.create.mock.calls[0][0].system).toBe('be terse');
-        });
-    });
-
-    describe('error handling', () => {
-        it('wraps SDK errors in LMError preserving the status', async () => {
-            mocks.create.mockRejectedValue(new MockAPIError(429, 'rate limited'));
-            const lm = new AnthropicLM({ apiKey: 'k' });
-
-            await expect(lm.generate('Hi')).rejects.toThrow(LMError);
-            await expect(lm.generate('Hi')).rejects.toMatchObject({
-                provider: 'anthropic',
-                status: 429,
-            });
-        });
-
-        it('counts failures', async () => {
-            mocks.create.mockRejectedValue(new MockAPIError(500, 'boom'));
-            const lm = new AnthropicLM({ apiKey: 'k' });
-
-            await expect(lm.generate('Hi')).rejects.toThrow();
-            expect(lm.getUsage().errorCount).toBe(1);
-        });
-    });
-
-    it('advertises full capabilities', () => {
-        const capabilities = new AnthropicLM({ apiKey: 'k' }).getCapabilities();
-
-        expect(capabilities.supportsStreaming).toBe(true);
-        expect(capabilities.supportsStructuredOutput).toBe(true);
-        expect(capabilities.supportsFunctionCalling).toBe(true);
-        expect(capabilities.supportsVision).toBe(true);
-        expect(capabilities.maxContextLength).toBe(1_000_000);
-    });
-
-    it('reports no vision for the models that cannot read images', () => {
-        const haiku = new AnthropicLM({ apiKey: 'k', model: 'claude-3-5-haiku-latest' });
-        expect(haiku.getCapabilities().supportsVision).toBe(false);
     });
 });

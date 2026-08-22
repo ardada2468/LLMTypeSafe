@@ -1,165 +1,353 @@
-import { Signature, isImageFieldType } from '../core/signature';
-import { ValidationError, type FieldValidationIssue } from '../core/errors';
+import type { z } from 'zod';
+import {
+    isZodSignature,
+    Signature,
+    type AnyZodSignature,
+    type SignatureLike,
+} from '../core/signature';
+import { type Example } from '../core/example';
+import { isImageFieldType } from '../core/signature';
 import type { ContentPart, ImageInput, MessageContent } from '../types/language-model';
 import { contentToText, imagePart, textPart } from './content';
-import { buildOutputSchema, getOutputFieldConfigs } from './schema';
+import { ValidationError, type FieldValidationIssue } from '../core/errors';
+import { buildOutputSchema, getOutputFieldConfigs, zodFieldHint } from './schema';
 
 /**
- * Render a signature and its inputs as a plain-text prompt.
+ * How demos are written into the prompt.
  *
- * Image inputs are flattened to a `[image: …]` placeholder, because a string
- * cannot carry pixels. Use {@link buildPromptContent} to send them for real.
+ * `labelled` mirrors the `field: value` text {@link parseOutput} reads back, and
+ * suits a provider answering in plain text. `json` suits a provider whose
+ * decoding is constrained to a JSON schema, where labelled examples would be
+ * demonstrating a shape the model is not allowed to emit.
+ */
+export type DemoFormat = 'labelled' | 'json';
+
+export interface RenderDemosOptions {
+    /** Defaults to `labelled`. */
+    format?: DemoFormat;
+}
+
+/**
+ * Render a prompt for one call.
+ *
+ * `demos` are worked examples shown before the real input, so the model can see
+ * the task performed correctly before attempting it. They render in the shape
+ * the reply is expected to take, which is what makes them teach the output
+ * format rather than merely illustrate the task. With no demos the output is
+ * byte-for-byte what it was before few-shot support existed.
  */
 export function buildPrompt(
-    signature: typeof Signature | string,
-    inputs: Record<string, any>
+    signature: SignatureLike,
+    inputs: Record<string, any>,
+    demos: Example[] = [],
+    options: RenderDemosOptions = {}
 ): string {
-    return contentToText(buildPromptContent(signature, inputs));
+    const content = buildPromptContent(signature, inputs, demos, options);
+    return typeof content === 'string' ? content : contentToText(content);
 }
 
-/**
- * Render a signature and its inputs as chat message content.
- *
- * Returns a plain `string` when every input is text — identical to what
- * {@link buildPrompt} produces — and an array of {@link ContentPart}s when any
- * input field is declared `image`, so the image travels as an image:
- *
- * ```ts
- * const content = buildPromptContent(DescribeReceipt, { receipt: dataUri });
- * await lm.chat([{ role: 'user', content }]);
- * ```
- */
-export function buildPromptContent(
-    signature: typeof Signature | string,
-    inputs: Record<string, any>
-): MessageContent {
-    const parts =
-        typeof signature === 'string'
-            ? buildPartsFromString(signature, inputs)
-            : buildPartsFromClass(signature, inputs);
-    return collapse(parts);
-}
+/** The text prompt, with image inputs left exactly as they were passed in. */
+function buildPromptText(
+    signature: SignatureLike,
+    inputs: Record<string, any>,
+    demos: Example[] = [],
+    options: RenderDemosOptions = {}
+): string {
+    const demoBlock = renderDemos(signature, demos, options);
 
-/**
- * Accumulates prompt text, breaking it into parts wherever an image lands.
- *
- * Text is buffered so that a prompt without images ends up as exactly one part
- * holding exactly the string the old string-only builder produced.
- */
-function partBuilder() {
-    const parts: ContentPart[] = [];
-    let buffer = '';
-
-    const flush = () => {
-        if (buffer !== '') {
-            parts.push(textPart(buffer));
-            buffer = '';
-        }
-    };
-
-    return {
-        text(chunk: string): void {
-            buffer += chunk;
-        },
-        image(value: ImageInput): void {
-            flush();
-            parts.push(imagePart(value));
-        },
-        done(): ContentPart[] {
-            flush();
-            return trimEnds(parts);
-        },
-    };
-}
-
-/** Mirror the trailing `prompt.trim()` the string builders used to end with. */
-function trimEnds(parts: ContentPart[]): ContentPart[] {
-    const trimmed = [...parts];
-    const first = trimmed[0];
-    if (first?.type === 'text') {
-        trimmed[0] = textPart(first.text.replace(/^\s+/, ''));
+    if (typeof signature === 'string') {
+        return buildPromptFromString(signature, inputs, demoBlock);
     }
-    const last = trimmed[trimmed.length - 1];
-    if (last?.type === 'text') {
-        trimmed[trimmed.length - 1] = textPart(last.text.replace(/\s+$/, ''));
+    if (isZodSignature(signature)) {
+        return buildPromptFromZod(signature, inputs, demoBlock);
     }
-    return trimmed.filter((part) => part.type !== 'text' || part.text !== '');
+    return buildPromptFromClass(signature, inputs, demoBlock);
 }
 
-/** One text part is just a string; anything else stays a part array. */
-function collapse(parts: ContentPart[]): MessageContent {
-    if (parts.length === 0) return '';
-    if (parts.length === 1 && parts[0].type === 'text') return parts[0].text;
-    return parts;
-}
-
-function buildPartsFromString(
+function buildPromptFromString(
     signatureStr: string,
-    inputs: Record<string, any>
-): ContentPart[] {
+    inputs: Record<string, any>,
+    demoBlock = ''
+): string {
     const parsed = Signature.parseStringSignature(signatureStr);
-    const prompt = partBuilder();
+
+    let prompt = demoBlock;
 
     for (const inputKey of parsed.inputs) {
         if (inputs[inputKey] !== undefined) {
-            prompt.text(`${inputKey}: `);
-            if (isImageFieldType(parsed.types[inputKey])) {
-                prompt.image(inputs[inputKey]);
-            } else {
-                prompt.text(`${inputs[inputKey]}`);
-            }
-            prompt.text('\n');
+            prompt += `${inputKey}: ${inputs[inputKey]}\n`;
         }
     }
 
     if (parsed.outputs.length === 1) {
         const outputKey = parsed.outputs[0];
-        prompt.text(
-            `\nProvide the ${outputKey} in this format:\n${outputKey}: [your response]`
-        );
+        prompt += `\nProvide the ${outputKey} in this format:\n${outputKey}: [your response]`;
     } else {
-        prompt.text('\nProvide the following fields:\n');
+        prompt += '\nProvide the following fields:\n';
         for (const outputKey of parsed.outputs) {
             const typeInfo = parsed.types[outputKey] ? ` (${parsed.types[outputKey]})` : '';
-            prompt.text(`${outputKey}${typeInfo}: [your response]\n`);
+            prompt += `${outputKey}${typeInfo}: [your response]\n`;
         }
     }
 
-    return prompt.done();
+    return prompt.trim();
 }
 
-function buildPartsFromClass(
+function buildPromptFromClass(
     signatureClass: typeof Signature,
-    inputs: Record<string, any>
-): ContentPart[] {
+    inputs: Record<string, any>,
+    demoBlock = ''
+): string {
     const inputFields = signatureClass.getInputFields();
     const outputFields = signatureClass.getOutputFields();
-    const prompt = partBuilder();
+
+    let prompt = '';
 
     if (signatureClass.description) {
-        prompt.text(`${signatureClass.description}\n\n`);
+        prompt += `${signatureClass.description}\n\n`;
     }
+
+    // After the task description, before the real input: the model reads what
+    // the task is, then sees it done, then does it.
+    prompt += demoBlock;
 
     Object.entries(inputFields).forEach(([key, config]) => {
         if (inputs[key] !== undefined) {
             const prefix = config.prefix || `${key}:`;
-            prompt.text(`${prefix} `);
-            if (isImageFieldType(config.type)) {
-                prompt.image(inputs[key]);
-            } else {
-                prompt.text(`${inputs[key]}`);
-            }
-            prompt.text('\n');
+            prompt += `${prefix} ${inputs[key]}\n`;
         }
     });
 
-    prompt.text('\nProvide:\n');
+    prompt += '\nProvide:\n';
     Object.entries(outputFields).forEach(([key, config]) => {
         const desc = config.description ? ` (${config.description})` : '';
-        prompt.text(`${key}${desc}:\n`);
+        // A closed set is worth nothing if the model is never told what is in it.
+        // The structured path gets the members as a JSON Schema `enum`; on the text
+        // path the prompt is the only place they can appear.
+        const allowed = config.values?.length ? ` [one of: ${config.values.join(', ')}]` : '';
+        prompt += `${key}${desc}${allowed}:\n`;
     });
 
-    return prompt.done();
+    return prompt.trim();
+}
+
+/** Render one input value for a prompt line, keeping structured values readable. */
+function formatInputValue(value: unknown): string {
+    if (value === null || typeof value !== 'object') return String(value);
+    return JSON.stringify(value);
+}
+
+function buildPromptFromZod(
+    zodSignature: AnyZodSignature,
+    inputs: Record<string, any>,
+    demoBlock = ''
+): string {
+    const inputShape = zodSignature.input.shape as Record<string, z.ZodType>;
+    const outputShape = zodSignature.output.shape as Record<string, z.ZodType>;
+
+    let prompt = '';
+
+    if (zodSignature.description) {
+        prompt += `${zodSignature.description}\n\n`;
+    }
+
+    prompt += demoBlock;
+
+    for (const [key, field] of Object.entries(inputShape)) {
+        if (inputs[key] !== undefined) {
+            // An input's `.describe()` is what tells the model how to read the
+            // value, so it belongs in the prompt beside the value itself.
+            const label = field.description ? `${key} (${field.description})` : key;
+            prompt += `${label}: ${formatInputValue(inputs[key])}\n`;
+        }
+    }
+
+    prompt += '\nProvide:\n';
+    for (const [key, field] of Object.entries(outputShape)) {
+        // The hint carries the enum options, bounds and nullability that the
+        // text path cannot enforce any other way.
+        const described = field.description ? `${field.description}; ` : '';
+        prompt += `${key} (${described}${zodFieldHint(field)}):\n`;
+    }
+
+    return prompt.trim();
+}
+
+/**
+ * Render worked examples as a prompt preamble.
+ *
+ * Exported so a caller can inspect exactly what few-shot text a set of demos
+ * produces — useful when tuning a prompt by hand. Returns an empty string when
+ * there is nothing to show, so callers can concatenate unconditionally.
+ */
+export function renderDemos(
+    signature: SignatureLike,
+    demos: Example[] = [],
+    options: RenderDemosOptions = {}
+): string {
+    if (demos.length === 0) {
+        return '';
+    }
+
+    const format = options.format ?? 'labelled';
+    const { inputs: inputNames, outputs: outputNames } = signatureFieldNames(signature);
+    const inputFields =
+        typeof signature === 'string' || isZodSignature(signature)
+            ? {}
+            : signature.getInputFields();
+
+    const blocks: string[] = [];
+    for (const demo of demos) {
+        const { inputs, outputs } = splitDemo(demo, inputNames, outputNames);
+
+        // A demo sharing no fields with the signature teaches nothing, so skip
+        // it rather than emitting an empty numbered block.
+        if (Object.keys(inputs).length === 0 && Object.keys(outputs).length === 0) {
+            continue;
+        }
+
+        const body =
+            format === 'json'
+                ? renderJsonDemo(inputs, outputs)
+                : renderLabelledDemo(inputs, outputs, inputFields);
+        blocks.push(`Example ${blocks.length + 1}:\n${body}`);
+    }
+
+    if (blocks.length === 0) {
+        return '';
+    }
+
+    const verb = blocks.length === 1 ? 'is' : 'are';
+    const noun = blocks.length === 1 ? 'example' : 'examples';
+    // The labelled form is the only one that can promise "the same format": on
+    // the JSON path the schema instruction, not the demo, dictates the shape.
+    const trailer =
+        format === 'json'
+            ? 'Now complete the next one.'
+            : 'Now complete the next one in the same format.';
+
+    return (
+        `Here ${verb} ${blocks.length} worked ${noun} of this task:\n\n` +
+        `${blocks.join('\n\n')}\n\n` +
+        `${trailer}\n\n`
+    );
+}
+
+function renderLabelledDemo(
+    inputs: Record<string, any>,
+    outputs: Record<string, any>,
+    inputFields: Record<string, { prefix?: string }>
+): string {
+    const lines: string[] = [];
+
+    for (const [key, value] of Object.entries(inputs)) {
+        const prefix = inputFields[key]?.prefix || `${key}:`;
+        lines.push(`${prefix} ${formatDemoValue(value)}`);
+    }
+    // Output labels stay plain `key: value` even when the input side uses a
+    // custom prefix: that is the shape parseOutput reads back, and a demo
+    // teaching any other shape would teach the model to break the parser.
+    for (const [key, value] of Object.entries(outputs)) {
+        lines.push(`${key}: ${formatDemoValue(value)}`);
+    }
+
+    return lines.join('\n');
+}
+
+function renderJsonDemo(inputs: Record<string, any>, outputs: Record<string, any>): string {
+    return `input: ${JSON.stringify(inputs)}\noutput: ${JSON.stringify(outputs)}`;
+}
+
+/** A signature's declared field names, in declaration order. */
+function signatureFieldNames(signature: SignatureLike): {
+    inputs: string[];
+    outputs: string[];
+} {
+    if (typeof signature === 'string') {
+        const parsed = Signature.parseStringSignature(signature);
+        return { inputs: parsed.inputs, outputs: parsed.outputs };
+    }
+    if (isZodSignature(signature)) {
+        return {
+            inputs: Object.keys(signature.input.shape as Record<string, z.ZodType>),
+            outputs: Object.keys(signature.output.shape as Record<string, z.ZodType>),
+        };
+    }
+    return {
+        inputs: Object.keys(signature.getInputFields()),
+        outputs: Object.keys(signature.getOutputFields()),
+    };
+}
+
+/**
+ * Split one demo into its input half and its output half.
+ *
+ * An `Example` that has been through `withInputs()` already knows its own split,
+ * so honour it. One that has not is split by the signature instead, which is why
+ * `new Example({ question, answer })` works as a demo without extra ceremony.
+ *
+ * Declared fields lead, in signature order, so demos stay stable and match the
+ * shape of the real call. An example that declared its own split may also carry
+ * output fields the signature never declared, and those follow — `reasoning` on
+ * a bootstrapped `ChainOfThought` demo is exactly that, and dropping it would
+ * throw away the most valuable part of the trace. Where no split was declared
+ * there is no way to tell a stray key from an input, so only declared fields
+ * render.
+ */
+function splitDemo(
+    demo: Example,
+    inputNames: string[],
+    outputNames: string[]
+): { inputs: Record<string, any>; outputs: Record<string, any> } {
+    let inputSource: Record<string, any>;
+    let outputSource: Record<string, any>;
+    let declaredOwnSplit: boolean;
+
+    try {
+        inputSource = demo.getInputs();
+        outputSource = demo.getOutputs();
+        declaredOwnSplit = true;
+    } catch {
+        // No explicit input keys: let the signature decide which side is which.
+        const data = demo.toObject();
+        inputSource = data;
+        outputSource = data;
+        declaredOwnSplit = false;
+    }
+
+    const extras = declaredOwnSplit
+        ? Object.keys(outputSource).filter((key) => !outputNames.includes(key))
+        : [];
+
+    return {
+        inputs: pickInOrder(inputSource, inputNames),
+        outputs: pickInOrder(outputSource, [...outputNames, ...extras]),
+    };
+}
+
+function pickInOrder(source: Record<string, any>, names: string[]): Record<string, any> {
+    const picked: Record<string, any> = {};
+    for (const name of names) {
+        const value = source[name];
+        if (value !== undefined && value !== null) {
+            picked[name] = value;
+        }
+    }
+    return picked;
+}
+
+/** Render a demo value the way {@link parseOutput} would read it back. */
+function formatDemoValue(value: unknown): string {
+    if (typeof value === 'string') {
+        return value;
+    }
+    if (value instanceof Date) {
+        return value.toISOString();
+    }
+    if (typeof value === 'object') {
+        return JSON.stringify(value);
+    }
+    return String(value);
 }
 
 /**
@@ -171,10 +359,7 @@ function buildPartsFromClass(
  * @throws {ValidationError} when a required field is missing or a field's value
  * cannot be coerced to its declared type.
  */
-export function parseOutput(
-    signature: typeof Signature | string,
-    rawOutput: string
-): Record<string, any> {
+export function parseOutput(signature: SignatureLike, rawOutput: string): Record<string, any> {
     const fields = getOutputFieldConfigs(signature);
     const fieldNames = Object.keys(fields);
     const text = typeof rawOutput === 'string' ? rawOutput : String(rawOutput);
@@ -196,7 +381,12 @@ export function parseOutput(
 
     const issues: FieldValidationIssue[] = result.error.issues.map((issue) => {
         const field = String(issue.path[0] ?? '(root)');
-        const declaredType = fields[field]?.type ?? 'string';
+        const declared = fields[field];
+        // Report an enum's members, not the bare word `enum` — the set is the part
+        // that tells the reader why the value was refused.
+        const declaredType = declared?.values?.length
+            ? `enum(${declared.values.join('|')})`
+            : (declared?.type ?? 'string');
         const received = extracted[field];
         const message =
             received === undefined
@@ -268,4 +458,78 @@ function extractFieldValue(
     }
 
     return null;
+}
+
+/**
+ * A marker standing in for an image while the prompt is built as text.
+ *
+ * Building the prompt as a string first and splitting afterwards is what lets
+ * images coexist with demos, zod signatures and enum hints: every one of those
+ * rules runs exactly as it does for a text-only prompt, and the image is spliced
+ * back in at the end. NUL is used because no prompt legitimately contains one.
+ */
+const IMAGE_MARKER = /\u0000ts-dspy:image:(\d+)\u0000/;
+
+/** Input fields declared as images. Only class signatures can declare one. */
+function imageInputFields(signature: SignatureLike): Set<string> {
+    if (typeof signature === 'string') {
+        const parsed = Signature.parseStringSignature(signature);
+        return new Set(parsed.inputs.filter((name) => isImageFieldType(parsed.types[name])));
+    }
+    if (isZodSignature(signature)) return new Set();
+    return new Set(
+        Object.entries(signature.getInputFields())
+            .filter(([, config]) => isImageFieldType(config.type))
+            .map(([name]) => name)
+    );
+}
+
+/**
+ * Render a signature and its inputs as chat message content.
+ *
+ * Returns a plain `string` when every input is text — byte-for-byte what
+ * {@link buildPrompt} produces — and an array of {@link ContentPart}s when an
+ * input field is declared `image`, so the image travels as an image rather than
+ * as the `[image: …]` placeholder a string is limited to:
+ *
+ * ```ts
+ * const content = buildPromptContent(DescribeReceipt, { receipt: dataUri });
+ * await lm.chat([{ role: 'user', content }]);
+ * ```
+ */
+export function buildPromptContent(
+    signature: SignatureLike,
+    inputs: Record<string, any>,
+    demos: Example[] = [],
+    options: RenderDemosOptions = {}
+): MessageContent {
+    const imageFields = imageInputFields(signature);
+    if (imageFields.size === 0) {
+        return buildPromptText(signature, inputs, demos, options);
+    }
+
+    const images: ImageInput[] = [];
+    const substituted: Record<string, any> = { ...inputs };
+    for (const key of Object.keys(inputs)) {
+        if (inputs[key] !== undefined && imageFields.has(key)) {
+            substituted[key] = `\u0000ts-dspy:image:${images.length}\u0000`;
+            images.push(inputs[key] as ImageInput);
+        }
+    }
+
+    const text = buildPromptText(signature, substituted, demos, options);
+    if (images.length === 0) return text;
+
+    const parts: ContentPart[] = [];
+    let rest = text;
+    for (;;) {
+        const match = IMAGE_MARKER.exec(rest);
+        if (!match) break;
+        if (match.index > 0) parts.push(textPart(rest.slice(0, match.index)));
+        parts.push(imagePart(images[Number(match[1])]));
+        rest = rest.slice(match.index + match[0].length);
+    }
+    if (rest !== '') parts.push(textPart(rest));
+
+    return parts.length === 1 && parts[0].type === 'text' ? parts[0].text : parts;
 }

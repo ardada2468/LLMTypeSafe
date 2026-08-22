@@ -27,7 +27,10 @@
     "chart:downloads": "node scripts/generate-downloads-chart.js",
     "example:openai": "tsx examples/basic-usage.ts",
     "example:gemini": "tsx examples/basic-gemini-example.ts",
-    "example:anthropic": "tsx examples/basic-anthropic-example.ts"
+    "example:anthropic": "tsx examples/basic-anthropic-example.ts",
+    "example:zod": "tsx examples/zod-signature.ts",
+    "example:ollama": "tsx examples/ollama-local.ts",
+    "example:optimizer": "tsx examples/optimizer.ts"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
