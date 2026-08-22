@@ -26,6 +26,13 @@ export interface LLMCallOptions {
      * short when an attempt reproduces the previous failure exactly.
      */
     repairAttempts?: number;
+    /**
+     * Cancellation signal for this request. Aborting it rejects the call — use
+     * it to drop work a React unmount or a cancelled server request no longer
+     * needs. Combined with `timeout` when both are supplied, so whichever fires
+     * first wins.
+     */
+    signal?: AbortSignal;
     metadata?: Record<string, any>;
 }
 
@@ -62,6 +69,12 @@ export interface UsageStats {
     totalCost?: number;
     requestCount?: number;
     errorCount?: number;
+    /**
+     * Responses served from the configured cache. Cache hits are counted here
+     * and deliberately excluded from `requestCount` and the token totals, so
+     * usage keeps reflecting real provider traffic and cost stays accurate.
+     */
+    cacheHits?: number;
     /** Mean round-trip latency in milliseconds across recorded requests. */
     averageLatency?: number;
 }
