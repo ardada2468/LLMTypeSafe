@@ -66,6 +66,7 @@ export type { RepairFormat } from './core/repair';
 
 // Modules
 export { Predict } from './modules/predict';
+export type { StreamOptions, PredictionStream, PartialOutput } from './modules/predict';
 export { ChainOfThought } from './modules/chain-of-thought';
 export { RespAct } from './modules/respact';
 export type { ToolFunction, ToolWithDescription, ToolDefinition } from './modules/respact';
@@ -76,5 +77,7 @@ export * from './evaluate';
 // Utilities
 export { buildPrompt, parseOutput } from './utils/parsing';
 export { fieldConfigToZod, buildOutputSchema, buildOutputJsonSchema } from './utils/schema';
+export { parsePartialJson } from './utils/partial-json';
+export type { PartialJsonOptions } from './utils/partial-json';
 export { mapWithConcurrency, DEFAULT_CONCURRENCY } from './utils/pool';
 export type { MapWithConcurrencyOptions, SettledResult } from './utils/pool';

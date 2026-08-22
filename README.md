@@ -168,6 +168,44 @@ When a provider supports native structured output, `Predict` and `ChainOfThought
 use it — the model is constrained to your schema rather than merely asked for it —
 and fall back to parsing labelled text otherwise.
 
+### Streaming
+
+`stream()` runs the same prediction as `forward()`, but yields the output fields
+as they fill in:
+
+```ts
+for await (const partial of predict.stream({ question: '...' })) {
+  render(partial.answer); // grows as tokens arrive
+}
+```
+
+Each yield is a snapshot of the fields parsed so far. The **last yield** is the
+complete output, validated against the signature exactly as `forward()` validates
+it — a stream that ends in something the signature rejects still throws a
+`ValidationError`. The generator's **return value** is the `Prediction` wrapper,
+for callers who drive `next()` by hand, since `for await` discards return values.
+
+Only that last snapshot is guaranteed to match the declared types — coercion
+belongs to validation, so a field declared `number` may still be the raw `'0.'`
+the model is part-way through writing. Snapshots are typed as `PartialOutput<T>`
+accordingly: every field optional, and possibly still a string.
+
+```ts
+const stream = predict.stream({ question: '...' }, { signal: controller.signal });
+
+let step = await stream.next();
+while (!step.done) step = await stream.next();
+
+step.value.confidence; // the validated Prediction
+```
+
+Providers with native structured output stream JSON, read by an incremental
+parser — exported as `parsePartialJson` — that recovers the fields present in a
+document truncated mid-string or mid-key. Everything else streams labelled text.
+A model that cannot stream falls back to a single call, yielded once, rather than
+failing. Pass an `AbortSignal` to cancel; `break`ing out of the loop closes the
+provider's stream.
+
 ### Batch and concurrency
 
 Every module inherits `batch()`, a bounded worker pool over a list of inputs.
