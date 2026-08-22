@@ -52,9 +52,13 @@ function packAll(destination) {
 
 const ESM_CHECK = `
 import { Signature, InputField, OutputField, Predict, parseOutput, ValidationError, BaseLM, configure } from '@ts-dspy/core';
+import { MockLM, CassetteLM } from '@ts-dspy/core/testing';
 import { OpenAILM } from '@ts-dspy/openai';
 import { GeminiLM } from '@ts-dspy/gemini';
 import { AnthropicLM } from '@ts-dspy/anthropic';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 
 // BaseLM only exists from 0.5.0 onward. If a provider pulled an older core from
@@ -81,11 +85,29 @@ assert.throws(() => parseOutput(QA, 'answer: Paris\\nscore: high'), ValidationEr
 assert.equal(typeof configure, 'function');
 assert.equal(new OpenAILM({ apiKey: 'x' }).getCapabilities().supportsStructuredOutput, true);
 
+// The testing subpath is only reachable if package.json declares it *and* the
+// build emitted it. It must also share core's classes rather than bundle a
+// second copy of them.
+const mock = new MockLM({ responses: ['answer: Paris\\nscore: 0.9'] });
+assert.ok(mock instanceof BaseLM, 'MockLM does not extend the installed core BaseLM');
+assert.equal((await new Predict(QA, mock).forward({ question: 'Capital?' })).score, 0.9);
+
+const cassetteDir = mkdtempSync(join(tmpdir(), 'ts-dspy-cassette-'));
+try {
+    const file = join(cassetteDir, 'qa.json');
+    const recorder = CassetteLM.record(file, new MockLM({ responses: ['answer: Paris'] }));
+    assert.equal(await recorder.generate('Capital?'), 'answer: Paris');
+    assert.equal(await CassetteLM.replay(file).generate('Capital?'), 'answer: Paris');
+} finally {
+    rmSync(cassetteDir, { recursive: true, force: true });
+}
+
 console.log('  ESM  ok');
 `;
 
 const CJS_CHECK = `
 const { Signature, InputField, OutputField, parseOutput, ValidationError, BaseLM } = require('@ts-dspy/core');
+const { MockLM, CassetteLM } = require('@ts-dspy/core/testing');
 const { OpenAILM } = require('@ts-dspy/openai');
 const { GeminiLM } = require('@ts-dspy/gemini');
 const { AnthropicLM } = require('@ts-dspy/anthropic');
@@ -103,7 +125,15 @@ OutputField({ description: 's', type: 'number' })(QA.prototype, 'score');
 assert.equal(parseOutput(QA, 'score: 42').score, 42);
 assert.throws(() => parseOutput(QA, 'score: high'), ValidationError);
 
-console.log('  CJS  ok');
+// The same subpath, resolved through the require condition this time.
+assert.equal(typeof CassetteLM.replay, 'function');
+const mock = new MockLM({ responses: ['score: 7'] });
+assert.ok(mock instanceof BaseLM, 'MockLM does not extend the installed core BaseLM');
+// An unhandled rejection here still fails the run with a non-zero exit code.
+(async () => {
+    assert.equal(parseOutput(QA, await mock.generate('q')).score, 7);
+    console.log('  CJS  ok');
+})();
 `;
 
 function main() {

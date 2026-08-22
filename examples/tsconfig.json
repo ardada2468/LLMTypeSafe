@@ -5,6 +5,7 @@
     "baseUrl": "..",
     "paths": {
       "@ts-dspy/core": ["./packages/core/src"],
+      "@ts-dspy/core/testing": ["./packages/core/src/testing"],
       "@ts-dspy/openai": ["./packages/openai/src"],
       "@ts-dspy/gemini": ["./packages/gemini/src"],
       "@ts-dspy/anthropic": ["./packages/anthropic/src"]

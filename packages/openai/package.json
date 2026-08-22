@@ -1,7 +1,7 @@
 {
   "name": "@ts-dspy/openai",
   "version": "0.5.0",
-  "description": "OpenAI provider for TS-DSPy - type-safe LLM interactions with structured outputs, streaming, and tool calling",
+  "description": "OpenAI and OpenAI-compatible (Ollama, Groq, vLLM, OpenRouter) provider for TS-DSPy - type-safe LLM interactions with structured outputs, streaming, and tool calling",
   "type": "module",
   "sideEffects": false,
   "exports": {
@@ -49,7 +49,15 @@
     "function-calling",
     "tool-calling",
     "type-safe",
-    "validation"
+    "validation",
+    "openai-compatible",
+    "ollama",
+    "lmstudio",
+    "vllm",
+    "groq",
+    "together-ai",
+    "openrouter",
+    "local-llm"
   ],
   "author": "Arnav Dadarya",
   "license": "MIT",

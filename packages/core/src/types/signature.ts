@@ -3,6 +3,14 @@ export interface FieldConfig {
     prefix?: string;
     type?: string;
     required?: boolean;
+    /**
+     * The closed set of values allowed for a field declared `type: 'enum'`.
+     * Ignored for every other type.
+     *
+     * String signatures declare the same thing inline, pipe-separated, because
+     * the signature parser splits fields on commas: `sentiment: enum(a|b|c)`.
+     */
+    values?: string[];
 }
 
 export interface ISignature {
@@ -47,11 +55,14 @@ export type FieldTypeMapping<FieldTypeStr extends string | undefined> =
                               ? Record<string, any>
                               : FieldTypeStr extends 'json'
                                 ? Record<string, any>
-                                : string; // Default to string for unknown or undefined types
+                                : // An enum's members are carried on `values`, not in the type
+                                  // string, so the best this mapping can say is `string`.
+                                  string; // Default to string for unknown or undefined types
 
 // Type-only import: erased at compile time, so it introduces no runtime cycle
 // with core/signature.ts, which imports the types in this file.
-import type { Signature } from '../core/signature';
+import type { Signature, SignatureSource, ZodSignature } from '../core/signature';
+import type { z } from 'zod';
 
 // Helper to get the FieldConfig record from a Signature class's static getOutputFields method
 export type GetOutputFieldsReturnType<S extends typeof Signature> = ReturnType<
@@ -61,6 +72,10 @@ export type GetOutputFieldsReturnType<S extends typeof Signature> = ReturnType<
 /**
  * Derives the output shape (e.g. `{ answer: string, score: number }`) from a
  * signature whose field configs are known as literal types.
+ *
+ * A zod signature short-circuits all of this: its output schema already carries
+ * per-field types, so the result is simply `z.infer` of it — enums stay unions
+ * of literals, optional fields stay optional, and no type argument is needed.
  *
  * Decorators record fields on a static at runtime, so `getOutputFields()` is
  * declared as `Record<string, FieldConfig>` and TypeScript sees no per-field
@@ -78,23 +93,35 @@ export type GetOutputFieldsReturnType<S extends typeof Signature> = ReturnType<
  *
  * Runtime validation is enforced from the signature either way.
  */
-export type SignatureOutput<S extends typeof Signature> = S extends {
-    getOutputFields: () => infer OFs;
-}
-    ? string extends keyof OFs
-        ? // Index signature: no literal field information survives, so don't invent any.
-          Record<string, any>
-        : OFs extends Record<string, FieldConfig>
-          ? {
-                -readonly [
-                    K in keyof OFs as OFs[K]['required'] extends false ? never : K
-                ]: FieldTypeMapping<OFs[K]['type']>;
-            } & {
-                -readonly [
-                    K in keyof OFs as OFs[K]['required'] extends false ? K : never
-                ]?: FieldTypeMapping<OFs[K]['type']>;
+export type SignatureOutput<S extends SignatureSource> =
+    S extends ZodSignature<any, infer OutputSchema>
+        ? z.infer<OutputSchema>
+        : S extends {
+                getOutputFields: () => infer OFs;
             }
-          : Record<string, any>
-    : Record<string, any>;
+          ? string extends keyof OFs
+              ? // Index signature: no literal field information survives, so don't invent any.
+                Record<string, any>
+              : OFs extends Record<string, FieldConfig>
+                ? {
+                      -readonly [
+                          K in keyof OFs as OFs[K]['required'] extends false ? never : K
+                      ]: FieldTypeMapping<OFs[K]['type']>;
+                  } & {
+                      -readonly [
+                          K in keyof OFs as OFs[K]['required'] extends false ? K : never
+                      ]?: FieldTypeMapping<OFs[K]['type']>;
+                  }
+                : Record<string, any>
+          : Record<string, any>;
+
+/**
+ * Derives the input shape a signature's `forward()` accepts.
+ *
+ * Only zod signatures carry that information at compile time; the decorator and
+ * string forms stay `Record<string, any>`, exactly as before.
+ */
+export type SignatureInput<S extends SignatureSource> =
+    S extends ZodSignature<infer InputSchema, any> ? z.input<InputSchema> : Record<string, any>;
 
 // New Utility Types End
