@@ -349,21 +349,12 @@ res.end()</code></pre>
       the shapes you fear, not the one you hope for.
     </p>
     <pre class="code"><code><span class="kw">import</span> { describe, it, expect } <span class="kw">from</span> <span class="s">'vitest'</span>
-<span class="kw">import</span> { BaseLM, Predict, ValidationError } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
-
-<span class="kw">class</span> <span class="ty">StubLM</span> <span class="kw">extends</span> <span class="ty">BaseLM</span> {
-  <span class="kw">constructor</span>(<span class="kw">private</span> reply: <span class="ty">string</span>) { <span class="kw">super</span>({ model: <span class="s">'stub'</span> }) }
-  <span class="kw">async</span> chat() { <span class="kw">return</span> <span class="kw">this</span>.reply }
-  getCapabilities() {
-    <span class="kw">return</span> { supportsStructuredOutput: <span class="kw">false</span>, supportsStreaming: <span class="kw">false</span>,
-             supportsFunctionCalling: <span class="kw">false</span>, supportsVision: <span class="kw">false</span>,
-             maxContextLength: <span class="s">4096</span>, supportedFormats: [<span class="s">'text'</span>] }
-  }
-}
+<span class="kw">import</span> { Predict, ValidationError } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+<span class="kw">import</span> { MockLM } <span class="kw">from</span> <span class="s">'@ts-dspy/core/testing'</span>
 
 describe(<span class="s">'TriageTicket'</span>, () =&gt; {
   it(<span class="s">'coerces a numeric string'</span>, <span class="kw">async</span> () =&gt; {
-    <span class="kw">const</span> lm = <span class="kw">new</span> StubLM(<span class="s">'category: bug\nconfidence: 0.82\nurgent: yes'</span>)
+    <span class="kw">const</span> lm = <span class="kw">new</span> MockLM({ responses: [<span class="s">'category: bug\nconfidence: 0.82\nurgent: yes'</span>] })
     <span class="kw">const</span> out = <span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket, lm).forward({ ticket: <span class="s">'x'</span> })
 
     expect(out.confidence).toBe(<span class="s">0.82</span>)
@@ -372,7 +363,7 @@ describe(<span class="s">'TriageTicket'</span>, () =&gt; {
   })
 
   it(<span class="s">'rejects prose where a number was declared'</span>, <span class="kw">async</span> () =&gt; {
-    <span class="kw">const</span> lm = <span class="kw">new</span> StubLM(<span class="s">'category: bug\nconfidence: very high\nurgent: yes'</span>)
+    <span class="kw">const</span> lm = <span class="kw">new</span> MockLM({ responses: [<span class="s">'category: bug\nconfidence: very high\nurgent: yes'</span>] })
 
     <span class="kw">await</span> expect(<span class="kw">new</span> Predict(TriageTicket, lm).forward({ ticket: <span class="s">'x'</span> }))
       .rejects.toBeInstanceOf(ValidationError)

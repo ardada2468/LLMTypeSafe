@@ -105,6 +105,8 @@ export class GeminiLM extends BaseLM {
     private readonly safetySettings: SafetySetting[];
     private readonly timeout?: number;
     private readonly maxRetries: number;
+    /** Constructor settings that change what a given prompt returns. */
+    private readonly scope: Record<string, unknown>;
 
     constructor(config: GeminiConfig = {}) {
         super('gemini', config.model ?? DEFAULT_GEMINI_MODEL);
@@ -121,6 +123,22 @@ export class GeminiLM extends BaseLM {
         // 2 is what the OpenAI and Anthropic SDKs default to; matching them is
         // the point of running a retry loop here at all.
         this.maxRetries = config.maxRetries ?? 2;
+        this.scope = {
+            safetySettings: this.safetySettings,
+            vertexai: config.vertexai ?? null,
+            project: config.project ?? null,
+            location: config.location ?? null,
+            baseUrl: config.baseUrl ?? null,
+        };
+    }
+
+    /**
+     * Safety settings decide whether a reply comes back at all, and the Vertex
+     * and base-URL settings decide which endpoint answered, so none of them can
+     * be left out of the cache key.
+     */
+    protected cacheScope(): unknown {
+        return this.scope;
     }
 
     async chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string> {

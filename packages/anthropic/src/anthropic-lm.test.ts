@@ -152,7 +152,7 @@ describe('AnthropicLM', () => {
             );
         });
 
-        it('throws the shared ContentFilterError, which AnthropicRefusalError now aliases', async () => {
+        it('throws an AnthropicRefusalError, which is a ContentFilterError', async () => {
             mocks.create.mockResolvedValue({
                 content: [],
                 stop_reason: 'refusal',
@@ -163,7 +163,11 @@ describe('AnthropicLM', () => {
             const error = await new AnthropicLM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
 
             expect(error).toBeInstanceOf(ContentFilterError);
-            expect(AnthropicRefusalError).toBe(ContentFilterError);
+            // A subclass, not an alias: narrowing to AnthropicRefusalError has to
+            // keep meaning "Anthropic", while a cross-provider catch on
+            // ContentFilterError still works.
+            expect(AnthropicRefusalError.prototype).toBeInstanceOf(ContentFilterError);
+            expect(AnthropicRefusalError).not.toBe(ContentFilterError);
             expect(error.provider).toBe('anthropic');
         });
     });
@@ -721,5 +725,22 @@ describe('AnthropicLM', () => {
 
             expect(system).toBe('logo: [image: image/png]');
         });
+    });
+});
+
+describe('cache scoping', () => {
+    it('keys two differently configured clients apart', () => {
+        // Before cacheScope() was overridden here, these two hashed identically,
+        // so a reply truncated at 64 tokens could be served to a client that
+        // allows 8192.
+        const scopeOf = (lm: AnthropicLM) =>
+            JSON.stringify((lm as unknown as { cacheScope(): unknown }).cacheScope());
+
+        expect(scopeOf(new AnthropicLM({ apiKey: 'k', maxTokens: 64 }))).not.toBe(
+            scopeOf(new AnthropicLM({ apiKey: 'k', maxTokens: 8192 }))
+        );
+        expect(
+            scopeOf(new AnthropicLM({ apiKey: 'k', baseURL: 'https://a.example' }))
+        ).not.toBe(scopeOf(new AnthropicLM({ apiKey: 'k', baseURL: 'https://b.example' })));
     });
 });

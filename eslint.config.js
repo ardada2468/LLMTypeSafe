@@ -3,7 +3,16 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
     {
-        ignores: ['site/**', '**/dist/**', '**/node_modules/**', '**/coverage/**', '**/*.d.ts'],
+        ignores: [
+            'site/**',
+            // Git worktrees live under .claude/, and linting another
+            // branch's checkout is never what you meant.
+            '.claude/**',
+            '**/dist/**',
+            '**/node_modules/**',
+            '**/coverage/**',
+            '**/*.d.ts',
+        ],
     },
     js.configs.recommended,
     ...tseslint.configs.recommended,

@@ -1,4 +1,5 @@
 import { type Example } from '../core/example';
+import { mapWithConcurrency } from '../utils/pool';
 import { type Prediction } from '../core/prediction';
 import { getDefaultLM } from '../core/config';
 import type { ILanguageModel, LLMCallOptions, UsageStats } from '../types/language-model';
@@ -16,33 +17,33 @@ const DEFAULT_CONCURRENCY = 4;
 
 /**
  * Run `worker` over `items` with at most `limit` in flight, preserving input
- * order in the returned array.
+ * order.
  *
- * Small and local on purpose: an evaluation needs no more than this, and
- * `worker` is expected never to reject.
+ * Delegates to the shared pool in `utils/pool`; the clamp lives here because
+ * evaluation treats a computed `0` as "one at a time" — a caller deriving the
+ * limit from a rate-limit budget must not get the default four — whereas the
+ * shared pool rejects a non-positive limit outright.
  */
-async function mapWithConcurrency<T, R>(
+async function runPooled<T, R>(
     items: readonly T[],
     limit: number,
     worker: (item: T, index: number) => Promise<R>
 ): Promise<R[]> {
-    const results = new Array<R>(items.length);
-    // Only a missing or unusable limit falls back to the default: a caller who
-    // computed `0` from a rate-limit budget must not get four in flight.
+    if (items.length === 0) return [];
+
     const requested = Number.isFinite(limit) ? Math.floor(limit) : DEFAULT_CONCURRENCY;
     const lanes = Math.min(Math.max(1, requested), items.length);
 
-    let cursor = 0;
-    const runners = Array.from({ length: lanes }, async () => {
-        while (cursor < items.length) {
-            const index = cursor;
-            cursor += 1;
-            results[index] = await worker(items[index], index);
-        }
+    const settled = await mapWithConcurrency([...items], (item, index) => worker(item, index), {
+        concurrency: lanes,
     });
 
-    await Promise.all(runners);
-    return results;
+    return settled.map((result) => {
+        // The evaluation worker captures its own failures, so a rejection here
+        // is a bug in this module rather than a bad example.
+        if (result.status === 'rejected') throw result.reason;
+        return result.value as R;
+    });
 }
 
 function toError(cause: unknown): Error {
@@ -183,7 +184,7 @@ export async function evaluate(
     const before = lm?.getUsage();
     const startedAt = Date.now();
 
-    const results = await mapWithConcurrency(prepared, concurrency, async (example, index) => {
+    const results = await runPooled(prepared, concurrency, async (example, index) => {
         const exampleStartedAt = Date.now();
         let inputs: Record<string, any> = {};
         // Held outside the try so a metric that throws still reports what the
