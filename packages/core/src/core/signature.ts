@@ -54,6 +54,9 @@ function defineField(
         prefix: config.prefix,
         type: config.type || 'string',
         required: config.required !== false,
+        // Only meaningful for `type: 'enum'`, but copied unconditionally so the
+        // field map stays a faithful record of what was declared.
+        values: config.values,
     };
 }
 
