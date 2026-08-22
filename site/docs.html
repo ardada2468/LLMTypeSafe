@@ -64,6 +64,9 @@
       <li><a href="#testing">Testing</a></li>
       <li><a href="#api">API reference</a></li>
       <li><a href="#migration">Migrating to 0.5</a></li>
+      <li><a href="#tracing">Tracing &amp; history</a></li>
+      <li><a href="#caching">Caching</a></li>
+      <li><a href="#zod">Zod signatures</a></li>
     </ol>
   </nav>
 
@@ -205,6 +208,7 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
           <tr><td class="sym">string[]<br>array<br>list</td><td class="note">JSON arrays, or <code>"a, b, c"</code></td><td class="note">unparseable text</td></tr>
           <tr><td class="sym">number[]</td><td class="note"><code>[1,2]</code>, <code>"1, 2, 3"</code></td><td class="note">non-numeric members</td></tr>
           <tr><td class="sym">object<br>json</td><td class="note">JSON objects, fenced or bare</td><td class="note">invalid JSON</td></tr>
+          <tr><td class="sym">enum</td><td class="note">any declared member, trimmed and case-insensitive</td><td class="note">anything outside the set</td></tr>
         </tbody>
       </table>
     </div>
@@ -214,6 +218,85 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
       because models write <code>1,200</code> and <code>87%</code> when asked for a
       figure. That is a deliberate accommodation, not an accident &mdash; and it
       stops well short of guessing at prose.
+    </p>
+
+    <h3>Enums</h3>
+    <p>
+      A <code>string</code> field asked for a sentiment will accept
+      <code>euphoric</code> as readily as <code>positive</code>. An
+      <code>enum</code> field will not: it names the closed set, validates against
+      it, and &mdash; on providers with structured output &mdash; puts that set in
+      the schema, so the constraint reaches decoding rather than only the check
+      afterwards. Members are declared on <code>values</code>:
+    </p>
+    <pre class="code"><code><span class="kw">class</span> <span class="ty">Classify</span> <span class="kw">extends</span> <span class="ty">Signature</span> {
+  <span class="at">@InputField</span>({ description: <span class="s">'the review text'</span> })
+  review!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({
+    description: <span class="s">'overall sentiment'</span>,
+    type: <span class="s">'enum'</span>,
+    values: [<span class="s">'positive'</span>, <span class="s">'negative'</span>, <span class="s">'neutral'</span>],
+  })
+  sentiment!: <span class="ty">string</span>
+}</code></pre>
+    <p>
+      String signatures say the same thing inline. The members are separated by
+      <code>|</code> rather than <code>,</code>, because commas already separate
+      fields:
+    </p>
+    <pre class="code"><code><span class="kw">const</span> p = <span class="kw">new</span> Predict(<span class="s">'review -&gt; sentiment: enum(positive|negative|neutral)'</span>)</code></pre>
+    <p>
+      Matching is lenient in the same spirit as the other types &mdash;
+      <code>&nbsp;Positive&nbsp;</code> is the same answer as
+      <code>positive</code>, and the declared spelling is what you get back. A
+      value outside the set is a <code>ValidationError</code>, not a shrug. An
+      <code>enum</code> declared with no members throws immediately, since it would
+      constrain nothing, and so does a malformed inline declaration such as
+      <code>enum(a|b</code> &mdash; quietly falling back to an open string is the
+      one thing this type must never do.
+    </p>
+
+    <h3>Strict mode and open-ended types</h3>
+    <p>
+      OpenAI&rsquo;s <code>strict</code> structured output is stricter than JSON
+      Schema itself: every object in the document, nested ones included, must carry
+      <code>additionalProperties: false</code>, and <code>items</code> must be a
+      real schema rather than the empty <code>{}</code> that means &ldquo;any
+      element&rdquo;. Both open-ended types are emitted accordingly &mdash; an
+      <code>array</code> declares <code>items: { type: 'string' }</code>, and an
+      <code>object</code> declares an empty, closed object.
+    </p>
+    <div class="callout callout-warn">
+      <span class="label">Know this</span>
+      <p>
+        One schema is built per signature and handed to whichever provider is
+        configured, so the constraint lands everywhere, not only on OpenAI. Strict
+        mode cannot express a free-form object at all, which means a bare
+        <code>object</code> or <code>json</code> output field is pinned to
+        <code>{}</code> on <em>every</em> provider with structured output. Declare
+        the keys you actually want as their own signature fields. Only the text
+        path &mdash; a model reporting
+        <code>supportsStructuredOutput: false</code> &mdash; still accepts an
+        arbitrary object.
+      </p>
+    </div>
+    <p>
+      The array case has a milder version of the same edge. A bare
+      <code>array</code> or <code>list</code> now tells the provider its elements
+      are strings, so a list of figures comes back as <code>['1', '2']</code> rather
+      than <code>[1, 2]</code>. Declare <code>number[]</code> or
+      <code>string[]</code> whenever the elements have a type worth naming;
+      validation accepts either way, but only the declared form constrains what the
+      model may emit.
+    </p>
+    <p>
+      Optional fields are emitted as <code>type: [base, 'null']</code> rather than
+      being dropped from <code>required</code>. OpenAI documents that form, Anthropic
+      takes plain JSON Schema, and Gemini&rsquo;s <code>responseJsonSchema</code>
+      documents it too. Gemini&rsquo;s older <code>responseSchema</code> keyword
+      models nullability with a <code>nullable</code> boolean instead, so a provider
+      pinned to that older shape would have to translate.
     </p>
   </section>
 
@@ -510,9 +593,9 @@ console.log(out.answer, out.steps)</code></pre>
     <h2>Timeouts and retries</h2>
     <p>
       <code>LLMCallOptions</code> flows from a module through to the provider SDK,
-      which owns retries and honours <code>retry-after</code>. There is no
-      hand-rolled backoff in this library, so you never get two retry loops
-      fighting each other.
+      which owns retries and honours <code>retry-after</code>. There is no second
+      retry layer stacked on top, so you never get two loops fighting each other
+      &mdash; with one documented exception on Gemini, below.
     </p>
     <pre class="code"><code><span class="kw">const</span> out = <span class="kw">await</span> triage.forward(
   { ticket },
@@ -523,13 +606,74 @@ console.log(out.answer, out.steps)</code></pre>
       <table>
         <thead><tr><th scope="col">Option</th><th scope="col">Effect</th></tr></thead>
         <tbody>
-          <tr><td class="sym">timeout</td><td class="note">Per-request deadline in milliseconds.</td></tr>
-          <tr><td class="sym">retries</td><td class="note">Passed to the SDK's own retry policy.</td></tr>
+          <tr><td class="sym">timeout</td><td class="note">Deadline in milliseconds. It bounds each attempt, so a retried call gets a fresh one.</td></tr>
+          <tr><td class="sym">retries</td><td class="note">Passed to the SDK's own retry policy. Defaults to 2 on all three providers.</td></tr>
+          <tr><td class="sym">signal</td><td class="note">An <code>AbortSignal</code> that cancels the call in flight.</td></tr>
           <tr><td class="sym">maxTokens</td><td class="note">Output cap for the call.</td></tr>
           <tr><td class="sym">temperature<br>topP</td><td class="note">Sent only when set, so reasoning models are unaffected.</td></tr>
           <tr><td class="sym">model</td><td class="note">Override the provider's model for one call.</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <h3>Cancellation</h3>
+    <p>
+      A timeout ends a call that is taking too long. <code>signal</code> ends one
+      whose answer nobody is waiting for any more &mdash; a React component that
+      unmounted, a server request whose client hung up. Pass any
+      <code>AbortSignal</code> and the call rejects the moment it aborts, instead of
+      running on to a reply that gets thrown away.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> controller = <span class="kw">new</span> AbortController()
+<span class="c">// React: return () =&gt; controller.abort() from the effect.</span>
+
+<span class="kw">const</span> out = <span class="kw">await</span> triage.forward(
+  { ticket },
+  { signal: controller.signal, timeout: <span class="s">30_000</span> }
+)</code></pre>
+
+    <p>
+      <code>signal</code> and <code>timeout</code> compose: pass both and whichever
+      fires first ends the call. OpenAI and Anthropic hand each to the SDK
+      separately; Gemini exposes a single <code>abortSignal</code> slot, so ts-dspy
+      folds the two into one with <code>AbortSignal.any()</code>, freshly per
+      request.
+    </p>
+
+    <div class="callout">
+      <span class="label">One controller per unit of work</span>
+      <p>
+        The signal is read when the request goes out, and aborting a controller
+        aborts every call still attached to it. That is exactly what you want for
+        a screen full of parallel calls, and exactly what you do not want when
+        one retry should outlive an earlier cancellation &mdash; make a fresh
+        <code>AbortController</code> for each piece of work you might cancel
+        independently.
+      </p>
+    </div>
+
+    <h3>Provider defaults</h3>
+    <p>
+      The same two knobs are available at construction on all three providers, and
+      per-call options override them. <code>GeminiLM</code> accepted neither before
+      v0.6, and ignored <code>retries</code> on the call options as well.
+    </p>
+    <pre class="code"><code><span class="kw">new</span> OpenAILM({ apiKey, timeout: <span class="s">20_000</span>, maxRetries: <span class="s">2</span> })
+<span class="kw">new</span> AnthropicLM({ apiKey, timeout: <span class="s">20_000</span>, maxRetries: <span class="s">2</span> })
+<span class="kw">new</span> GeminiLM({ apiKey, timeout: <span class="s">20_000</span>, maxRetries: <span class="s">2</span> })</code></pre>
+
+    <div class="callout callout-warn">
+      <span class="label">Gemini is the exception</span>
+      <p>
+        <code>@google/genai</code> reads its retry policy from client-level options
+        only, so a per-call <code>retries</code> cannot be expressed through it &mdash;
+        and its retry wrapper replaces API errors with generic ones, losing the
+        status code, and keeps retrying after an abort. The Gemini provider
+        therefore runs the loop itself: exponential backoff on 408/409/429/5xx and
+        network failures, never on an abort or a client error. It is the one place
+        ts-dspy does not simply hand retries to the SDK, and it exists so
+        <code>retries: 2</code> means the same thing on all three providers.
+      </p>
     </div>
 
     <h3>Usage accounting</h3>
@@ -548,13 +692,94 @@ lm.resetUsage()</code></pre>
     <h2>Testing</h2>
     <p>
       Modules take a language model, so a test needs no network and no API key.
-      Implement <code>ILanguageModel</code>, or extend <code>BaseLM</code> for the
-      shared plumbing.
+      The doubles ts-dspy tests itself with ship alongside it, under the
+      <code>@ts-dspy/core/testing</code> subpath &mdash; a separate entry point, so
+      nothing in it is pulled into your production bundle.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { MockLM, CassetteLM } <span class="kw">from</span> <span class="s">'@ts-dspy/core/testing'</span></code></pre>
+
+    <h3>Scripted replies</h3>
+    <p>
+      <code>MockLM</code> answers with the strings you hand it, in order, and
+      records every call it received &mdash; including the prompt the module built,
+      which is usually the part worth asserting on.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { MockLM } <span class="kw">from</span> <span class="s">'@ts-dspy/core/testing'</span>
+
+it(<span class="s">'asks about the ticket it was handed'</span>, <span class="kw">async</span> () =&gt; {
+  <span class="kw">const</span> lm = <span class="kw">new</span> MockLM({ responses: [<span class="s">'category: bug\nurgency: 3'</span>] })
+
+  <span class="kw">const</span> result = <span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket, lm).forward({ ticket: <span class="s">'login broken'</span> })
+
+  expect(result.urgency).toBe(<span class="s">3</span>)
+  expect(lm.lastPrompt()).toContain(<span class="s">'login broken'</span>)
+})</code></pre>
+    <p>
+      Pass <code>structuredResponses</code> alongside
+      <code>capabilities: { supportsStructuredOutput: true }</code> to exercise the
+      native structured-output path instead, and read <code>lm.calls</code> or
+      <code>lm.structuredCalls</code> for the options each call carried.
+      <code>chatStream</code> and <code>generateStream</code> replay the same
+      scripted text in chunks.
+    </p>
+
+    <h3>Cassettes</h3>
+    <p>
+      A cassette records real provider replies once and replays them ever after.
+      Capture them with a key on your own machine, commit the file, and CI runs the
+      same test with no key, no network, and no flake.
+    </p>
+    <pre class="code"><code><span class="c">// Once, against the real provider:</span>
+<span class="kw">const</span> recorder = CassetteLM.record(<span class="s">'cassettes/triage.json'</span>, <span class="kw">new</span> OpenAILM({ apiKey }))
+<span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket, recorder).forward({ ticket: <span class="s">'login broken'</span> })
+
+<span class="c">// Everywhere else, ever after:</span>
+<span class="kw">const</span> lm = CassetteLM.replay(<span class="s">'cassettes/triage.json'</span>)</code></pre>
+    <p>
+      What it writes is a plain array of entries, each keyed by a hash of its
+      request, so a changed prompt reviews as a readable diff rather than an opaque
+      blob.
+    </p>
+    <pre class="code" data-lang="json"><code>[
+  {
+    <span class="s">"key"</span>: <span class="s">"6f1c3b0a9e7d5241"</span>,
+    <span class="s">"request"</span>: {
+      <span class="s">"kind"</span>: <span class="s">"chat"</span>,
+      <span class="s">"model"</span>: <span class="s">"gpt-4o-mini"</span>,
+      <span class="s">"messages"</span>: [{ <span class="s">"role"</span>: <span class="s">"user"</span>, <span class="s">"content"</span>: <span class="s">"Ticket: login broken\n..."</span> }],
+      <span class="s">"options"</span>: { <span class="s">"temperature"</span>: <span class="s">0</span> }
+    },
+    <span class="s">"response"</span>: <span class="s">"category: bug\nurgency: 3"</span>
+  }
+]</code></pre>
+    <p>
+      The key covers the messages, the model name, and the sampling options that
+      change a reply. <code>timeout</code> and <code>retries</code> are left out, so
+      re-running a test with a longer deadline still hits the recording. Identical
+      requests replay in the order they were recorded, and an unrecorded one fails
+      loudly rather than calling out.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Mode</th><th scope="col">Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">replay</td><td class="note">The default, and what CI runs. Never calls a live model; a miss throws <code>LMError</code>.</td></tr>
+          <tr><td class="sym">record</td><td class="note">Calls the wrapped model for everything and rewrites the file from scratch.</td></tr>
+          <tr><td class="sym">auto</td><td class="note">Replays what the file holds, calls the wrapped model for the rest and appends it.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Rolling your own</h3>
+    <p>
+      Anything implementing <code>ILanguageModel</code> will do; extend
+      <code>BaseLM</code> to inherit the usage accounting and the structured-output
+      fallback.
     </p>
     <pre class="code"><code><span class="kw">import</span> { BaseLM, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
 
 <span class="kw">class</span> <span class="ty">StubLM</span> <span class="kw">extends</span> <span class="ty">BaseLM</span> {
-  <span class="kw">constructor</span>(<span class="kw">private</span> reply: <span class="ty">string</span>) { <span class="kw">super</span>({ model: <span class="s">'stub'</span> }) }
+  <span class="kw">constructor</span>(<span class="kw">private</span> reply: <span class="ty">string</span>) { <span class="kw">super</span>(<span class="s">'stub'</span>, <span class="s">'stub-model'</span>) }
   <span class="kw">async</span> chat() { <span class="kw">return</span> <span class="kw">this</span>.reply }
   getCapabilities() {
     <span class="kw">return</span> { supportsStructuredOutput: <span class="kw">false</span>, supportsStreaming: <span class="kw">false</span>,
@@ -667,6 +892,355 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
         0.5.0 fixed &mdash; 0.4.2 shipped providers that resolved a stale core.
       </p>
     </div>
+  </section>
+
+  <section id="tracing">
+    <p class="anchor">14</p>
+    <h2>Tracing and history</h2>
+    <p>
+      When a signature misbehaves the first question is always the same: what
+      prompt did it actually send? Turn tracing on and every module invocation
+      records one &mdash; the prompt, the raw reply, what was parsed out of it,
+      the tokens it cost, and how long it took.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { configure, inspectHistory, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+configure({ lm, tracing: <span class="kw">true</span> })
+
+<span class="kw">const</span> out = <span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket).forward({ ticket })
+
+out.trace?.rawLMInput    <span class="c">// the prompt as sent</span>
+out.trace?.rawLMOutput   <span class="c">// the reply, before parsing</span>
+out.trace?.usage         <span class="c">// tokens for this call, not the model's lifetime</span></code></pre>
+    <p>
+      The same entries land in a ring buffer, so you can read them after the
+      fact &mdash; including from a <code>catch</code> block, where the prediction
+      you would have inspected does not exist.
+    </p>
+    <pre class="code"><code><span class="kw">try</span> {
+  <span class="kw">await</span> triage.forward({ ticket })
+} <span class="kw">catch</span> (error) {
+  <span class="kw">const</span> [failed] = inspectHistory(<span class="s">1</span>)
+  console.error(failed.rawLMInput, <span class="s">'\n---\n'</span>, failed.rawLMOutput)
+}</code></pre>
+    <p>
+      <code>inspectHistory(n)</code> returns the last <code>n</code> entries,
+      oldest first; omit <code>n</code> for everything still retained. The buffer
+      holds 100 entries by default &mdash; raise or lower it with
+      <code>traceHistorySize</code> &mdash; and <code>clearHistory()</code> empties
+      it, which is what you want between tests.
+    </p>
+
+    <h3>What an entry holds</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Field</th><th scope="col">Contents</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">moduleId</td><td class="note">Which instance ran, e.g. <code>ChainOfThought#2</code>.</td></tr>
+          <tr><td class="sym">input<br>output</td><td class="note">Arguments in, parsed fields out. <code>output</code> is empty on failure.</td></tr>
+          <tr><td class="sym">rawLMInput<br>rawLMOutput</td><td class="note">The last call &mdash; the one that produced <code>output</code>.</td></tr>
+          <tr><td class="sym">calls</td><td class="note">Every round trip, in order, each with its own prompt, reply, duration, and usage.</td></tr>
+          <tr><td class="sym">usage</td><td class="note">Tokens for this invocation, differenced from the model's running totals. Exact for sequential calls; approximate when several run concurrently against one model.</td></tr>
+          <tr><td class="sym">duration<br>timestamp</td><td class="note">Milliseconds elapsed, and when it started.</td></tr>
+          <tr><td class="sym">error</td><td class="note">Set when the invocation threw instead of returning.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <code>ChainOfThought</code> makes two calls and <code>RespAct</code> makes
+      one per step, so <code>calls</code> is where a multi-step module becomes
+      readable. Failures are recorded too &mdash; a <code>ValidationError</code> is
+      precisely when the prompt is worth reading.
+    </p>
+
+    <h3>Forwarding entries</h3>
+    <p>
+      <code>onTrace</code> receives each entry as it is recorded. Send them to
+      Langfuse, an OpenTelemetry span, or your own logger; the library itself
+      never prints.
+    </p>
+    <pre class="code"><code>configure({
+  lm,
+  tracing: <span class="kw">true</span>,
+  onTrace: (entry) =&gt; span.addEvent(<span class="s">'lm.call'</span>, {
+    module: entry.moduleId,
+    tokens: entry.usage.totalTokens,
+    ms: entry.duration,
+  }),
+})</code></pre>
+    <div class="callout">
+      <span class="label">Off by default</span>
+      <p>
+        Tracing costs one boolean check while it is off &mdash; nothing is timed,
+        copied, or retained. A handler that throws is swallowed, so a broken
+        exporter cannot fail the run it is instrumenting.
+      </p>
+    </div>
+  </section>
+
+  <section id="caching">
+    <p class="anchor">15</p>
+    <h2>Caching</h2>
+    <p>
+      Repeated prompts are the common case &mdash; a test suite re-running the same
+      example, an optimiser sweeping a signature, a retry loop that re-asks a
+      question it already asked. <code>configure({ cache: true })</code> replays the
+      previous answer instead of paying for it again.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { configure, MemoryCache } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="c">// Process-wide LRU, 1000 entries.</span>
+configure({ cache: <span class="kw">true</span> })
+
+<span class="c">// Or size it yourself.</span>
+configure({ cache: <span class="kw">new</span> MemoryCache({ maxSize: 10_000 }) })</code></pre>
+
+    <div class="callout callout-warn">
+      <span class="label">Off by default</span>
+      <p>
+        Caching is opt-in. A cache that replays an old answer for a repeated
+        prompt changes what a program does &mdash; sampling stops varying, an agent
+        loop stops exploring &mdash; so it is never switched on behind your back.
+      </p>
+    </div>
+
+    <h3>What goes into a key</h3>
+    <p>
+      <code>generate</code>, <code>chat</code>, and <code>generateStructured</code> are
+      all cached, for every provider, because the wrapping lives in
+      <code>BaseLM</code>. The key is a SHA-256 hash of everything that can change
+      the answer.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">In the key</th><th scope="col">Not in the key</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="note">Provider and model, including a per-call <code>model</code> override</td>
+            <td class="note"><code>timeout</code> and <code>retries</code> &mdash; transport, not content</td>
+          </tr>
+          <tr>
+            <td class="note">The prompt, or every message with its role</td>
+            <td class="note"><code>metadata</code>, which the provider does not see</td>
+          </tr>
+          <tr>
+            <td class="note"><code>temperature</code>, <code>topP</code>, <code>maxTokens</code>, <code>stopSequences</code>, <code>frequencyPenalty</code>, <code>presencePenalty</code></td>
+            <td class="note">&mdash;</td>
+          </tr>
+          <tr>
+            <td class="note">The JSON schema for a structured call, with keys sorted so property order does not split an entry</td>
+            <td class="note">&mdash;</td>
+          </tr>
+          <tr>
+            <td class="note">Whatever the provider returns from <code>cacheScope()</code></td>
+            <td class="note">&mdash;</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Prompts and schemas run to tens of kilobytes, so the canonical form is
+      hashed rather than stored. Errors are never cached: a transient 429 must
+      not pin a failure to a prompt for the life of the process.
+    </p>
+    <p>
+      Provider and model alone do not identify a request. A client built with a
+      default <code>maxTokens</code>, non-default safety settings, or a
+      <code>baseURL</code> pointing at a proxy answers the same prompt
+      differently, so a custom provider extending <code>BaseLM</code> should
+      return those options from <code>cacheScope()</code> and keep its entries
+      apart from a differently configured sibling.
+    </p>
+
+    <h3>Usage accounting</h3>
+    <p>
+      A cache hit costs nothing, and <code>getUsage()</code> says so. Hits land in a
+      new <code>cacheHits</code> counter and are kept out of <code>requestCount</code>
+      and the token totals, so a figure you multiply by a published price still
+      reflects real provider traffic.
+    </p>
+    <pre class="code"><code>configure({ cache: <span class="kw">true</span> })
+
+<span class="kw">await</span> lm.generate(<span class="s">'Capital of France?'</span>)
+<span class="kw">await</span> lm.generate(<span class="s">'Capital of France?'</span>)
+
+lm.getUsage()
+<span class="c">// { requestCount: 1, cacheHits: 1, promptTokens: 10, completionTokens: 5, ... }</span></code></pre>
+
+    <h3>Bring your own store</h3>
+    <p>
+      <code>cache</code> accepts an implementation as well as a boolean. Both methods
+      may be async, so Redis, SQLite, or a directory of files fits without a
+      wrapper &mdash; useful when the cache should outlive the process or be shared
+      across workers.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { configure, <span class="kw">type</span> <span class="ty">Cache</span> } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> redisCache: <span class="ty">Cache</span> = {
+  <span class="kw">async</span> get(key) {
+    <span class="kw">const</span> hit = <span class="kw">await</span> redis.get(key)
+    <span class="kw">return</span> hit === <span class="kw">null</span> ? <span class="kw">undefined</span> : JSON.parse(hit)
+  },
+  <span class="kw">async</span> set(key, value) {
+    <span class="kw">await</span> redis.set(key, JSON.stringify(value), { EX: 86_400 })
+  },
+}
+
+configure({ cache: redisCache })</code></pre>
+
+    <div class="callout">
+      <span class="label">Contract</span>
+      <p>
+        <code>get</code> resolves to <code>undefined</code> for a key that was never
+        written, and <code>null</code> counts as a miss too, since that is what a
+        Redis client returns for an absent key. Cached values are model
+        responses, which are never either, so a miss cannot be mistaken for a
+        hit. An optional <code>clear()</code> backs <code>clearCache()</code>
+        &mdash; handy between test cases, since the built-in cache is
+        process-wide.
+      </p>
+    </div>
+  </section>
+
+  <section id="zod">
+    <p class="anchor">18</p>
+    <h2>Zod signatures</h2>
+    <p>
+      A third signature form, built from zod schemas. Decorators record their
+      fields at runtime, so TypeScript never learns them and results come back
+      typed loosely unless you write the output shape out by hand. A zod schema
+      carries that shape in the type system instead &mdash; so the result type is
+      inferred exactly, with no type argument and no
+      <code>experimentalDecorators</code>.
+    </p>
+
+    <pre class="code"><code><span class="kw">import</span> { z } <span class="kw">from</span> <span class="s">'zod'</span>
+<span class="kw">import</span> { signature, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> AnalyzeReview = signature({
+  description: <span class="s">'Analyze a product review.'</span>,
+  input: z.object({ review: z.string() }),
+  output: z.object({
+    sentiment: z.enum([<span class="s">'positive'</span>, <span class="s">'negative'</span>, <span class="s">'neutral'</span>]),
+    rating: z.number().int().min(<span class="kw">1</span>).max(<span class="kw">5</span>),
+    themes: z.array(z.string()),
+    followUp: z.string().optional(),
+  }),
+})
+
+<span class="kw">const</span> r = <span class="kw">await</span> <span class="kw">new</span> Predict(AnalyzeReview).forward({ review })
+
+r.sentiment       <span class="c">// 'positive' | 'negative' | 'neutral'</span>
+r.themes.join(<span class="s">', '</span>) <span class="c">// string[]</span>
+r.followUp?.trim() <span class="c">// string | undefined</span></code></pre>
+
+    <p>
+      Input keys are typed from the input schema too, so a misspelt input is a
+      compile error rather than a field the model never sees. Everything else
+      behaves as it always has: <code>Predict</code>,
+      <code>ChainOfThought</code> and <code>RespAct</code> all accept this form,
+      and decorated classes and string signatures keep working untouched.
+    </p>
+
+    <h3>What you can express</h3>
+    <p>
+      The zod schema is itself the validator, so every constraint you write is
+      enforced against the model's reply &mdash; including the kinds the flat
+      field-type list has no spelling for.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Written as</th><th scope="col">Enforced as</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="note"><code>z.enum(['p0', 'p1', 'p2'])</code></td>
+            <td class="note">A union of literals in TypeScript; the options are listed in the prompt and in the provider schema.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>z.number().int().min(1).max(5)</code></td>
+            <td class="note">Bounds checked after coercion; <code>"9"</code> fails rather than passing through as a number.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>z.object({ &hellip; })</code></td>
+            <td class="note">A nested object, parsed from JSON on the text path and typed all the way down.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>z.union([z.number(), z.literal('unknown')])</code></td>
+            <td class="note">Either branch, as an <code>anyOf</code> in the provider schema.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>.optional()</code></td>
+            <td class="note">Optional in the inferred type, and nullable in the provider schema.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>.refine(&hellip;)</code></td>
+            <td class="note">Object-level checks, run after every field has been coerced.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Coercion still applies</h3>
+    <p>
+      Models emit text, so the text path coerces before your schema sees the
+      value &mdash; <code>"42"</code> satisfies a number field and
+      <code>"a, b"</code> satisfies a <code>string[]</code>, exactly as with the
+      other two forms. Coercion happens field by field on the way in; your schema
+      is used verbatim, so defaults, optionality and refinements all survive.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> out = parseOutput(AnalyzeReview, <span class="s">'sentiment: positive\nrating: 5\nthemes: price, build'</span>)
+<span class="c">// { sentiment: 'positive', rating: 5, themes: ['price', 'build'] }</span></code></pre>
+
+    <h3>The schema sent to the provider</h3>
+    <p>
+      When the provider supports native structured output, the zod schema is
+      converted with <code>z.toJSONSchema()</code> and then rewritten for
+      OpenAI's strict mode: every property listed in <code>required</code>,
+      <code>additionalProperties: false</code> on every object including nested
+      ones, and optional fields expressed as <code>[base, 'null']</code> rather
+      than left out of <code>required</code>.
+    </p>
+    <pre class="code" data-lang="json"><code>{
+  "type": "object",
+  "properties": {
+    "sentiment": { "type": "string", "enum": ["positive", "negative", "neutral"] },
+    "rating": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "themes": { "type": "array", "items": { "type": "string" } },
+    "followUp": { "type": ["string", "null"] }
+  },
+  "required": ["sentiment", "rating", "themes", "followUp"],
+  "additionalProperties": false
+}</code></pre>
+
+    <div class="callout">
+      <span class="label">Which form to reach for</span>
+      <p>
+        Reach for a zod signature when you want the output type without writing
+        it twice, when a field is an enum or a nested object, or when your
+        project cannot enable <code>experimentalDecorators</code>. The class form
+        still reads best when per-field prompt descriptions are the point, and
+        the string form is still the fastest way to sketch something.
+      </p>
+    </div>
+
+    <div class="callout callout-warn">
+      <span class="label">Peer requirement</span>
+      <p>
+        <code>zod</code> 4 is already a dependency of
+        <code>@ts-dspy/core</code>, but import <code>z</code> from your own
+        <code>zod</code> so the schema classes match &mdash; two copies of zod in
+        one tree will fail <code>instanceof</code> checks.
+      </p>
+    </div>
+
+    <p>
+      A runnable version of everything above lives in
+      <code>examples/zod-signature.ts</code>:
+    </p>
+    <pre class="code" data-lang="bash"><code>npm run example:zod</code></pre>
   </section>
 
   </div>

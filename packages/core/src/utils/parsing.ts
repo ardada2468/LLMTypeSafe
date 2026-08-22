@@ -1,13 +1,19 @@
-import { Signature } from '../core/signature';
+import type { z } from 'zod';
+import {
+    isZodSignature,
+    Signature,
+    type AnyZodSignature,
+    type SignatureLike,
+} from '../core/signature';
 import { ValidationError, type FieldValidationIssue } from '../core/errors';
-import { buildOutputSchema, getOutputFieldConfigs } from './schema';
+import { buildOutputSchema, getOutputFieldConfigs, zodFieldHint } from './schema';
 
-export function buildPrompt(
-    signature: typeof Signature | string,
-    inputs: Record<string, any>
-): string {
+export function buildPrompt(signature: SignatureLike, inputs: Record<string, any>): string {
     if (typeof signature === 'string') {
         return buildPromptFromString(signature, inputs);
+    }
+    if (isZodSignature(signature)) {
+        return buildPromptFromZod(signature, inputs);
     }
     return buildPromptFromClass(signature, inputs);
 }
@@ -60,8 +66,51 @@ function buildPromptFromClass(
     prompt += '\nProvide:\n';
     Object.entries(outputFields).forEach(([key, config]) => {
         const desc = config.description ? ` (${config.description})` : '';
-        prompt += `${key}${desc}:\n`;
+        // A closed set is worth nothing if the model is never told what is in it.
+        // The structured path gets the members as a JSON Schema `enum`; on the text
+        // path the prompt is the only place they can appear.
+        const allowed = config.values?.length ? ` [one of: ${config.values.join(', ')}]` : '';
+        prompt += `${key}${desc}${allowed}:\n`;
     });
+
+    return prompt.trim();
+}
+
+/** Render one input value for a prompt line, keeping structured values readable. */
+function formatInputValue(value: unknown): string {
+    if (value === null || typeof value !== 'object') return String(value);
+    return JSON.stringify(value);
+}
+
+function buildPromptFromZod(
+    zodSignature: AnyZodSignature,
+    inputs: Record<string, any>
+): string {
+    const inputShape = zodSignature.input.shape as Record<string, z.ZodType>;
+    const outputShape = zodSignature.output.shape as Record<string, z.ZodType>;
+
+    let prompt = '';
+
+    if (zodSignature.description) {
+        prompt += `${zodSignature.description}\n\n`;
+    }
+
+    for (const [key, field] of Object.entries(inputShape)) {
+        if (inputs[key] !== undefined) {
+            // An input's `.describe()` is what tells the model how to read the
+            // value, so it belongs in the prompt beside the value itself.
+            const label = field.description ? `${key} (${field.description})` : key;
+            prompt += `${label}: ${formatInputValue(inputs[key])}\n`;
+        }
+    }
+
+    prompt += '\nProvide:\n';
+    for (const [key, field] of Object.entries(outputShape)) {
+        // The hint carries the enum options, bounds and nullability that the
+        // text path cannot enforce any other way.
+        const described = field.description ? `${field.description}; ` : '';
+        prompt += `${key} (${described}${zodFieldHint(field)}):\n`;
+    }
 
     return prompt.trim();
 }
@@ -75,10 +124,7 @@ function buildPromptFromClass(
  * @throws {ValidationError} when a required field is missing or a field's value
  * cannot be coerced to its declared type.
  */
-export function parseOutput(
-    signature: typeof Signature | string,
-    rawOutput: string
-): Record<string, any> {
+export function parseOutput(signature: SignatureLike, rawOutput: string): Record<string, any> {
     const fields = getOutputFieldConfigs(signature);
     const fieldNames = Object.keys(fields);
     const text = typeof rawOutput === 'string' ? rawOutput : String(rawOutput);
@@ -100,7 +146,12 @@ export function parseOutput(
 
     const issues: FieldValidationIssue[] = result.error.issues.map((issue) => {
         const field = String(issue.path[0] ?? '(root)');
-        const declaredType = fields[field]?.type ?? 'string';
+        const declared = fields[field];
+        // Report an enum's members, not the bare word `enum` — the set is the part
+        // that tells the reader why the value was refused.
+        const declaredType = declared?.values?.length
+            ? `enum(${declared.values.join('|')})`
+            : (declared?.type ?? 'string');
         const received = extracted[field];
         const message =
             received === undefined

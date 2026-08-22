@@ -201,6 +201,24 @@ describe('AnthropicLM', () => {
 
             expect(mocks.create.mock.calls[0][1]).toEqual({ timeout: 3000, maxRetries: 4 });
         });
+
+        it('forwards an abort signal to the SDK request options', async () => {
+            mocks.create.mockResolvedValue(message('ok'));
+            const controller = new AbortController();
+
+            await new AnthropicLM({ apiKey: 'k' }).generate('Hi', {
+                signal: controller.signal,
+            });
+
+            expect(mocks.create.mock.calls[0][1]).toEqual({ signal: controller.signal });
+        });
+
+        it('omits the signal when no cancellation is requested', async () => {
+            mocks.create.mockResolvedValue(message('ok'));
+            await new AnthropicLM({ apiKey: 'k' }).generate('Hi');
+
+            expect(mocks.create.mock.calls[0][1]).not.toHaveProperty('signal');
+        });
     });
 
     describe('generateStructured', () => {

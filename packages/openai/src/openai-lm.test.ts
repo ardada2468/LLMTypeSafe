@@ -151,6 +151,22 @@ describe('OpenAILM', () => {
             expect(mocks.create.mock.calls[0][1]).toEqual({ timeout: 5000, maxRetries: 1 });
         });
 
+        it('forwards an abort signal to the SDK request options', async () => {
+            mocks.create.mockResolvedValue(completion('ok'));
+            const controller = new AbortController();
+
+            await new OpenAILM({ apiKey: 'k' }).generate('Hi', { signal: controller.signal });
+
+            expect(mocks.create.mock.calls[0][1]).toEqual({ signal: controller.signal });
+        });
+
+        it('omits the signal when no cancellation is requested', async () => {
+            mocks.create.mockResolvedValue(completion('ok'));
+            await new OpenAILM({ apiKey: 'k' }).generate('Hi');
+
+            expect(mocks.create.mock.calls[0][1]).not.toHaveProperty('signal');
+        });
+
         it('allows a per-call model override', async () => {
             mocks.create.mockResolvedValue(completion('ok'));
             await new OpenAILM({ apiKey: 'k' }).generate('Hi', { model: 'gpt-4.1' });
@@ -219,6 +235,25 @@ describe('OpenAILM', () => {
                 done: true,
                 usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
             });
+        });
+
+        it('wraps and counts a mid-stream failure', async () => {
+            mocks.create.mockResolvedValue(
+                (async function* () {
+                    yield { choices: [{ delta: { content: 'Hel' } }] };
+                    throw Object.assign(new Error('Request was aborted.'), {
+                        name: 'APIUserAbortError',
+                    });
+                })()
+            );
+
+            const lm = new OpenAILM({ apiKey: 'k' });
+
+            // Aborting mid-stream used to escape as a raw SDK error, uncounted.
+            await expect(async () => {
+                for await (const chunk of lm.generateStream('Hi')) void chunk;
+            }).rejects.toThrow(LMError);
+            expect(lm.getUsage().errorCount).toBe(1);
         });
     });
 

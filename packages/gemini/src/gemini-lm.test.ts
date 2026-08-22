@@ -300,6 +300,77 @@ describe('GeminiLM', () => {
             );
         });
 
+        it('forwards a caller-supplied abort signal', async () => {
+            mocks.generateContent.mockResolvedValue(response('ok'));
+            const controller = new AbortController();
+
+            await new GeminiLM({ apiKey: 'k' }).generate('Hi', { signal: controller.signal });
+
+            expect(mocks.generateContent.mock.calls[0][0].config.abortSignal).toBe(
+                controller.signal
+            );
+        });
+
+        it('combines a caller signal with the timeout signal', async () => {
+            mocks.generateContent.mockResolvedValue(response('ok'));
+            const controller = new AbortController();
+
+            await new GeminiLM({ apiKey: 'k' }).generate('Hi', {
+                signal: controller.signal,
+                timeout: 60_000,
+            });
+
+            // Gemini has one abortSignal slot, so both have to be folded into a
+            // single signal. `toBeInstanceOf(AbortSignal)` cannot tell a merged
+            // signal from a timeout-only one — abort the caller's controller and
+            // check the merged signal follows it.
+            const combined = mocks.generateContent.mock.calls[0][0].config.abortSignal;
+            expect(combined).not.toBe(controller.signal);
+            expect(combined.aborted).toBe(false);
+            controller.abort();
+            expect(combined.aborted).toBe(true);
+        });
+
+        it('leaves abortSignal unset when neither a signal nor a timeout is given', async () => {
+            mocks.generateContent.mockResolvedValue(response('ok'));
+            await new GeminiLM({ apiKey: 'k' }).generate('Hi');
+
+            expect(mocks.generateContent.mock.calls[0][0].config.abortSignal).toBeUndefined();
+        });
+
+        it('builds a fresh signal per request rather than sharing one', async () => {
+            mocks.generateContent.mockResolvedValue(response('ok'));
+            const lm = new GeminiLM({ apiKey: 'k' });
+
+            await lm.generate('Hi', { timeout: 5000 });
+            await lm.generate('Hi again', { timeout: 5000 });
+
+            const first = mocks.generateContent.mock.calls[0][0].config.abortSignal;
+            const second = mocks.generateContent.mock.calls[1][0].config.abortSignal;
+            expect(first).not.toBe(second);
+        });
+
+        it('applies the constructor timeout when the call sets none', async () => {
+            mocks.generateContent.mockResolvedValue(response('ok'));
+            await new GeminiLM({ apiKey: 'k', timeout: 5000 }).generate('Hi');
+
+            expect(mocks.generateContent.mock.calls[0][0].config.abortSignal).toBeInstanceOf(
+                AbortSignal
+            );
+        });
+
+        it('lets a longer per-call timeout override the constructor default', async () => {
+            mocks.generateContent.mockResolvedValue(response('ok'));
+            await new GeminiLM({ apiKey: 'k', timeout: 5 }).generate('Hi', { timeout: 60_000 });
+
+            // The SDK applies a client-level httpOptions.timeout to every request,
+            // so routing the default through it would let a per-call timeout only
+            // tighten the deadline, never loosen it.
+            const signal = mocks.generateContent.mock.calls[0][0].config.abortSignal;
+            await new Promise((resolve) => setTimeout(resolve, 40));
+            expect(signal.aborted).toBe(false);
+        });
+
         it('allows a per-call model override', async () => {
             mocks.generateContent.mockResolvedValue(response('ok'));
             await new GeminiLM({ apiKey: 'k' }).generate('Hi', { model: 'gemini-3.1-pro' });
@@ -336,6 +407,24 @@ describe('GeminiLM', () => {
                 usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
             });
         });
+
+        it('wraps and counts a mid-stream failure', async () => {
+            mocks.generateContentStream.mockResolvedValue(
+                (async function* () {
+                    yield { text: 'Hel' };
+                    throw Object.assign(new Error('This operation was aborted'), {
+                        name: 'AbortError',
+                    });
+                })()
+            );
+
+            const lm = new GeminiLM({ apiKey: 'k' });
+
+            await expect(async () => {
+                for await (const chunk of lm.generateStream('Hi')) void chunk;
+            }).rejects.toThrow(LMError);
+            expect(lm.getUsage().errorCount).toBe(1);
+        });
     });
 
     describe('configuration', () => {
@@ -359,6 +448,124 @@ describe('GeminiLM', () => {
                     httpOptions: { baseUrl: 'https://proxy.example.com' },
                 })
             );
+        });
+
+        it('omits httpOptions entirely when no base URL is given', () => {
+            new GeminiLM({ apiKey: 'k' });
+
+            expect(mocks.constructorOptions.mock.calls[0][0]).not.toHaveProperty('httpOptions');
+        });
+    });
+
+    describe('retries', () => {
+        function transient(status: number) {
+            return Object.assign(new Error(`status ${status}`), { status });
+        }
+
+        it('retries a transient failure and returns the eventual result', async () => {
+            mocks.generateContent
+                .mockRejectedValueOnce(transient(503))
+                .mockResolvedValue(response('ok'));
+
+            // Before this the Gemini provider ignored `retries` entirely.
+            expect(await new GeminiLM({ apiKey: 'k' }).generate('Hi', { retries: 1 })).toBe(
+                'ok'
+            );
+            expect(mocks.generateContent).toHaveBeenCalledTimes(2);
+        });
+
+        it('falls back to the constructor maxRetries', async () => {
+            mocks.generateContent
+                .mockRejectedValueOnce(transient(429))
+                .mockResolvedValue(response('ok'));
+
+            const lm = new GeminiLM({ apiKey: 'k', maxRetries: 1 });
+
+            expect(await lm.generate('Hi')).toBe('ok');
+            expect(mocks.generateContent).toHaveBeenCalledTimes(2);
+        });
+
+        it('defaults to two retries, as the OpenAI and Anthropic SDKs do', async () => {
+            mocks.generateContent
+                .mockRejectedValueOnce(transient(500))
+                .mockRejectedValueOnce(transient(500))
+                .mockResolvedValue(response('ok'));
+
+            expect(await new GeminiLM({ apiKey: 'k' }).generate('Hi')).toBe('ok');
+            expect(mocks.generateContent).toHaveBeenCalledTimes(3);
+        });
+
+        it('retries a transport failure, which carries no status', async () => {
+            mocks.generateContent
+                .mockRejectedValueOnce(new TypeError('fetch failed'))
+                .mockResolvedValue(response('ok'));
+
+            expect(await new GeminiLM({ apiKey: 'k' }).generate('Hi', { retries: 1 })).toBe(
+                'ok'
+            );
+            expect(mocks.generateContent).toHaveBeenCalledTimes(2);
+        });
+
+        it('does not retry a status-less error that is not a transport failure', async () => {
+            mocks.generateContent.mockRejectedValue(new Error('bad argument'));
+            const lm = new GeminiLM({ apiKey: 'k' });
+
+            // Retrying a deterministic fault just makes it three times slower.
+            await expect(lm.generate('Hi', { retries: 3 })).rejects.toThrow(LMError);
+            expect(mocks.generateContent).toHaveBeenCalledTimes(1);
+        });
+
+        it('does not retry a client error', async () => {
+            mocks.generateContent.mockRejectedValue(transient(401));
+            const lm = new GeminiLM({ apiKey: 'k' });
+
+            await expect(lm.generate('Hi', { retries: 3 })).rejects.toThrow(LMError);
+            expect(mocks.generateContent).toHaveBeenCalledTimes(1);
+        });
+
+        it('preserves the status code on the LMError', async () => {
+            mocks.generateContent.mockRejectedValue(transient(400));
+
+            // The SDK's own retry wrapper replaces API errors with generic ones,
+            // losing the status; running the loop here keeps it.
+            await expect(
+                new GeminiLM({ apiKey: 'k', maxRetries: 2 }).generate('Hi')
+            ).rejects.toMatchObject({ status: 400 });
+        });
+
+        it('stops retrying once the caller aborts, without waiting out the backoff', async () => {
+            const controller = new AbortController();
+            mocks.generateContent.mockImplementation(() => {
+                controller.abort();
+                return Promise.reject(transient(503));
+            });
+
+            const lm = new GeminiLM({ apiKey: 'k' });
+            const startedAt = Date.now();
+
+            await expect(
+                lm.generate('Hi', { retries: 3, signal: controller.signal })
+            ).rejects.toThrow(LMError);
+            expect(mocks.generateContent).toHaveBeenCalledTimes(1);
+            // The signal aborts during the attempt, so the backoff sleep has to
+            // notice a signal that was already aborted when it started.
+            expect(Date.now() - startedAt).toBeLessThan(100);
+        });
+
+        it('rejects without calling the SDK when the signal is already aborted', async () => {
+            mocks.generateContent.mockResolvedValue(response('ok'));
+            const controller = new AbortController();
+            controller.abort();
+
+            const lm = new GeminiLM({ apiKey: 'k' });
+
+            // Gemini's client attaches the signal with an `abort` listener, which
+            // never fires for a signal that aborted before the call went out.
+            await expect(lm.generate('Hi', { signal: controller.signal })).rejects.toThrow(
+                LMError
+            );
+            expect(mocks.generateContent).not.toHaveBeenCalled();
+            expect(lm.getUsage().errorCount).toBe(1);
         });
     });
 

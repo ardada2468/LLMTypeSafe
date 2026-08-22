@@ -5,15 +5,25 @@ import type {
     ModelCapabilities,
     UsageStats,
 } from '../types/language-model';
+import { buildCacheKey, type CacheKeyInput } from './cache';
+import { getCache } from './config';
 import { LMError } from './errors';
 
 /**
  * Shared implementation for language-model providers.
  *
  * Providers implement {@link chat} and {@link getCapabilities}; everything else —
- * usage accounting, `generate` delegation, and a prompt-based
+ * usage accounting, response caching, `generate` delegation, and a prompt-based
  * `generateStructured` fallback for providers without native structured output —
  * lives here so it is not copy-pasted per provider.
+ *
+ * Caching is installed on the instance by this constructor, which puts two
+ * requirements on a subclass: implement `chat`/`generate`/`generateStructured`
+ * as methods rather than class fields, and do not reassign them after
+ * `super()` — either would replace the cached wrapper. Any constructor option
+ * that shapes the request, such as a default `maxTokens` or an alternate
+ * `baseURL`, belongs in {@link cacheScope} so two differently configured
+ * instances of the same model do not share entries.
  */
 export abstract class BaseLM implements ILanguageModel {
     protected model: string;
@@ -23,11 +33,65 @@ export abstract class BaseLM implements ILanguageModel {
     private completionTokens = 0;
     private requestCount = 0;
     private errorCount = 0;
+    private cacheHits = 0;
     private totalLatencyMs = 0;
+
+    /**
+     * Uncached handles to whichever implementations the subclass supplied,
+     * captured before the constructor replaces the public methods.
+     */
+    private readonly uncachedChat!: (
+        messages: ChatMessage[],
+        options?: LLMCallOptions
+    ) => Promise<string>;
+    private readonly uncachedGenerate!: (
+        prompt: string,
+        options?: LLMCallOptions
+    ) => Promise<string>;
 
     protected constructor(provider: string, model: string) {
         this.provider = provider;
         this.model = model;
+
+        // Caching is installed per instance rather than written into the method
+        // bodies: `chat` is abstract and providers routinely override
+        // `generateStructured`, so the instance is the only place that can
+        // intercept every implementation. BaseLM's own delegation below goes
+        // through the uncached handles, so one public call writes at most one
+        // cache entry instead of nesting a second at the layer beneath.
+        if (typeof this.chat !== 'function') {
+            throw new TypeError(
+                'A BaseLM subclass must implement chat() as a method. A class field ' +
+                    '(`chat = async () => {}`) is initialised after super() returns, so ' +
+                    'there is nothing for the base constructor to wrap.'
+            );
+        }
+
+        const uncachedChat = this.chat.bind(this);
+        const uncachedGenerate = this.generate.bind(this);
+        const uncachedGenerateStructured = this.generateStructured.bind(this);
+        this.uncachedChat = uncachedChat;
+        this.uncachedGenerate = uncachedGenerate;
+
+        this.chat = (messages, options) =>
+            this.throughCache({ operation: 'chat', messages, options }, () =>
+                uncachedChat(messages, options)
+            );
+
+        this.generate = (prompt, options) =>
+            this.throughCache({ operation: 'generate', prompt, options }, () =>
+                uncachedGenerate(prompt, options)
+            );
+
+        this.generateStructured = <T>(
+            prompt: string,
+            schema: unknown,
+            options?: LLMCallOptions
+        ) =>
+            this.throughCache<T>(
+                { operation: 'generateStructured', prompt, schema, options },
+                () => uncachedGenerateStructured<T>(prompt, schema, options)
+            );
     }
 
     abstract chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string>;
@@ -35,7 +99,7 @@ export abstract class BaseLM implements ILanguageModel {
     abstract getCapabilities(): ModelCapabilities;
 
     async generate(prompt: string, options?: LLMCallOptions): Promise<string> {
-        return this.chat([{ role: 'user', content: prompt }], options);
+        return this.uncachedChat([{ role: 'user', content: prompt }], options);
     }
 
     /**
@@ -53,7 +117,7 @@ export abstract class BaseLM implements ILanguageModel {
             `Output only the JSON object, with no surrounding prose or code fences.\n` +
             `${JSON.stringify(schema, null, 2)}`;
 
-        const raw = await this.generate(instruction, options);
+        const raw = await this.uncachedGenerate(instruction, options);
         return parseJsonResponse<T>(raw, this.provider);
     }
 
@@ -64,6 +128,7 @@ export abstract class BaseLM implements ILanguageModel {
             totalTokens: this.promptTokens + this.completionTokens,
             requestCount: this.requestCount,
             errorCount: this.errorCount,
+            cacheHits: this.cacheHits,
             averageLatency: this.requestCount > 0 ? this.totalLatencyMs / this.requestCount : 0,
         };
     }
@@ -73,6 +138,7 @@ export abstract class BaseLM implements ILanguageModel {
         this.completionTokens = 0;
         this.requestCount = 0;
         this.errorCount = 0;
+        this.cacheHits = 0;
         this.totalLatencyMs = 0;
     }
 
@@ -100,6 +166,71 @@ export abstract class BaseLM implements ILanguageModel {
     protected recordError(): void {
         this.errorCount += 1;
     }
+
+    /**
+     * Per-instance configuration that changes what the model returns, folded
+     * into every cache key alongside the provider, model, and call options.
+     *
+     * Provider and model alone do not identify a request: an instance
+     * constructed with a default `maxTokens`, non-default safety settings, or a
+     * `baseURL` pointing at a proxy answers the same prompt differently. Return
+     * those here — any JSON-serialisable value will do — and the entries stay
+     * apart. The default is `undefined`, which keeps the key to the call itself.
+     */
+    protected cacheScope(): unknown {
+        return undefined;
+    }
+
+    /**
+     * Serve `run` from the configured cache when possible.
+     *
+     * A hit bumps `cacheHits` and nothing else: counting it as a request, or
+     * adding the original call's tokens a second time, would quietly overstate
+     * spend for every prompt a program repeats. Rejections propagate uncached,
+     * so a transient 429 is not pinned to a prompt for the life of the process.
+     */
+    private async throughCache<T>(
+        input: Omit<CacheKeyInput, 'provider' | 'model'>,
+        run: () => Promise<T>
+    ): Promise<T> {
+        const cache = getCache();
+        if (!cache) return run();
+
+        const key = buildCacheKey({
+            ...input,
+            provider: this.provider,
+            model: input.options?.model ?? this.model,
+            scope: this.cacheScope(),
+        });
+
+        // `null` counts as a miss as well as `undefined`: a cached response is
+        // never either, and Redis clients resolve a missing key to `null`, so a
+        // custom store that forgets to translate would otherwise report a hit
+        // and fail somewhere far away from the cache.
+        const cached = await cache.get(key);
+        if (cached !== undefined && cached !== null) {
+            this.cacheHits += 1;
+            return isolate(cached, input.operation) as T;
+        }
+
+        const value = await run();
+        await cache.set(key, isolate(value, input.operation));
+        return value;
+    }
+}
+
+/**
+ * Copy a structured result before it crosses the cache boundary.
+ *
+ * `generateStructured` resolves to a parsed JSON value, and handing every
+ * caller the one stored object would let a single mutation downstream corrupt
+ * the entry for every later hit. Text responses are immutable, so they pass
+ * through untouched.
+ */
+function isolate<T>(value: T, operation: CacheKeyInput['operation']): T {
+    if (operation !== 'generateStructured') return value;
+    if (typeof value !== 'object' || value === null) return value;
+    return structuredClone(value);
 }
 
 /** Extract a JSON object from a model reply, tolerating code fences. */

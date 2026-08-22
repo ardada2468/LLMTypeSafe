@@ -1,8 +1,8 @@
 import { Predict } from './predict';
-import { Prediction } from '../core/prediction';
-import { type Signature } from '../core/signature';
+import { type Prediction } from '../core/prediction';
+import { type Signature, type SignatureSource } from '../core/signature';
 import type { LLMCallOptions } from '../types/language-model';
-import type { SignatureOutput } from '../types/signature';
+import type { SignatureInput, SignatureOutput } from '../types/signature';
 
 type WithReasoning<TOutput> = TOutput & { reasoning: string };
 
@@ -13,25 +13,28 @@ type WithReasoning<TOutput> = TOutput & { reasoning: string };
  * Like {@link Predict}, `TOutput` can be supplied for precise output types.
  */
 export class ChainOfThought<
-    TSignature extends typeof Signature = typeof Signature,
+    TSignature extends SignatureSource = typeof Signature,
     TOutput extends Record<string, any> = SignatureOutput<TSignature>,
 > extends Predict<TSignature, TOutput> {
     async forward(
-        inputs: Record<string, any>,
+        inputs: SignatureInput<TSignature>,
         options?: LLMCallOptions
     ): Promise<Prediction<WithReasoning<TOutput>> & WithReasoning<TOutput>> {
-        // Step 1: reason in the open, as free text.
-        const reasoningPrompt = this.buildReasoningPrompt(inputs);
-        const reasoning = await this.lm.generate(reasoningPrompt, options);
+        const prediction = await this.traced<WithReasoning<TOutput>>(inputs, async (span) => {
+            // Step 1: reason in the open, as free text.
+            const reasoningPrompt = this.buildReasoningPrompt(inputs);
+            span?.startCall(reasoningPrompt);
+            const reasoning = await this.lm.generate(reasoningPrompt, options);
+            span?.endCall(reasoning);
 
-        // Step 2: answer with that reasoning in context, validated against the signature.
-        const finalPrompt = this.buildFinalPrompt(inputs, reasoning);
-        const parsed = (await this.complete(finalPrompt, options)) as TOutput;
+            // Step 2: answer with that reasoning in context, validated against the signature.
+            const finalPrompt = this.buildFinalPrompt(inputs, reasoning);
+            const parsed = (await this.complete(finalPrompt, options, span)) as TOutput;
 
-        const combinedOutput = { ...parsed, reasoning } as WithReasoning<TOutput>;
+            return { ...parsed, reasoning } as WithReasoning<TOutput>;
+        });
 
-        return new Prediction(combinedOutput) as Prediction<WithReasoning<TOutput>> &
-            WithReasoning<TOutput>;
+        return prediction as Prediction<WithReasoning<TOutput>> & WithReasoning<TOutput>;
     }
 
     private buildReasoningPrompt(inputs: Record<string, any>): string {
