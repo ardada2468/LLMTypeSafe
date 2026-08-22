@@ -66,6 +66,7 @@
       <li><a href="#migration">Migrating to 0.5</a></li>
       <li><a href="#tracing">Tracing &amp; history</a></li>
       <li><a href="#caching">Caching</a></li>
+      <li><a href="#repair">Self-repair</a></li>
       <li><a href="#batch">Batch &amp; concurrency</a></li>
       <li><a href="#zod">Zod signatures</a></li>
     </ol>
@@ -1163,6 +1164,88 @@ configure({ cache: redisCache })</code></pre>
         hit. An optional <code>clear()</code> backs <code>clearCache()</code>
         &mdash; handy between test cases, since the built-in cache is
         process-wide.
+      </p>
+    </div>
+  </section>
+
+  <section id="repair">
+    <p class="anchor">16</p>
+    <h2>Self-repair</h2>
+    <p>
+      A model that fails validation has usually understood the task and merely
+      fumbled the shape &mdash; a number written as <code>"very high"</code>, a
+      required field left off the end. Set <code>repairAttempts</code> and
+      ts-dspy spends that many extra round-trips telling the model exactly what
+      went wrong before it gives up.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> qa = <span class="kw">new</span> Predict(AnswerQuestion, lm)
+
+<span class="c">// One extra round-trip if the first response fails validation.</span>
+<span class="kw">const</span> result = <span class="kw">await</span> qa.forward(
+  { question: <span class="s">'Capital of France?'</span> },
+  { repairAttempts: <span class="s">1</span> }
+)</code></pre>
+    <p>
+      The default is <code>0</code>, so behaviour is unchanged unless you ask for
+      repair. Once the attempts are spent the last <code>ValidationError</code> is
+      rethrown, carrying the usual <code>issues</code> and <code>rawOutput</code>.
+    </p>
+
+    <h3>What the model is told</h3>
+    <p>
+      The follow-up prompt names every failing field with its declared type and
+      the value that actually arrived, so the correction is specific rather than a
+      bare &ldquo;try again&rdquo;. For a <code>confidence</code> field declared
+      <code>number</code> that came back as prose, the model is sent:
+    </p>
+    <pre class="code"><code><span class="c">// Your previous response failed validation for: confidence.</span>
+<span class="c">//   - confidence: expected number, received "very high"</span>
+<span class="c">//</span>
+<span class="c">// Previous response:</span>
+<span class="c">// answer: Paris</span>
+<span class="c">// confidence: very high</span>
+<span class="c">//</span>
+<span class="c">// Reply again with every required field on its own "field: value" line,</span>
+<span class="c">// using the declared type for each.</span></code></pre>
+    <p>
+      Each repair is built from the <em>original</em> prompt rather than the
+      previous repair prompt, so a multi-attempt loop does not accumulate every
+      earlier correction and drift off task.
+    </p>
+
+    <h3>Where it applies</h3>
+    <p>
+      Both of <code>Predict</code>'s paths are covered: the provider's native
+      structured-output mode and the labelled-text fallback. The structured path
+      asks for a corrected object instead of labelled lines, but the field detail
+      is identical.
+    </p>
+    <p>
+      <code>ChainOfThought</code> inherits it. Repair applies to the answering step
+      only &mdash; the reasoning is already settled, so it is reused rather than
+      regenerated, and a repair costs one call rather than two.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> cot = <span class="kw">new</span> ChainOfThought(Scored, lm)
+
+<span class="c">// Reason once, then answer - retrying only the answer.</span>
+<span class="kw">await</span> cot.forward({ question: q }, { repairAttempts: <span class="s">2</span> })</code></pre>
+    <p>
+      <code>RespAct</code> has always repaired a malformed <code>Final Answer</code>
+      inside its own reasoning loop, bounded by <code>maxSteps</code> rather than by
+      <code>repairAttempts</code>. All three modules now build that corrective
+      prompt from the same helper, so the wording never diverges.
+    </p>
+
+    <div class="callout">
+      <span class="label">Cost</span>
+      <p>
+        Every repair is a real completion. <code>repairAttempts: 1</code> is
+        usually enough &mdash; a model that gets the shape wrong twice is more
+        likely to be missing something in the signature's field descriptions than
+        to be one nudge from correct. Two guards keep the bill bounded: the value
+        is capped at <code>10</code>, and the loop stops as soon as an attempt
+        reproduces the previous failure exactly, since the next prompt would be
+        identical and a deterministic model would answer it identically.
       </p>
     </div>
   </section>

@@ -10,6 +10,7 @@ import {
     stripAbsentNulls,
 } from '../utils/schema';
 import { ValidationError, type FieldValidationIssue } from '../core/errors';
+import { buildRepairPrompt, isRepeatedFailure, normaliseRepairAttempts } from '../core/repair';
 import { type TraceSpan } from '../core/trace';
 import type { SignatureInput, SignatureOutput } from '../types/signature';
 
@@ -56,11 +57,13 @@ export class Predict<
     }
 
     /**
-     * Run one completion and validate it against the signature.
+     * Run a completion, validate it against the signature, and optionally spend
+     * `options.repairAttempts` further round-trips fixing a response that fails.
      *
      * Uses the provider's native structured-output mode when it has one — that
      * constrains decoding rather than merely asking for JSON — and falls back to
-     * parsing labelled text otherwise. Both paths end in the same validation.
+     * parsing labelled text otherwise. Both paths end in the same validation, so
+     * both are repairable.
      *
      * `span` is supplied when tracing is on, and records the call either way.
      */
@@ -69,9 +72,52 @@ export class Predict<
         options?: LLMCallOptions,
         span?: TraceSpan
     ): Promise<Record<string, any>> {
+        const repairAttempts = normaliseRepairAttempts(options?.repairAttempts);
+        const structured = this.lm.getCapabilities().supportsStructuredOutput;
+        let attemptPrompt = prompt;
+        let previousError: ValidationError | undefined;
+
+        for (let attempt = 0; ; attempt++) {
+            try {
+                return await this.completeOnce(attemptPrompt, structured, options, span);
+            } catch (error) {
+                if (!(error instanceof ValidationError) || attempt >= repairAttempts) {
+                    throw error;
+                }
+                // An identical failure would produce an identical repair prompt, so
+                // every remaining attempt is guaranteed to fail the same way against
+                // a deterministic model. Stop rather than bill for the repeats.
+                if (previousError && isRepeatedFailure(previousError, error)) {
+                    throw error;
+                }
+                previousError = error;
+
+                // Repair from the original prompt, not the previous repair prompt,
+                // so successive attempts do not stack up every earlier correction.
+                attemptPrompt = buildRepairPrompt(
+                    prompt,
+                    error,
+                    structured ? 'structured' : 'text'
+                );
+            }
+        }
+    }
+
+    /**
+     * One completion plus validation, with no repair loop around it.
+     *
+     * Each repair attempt reports its own call to `span`, so a trace shows every
+     * round trip that was paid for rather than only the one that succeeded.
+     */
+    protected async completeOnce(
+        prompt: string,
+        structured: boolean,
+        options?: LLMCallOptions,
+        span?: TraceSpan
+    ): Promise<Record<string, any>> {
         const signature = this.requireSignature();
 
-        if (this.lm.getCapabilities().supportsStructuredOutput) {
+        if (structured) {
             const schema = buildOutputJsonSchema(signature);
             span?.startCall(prompt);
             const raw = await this.lm.generateStructured<Record<string, any>>(

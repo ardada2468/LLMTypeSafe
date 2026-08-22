@@ -6,6 +6,7 @@ import type { SignatureOutput } from '../types/signature';
 import { parseOutput as utilParseOutput } from '../utils/parsing';
 import { getOutputFieldConfigs } from '../utils/schema';
 import { ValidationError } from '../core/errors';
+import { buildRepairObservation } from '../core/repair';
 import { type TraceSpan } from '../core/trace';
 
 export interface ToolFunction {
@@ -133,8 +134,7 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
                 // A malformed final answer is recoverable: tell the model what
                 // shape it owes us and let it try again on the next step.
                 if (error instanceof ValidationError && step < this.maxSteps - 1) {
-                    const fieldList = error.issues.map((issue) => issue.field).join(', ');
-                    conversation += `\n\nObservation: Your Final Answer was missing or malformed for: ${fieldList}. Provide a Final Answer with every required field on its own "field: value" line.`;
+                    conversation += `\n\nObservation: ${buildRepairObservation(error)}`;
                     continue;
                 }
                 throw error;
