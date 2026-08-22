@@ -36,19 +36,6 @@ export abstract class BaseLM implements ILanguageModel {
     private cacheHits = 0;
     private totalLatencyMs = 0;
 
-    /**
-     * Uncached handles to whichever implementations the subclass supplied,
-     * captured before the constructor replaces the public methods.
-     */
-    private readonly uncachedChat!: (
-        messages: ChatMessage[],
-        options?: LLMCallOptions
-    ) => Promise<string>;
-    private readonly uncachedGenerate!: (
-        prompt: string,
-        options?: LLMCallOptions
-    ) => Promise<string>;
-
     protected constructor(provider: string, model: string) {
         this.provider = provider;
         this.model = model;
@@ -56,9 +43,10 @@ export abstract class BaseLM implements ILanguageModel {
         // Caching is installed per instance rather than written into the method
         // bodies: `chat` is abstract and providers routinely override
         // `generateStructured`, so the instance is the only place that can
-        // intercept every implementation. BaseLM's own delegation below goes
-        // through the uncached handles, so one public call writes at most one
-        // cache entry instead of nesting a second at the layer beneath.
+        // intercept every implementation. `generate` is deliberately left
+        // unwrapped -- it is pure delegation to `chat`, which is cached, and
+        // binding it here would mean a later override or test spy on `chat`
+        // was silently bypassed.
         if (typeof this.chat !== 'function') {
             throw new TypeError(
                 'A BaseLM subclass must implement chat() as a method. A class field ' +
@@ -68,19 +56,11 @@ export abstract class BaseLM implements ILanguageModel {
         }
 
         const uncachedChat = this.chat.bind(this);
-        const uncachedGenerate = this.generate.bind(this);
         const uncachedGenerateStructured = this.generateStructured.bind(this);
-        this.uncachedChat = uncachedChat;
-        this.uncachedGenerate = uncachedGenerate;
 
         this.chat = (messages, options) =>
             this.throughCache({ operation: 'chat', messages, options }, () =>
                 uncachedChat(messages, options)
-            );
-
-        this.generate = (prompt, options) =>
-            this.throughCache({ operation: 'generate', prompt, options }, () =>
-                uncachedGenerate(prompt, options)
             );
 
         this.generateStructured = <T>(
@@ -99,7 +79,7 @@ export abstract class BaseLM implements ILanguageModel {
     abstract getCapabilities(): ModelCapabilities;
 
     async generate(prompt: string, options?: LLMCallOptions): Promise<string> {
-        return this.uncachedChat([{ role: 'user', content: prompt }], options);
+        return this.chat([{ role: 'user', content: prompt }], options);
     }
 
     /**
@@ -117,7 +97,7 @@ export abstract class BaseLM implements ILanguageModel {
             `Output only the JSON object, with no surrounding prose or code fences.\n` +
             `${JSON.stringify(schema, null, 2)}`;
 
-        const raw = await this.uncachedGenerate(instruction, options);
+        const raw = await this.generate(instruction, options);
         return parseJsonResponse<T>(raw, this.provider);
     }
 
