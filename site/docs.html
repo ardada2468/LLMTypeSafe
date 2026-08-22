@@ -70,6 +70,7 @@
       <li><a href="#batch">Batch &amp; concurrency</a></li>
       <li><a href="#zod">Zod signatures</a></li>
       <li><a href="#evaluate">Evaluation</a></li>
+      <li><a href="#optimizers">Few-shot &amp; optimizers</a></li>
     </ol>
   </nav>
 
@@ -1690,6 +1691,141 @@ console.log(formatReport(report, { maxRows: <span class="s">20</span>, includePa
         you want the run to be reproducible against a scripted model.
       </p>
     </div>
+  </section>
+
+  <section id="optimizers">
+    <p class="anchor">21</p>
+    <h2>Few-shot and optimizers</h2>
+    <p>
+      Everything above writes prompts by hand. An optimizer writes them from data
+      instead: give it labelled examples and a metric, and it works out which
+      worked examples belong in the prompt. This is the idea TS-DSPy takes from
+      DSPy &mdash; a program that improves itself, rather than a prompt you keep
+      editing.
+    </p>
+
+    <h3>Demos</h3>
+    <p>
+      A demo is an <code>Example</code> rendered into the prompt before the real
+      input, showing the task performed correctly. Demos render in whichever
+      shape the reply is expected to take &mdash; labelled
+      <code>field: value</code> for a provider answering in text, JSON for one
+      whose decoding is constrained to a schema &mdash; so they teach the output
+      format as well as the task.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { Example, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> demos = [
+  <span class="kw">new</span> Example({ ticket: <span class="s">'My card was charged twice.'</span>, team: <span class="s">'billing'</span> }).withInputs(<span class="s">'ticket'</span>),
+  <span class="kw">new</span> Example({ ticket: <span class="s">'Export does nothing on Safari.'</span>, team: <span class="s">'bug'</span> }).withInputs(<span class="s">'ticket'</span>),
+]
+
+<span class="kw">const</span> router = <span class="kw">new</span> Predict(RouteTicket, { demos })</code></pre>
+    <p>
+      <code>withInputs()</code> marks which fields are the question; the rest is
+      the answer. Omit it and the signature decides the split instead. The
+      original two-argument form, <code>new Predict(Sig, lm)</code>, still works
+      &mdash; pass <code>{ lm, demos }</code> when you want both.
+      <code>withDemos()</code> returns a configured <em>copy</em>, leaving the
+      module you called it on alone.
+    </p>
+
+    <h3>LabeledFewShot</h3>
+    <p>
+      Selects <em>k</em> of your own labelled examples. No model calls, so
+      compiling is instant and free &mdash; try this before bootstrapping.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { LabeledFewShot } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> compiled = <span class="kw">new</span> LabeledFewShot({ k: <span class="s">3</span>, seed: <span class="s">42</span> })
+  .compile(<span class="kw">new</span> Predict(RouteTicket), { trainset })</code></pre>
+
+    <h3>BootstrapFewShot</h3>
+    <p>
+      Runs the module over the trainset, scores every attempt with your metric,
+      and promotes the runs that passed into demos. The program learns from its
+      own successes.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { BootstrapFewShot } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> optimizer = <span class="kw">new</span> BootstrapFewShot({
+  metric: (example, prediction) =&gt; example.get(<span class="s">'team'</span>) === prediction.get(<span class="s">'team'</span>),
+  maxBootstrappedDemos: <span class="s">4</span>,
+  teacher: strongLM,        <span class="c">// generates the demos, at compile time only</span>
+  concurrency: <span class="s">4</span>,
+  seed: <span class="s">42</span>,
+  onProgress: (event) =&gt; log(<span class="s">`${event.index + 1}/${event.total} ${event.status}`</span>),
+})
+
+<span class="kw">const</span> compiled = <span class="kw">await</span> optimizer.compile(<span class="kw">new</span> Predict(RouteTicket, cheapLM), { trainset })</code></pre>
+    <p>
+      With a <code>teacher</code>, a stronger model does the trainset runs and the
+      cheaper student ends up imitating its work. You pay for the strong model
+      once, when compiling &mdash; never at run time. Without one, the student
+      bootstraps from itself.
+    </p>
+    <p>
+      The run stops as soon as it has <code>maxBootstrappedDemos</code>, so a
+      trainset of five hundred rows does not cost five hundred calls to keep
+      four demos. Setting <code>maxBootstrappedDemos: 0</code> alongside
+      <code>maxLabeledDemos</code> compiles from labels alone and makes no model
+      calls whatsoever.
+    </p>
+
+    <h3>Metrics</h3>
+    <p>
+      A metric is <code>(example, prediction) =&gt; number | boolean</code>, and may
+      be async. Booleans are taken at face value; a number counts as a pass when
+      it reaches <code>threshold</code>, which defaults to <code>0.5</code>. The
+      metric is the entire definition of &ldquo;good&rdquo; &mdash; everything the
+      optimizer does follows from it.
+    </p>
+
+    <h3>Options</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Option</th><th scope="col">Default</th><th scope="col">Meaning</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">metric</td><td class="path">required</td><td class="note">Judges each attempt.</td></tr>
+          <tr><td class="sym">maxBootstrappedDemos</td><td class="path">4</td><td class="note">Demos to promote. The run stops once it has this many.</td></tr>
+          <tr><td class="sym">maxLabeledDemos</td><td class="path">0</td><td class="note">Plain labels shown alongside the bootstrapped ones.</td></tr>
+          <tr><td class="sym">concurrency</td><td class="path">4</td><td class="note">Trainset examples attempted at once.</td></tr>
+          <tr><td class="sym">seed</td><td class="path">0</td><td class="note">Seeds the trainset shuffle.</td></tr>
+          <tr><td class="sym">threshold</td><td class="path">0.5</td><td class="note">Score at which a numeric metric passes.</td></tr>
+          <tr><td class="sym">teacher</td><td class="path">&mdash;</td><td class="note">Stronger model used to generate demos.</td></tr>
+          <tr><td class="sym">inputKeys</td><td class="path">&mdash;</td><td class="note">Input fields, when examples declare none.</td></tr>
+          <tr><td class="sym">onProgress</td><td class="path">&mdash;</td><td class="note">Per-example outcome callback.</td></tr>
+          <tr><td class="sym">callOptions</td><td class="path">&mdash;</td><td class="note">Call options for the trainset runs.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <span class="label">Deterministic</span>
+      <p>
+        Both optimizers are seeded, so the same seed and the same trainset
+        compile to the same demos &mdash; a result you can reproduce, diff, and
+        write a stable test against. Progress events arrive in completion order,
+        which with concurrency above 1 is not trainset order; the demos are
+        deterministic regardless.
+      </p>
+    </div>
+
+    <div class="callout callout-warn">
+      <span class="label">Failures are skipped</span>
+      <p>
+        A trainset example whose attempt throws &mdash; a provider error, a reply
+        that fails validation &mdash; is reported as an <code>error</code> event
+        and skipped. One bad row must not throw away every demo already paid for.
+      </p>
+    </div>
+
+    <p>
+      A full run, including a baseline to compare against, is in
+      <code>examples/optimizer.ts</code>:
+    </p>
+    <pre class="code" data-lang="bash"><code>export OPENAI_API_KEY="sk-..."
+npm run example:optimizer</code></pre>
   </section>
 
   </div>
