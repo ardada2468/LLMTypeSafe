@@ -10,12 +10,33 @@ import {
 const mocks = vi.hoisted(() => {
     class MockAPIError extends Error {
         status: number;
-        constructor(status: number, message: string) {
+        // The real APIError also carries `code` and `type`; the error taxonomy
+        // reads both, so the double has to expose them too.
+        code: string | null;
+        type: string | undefined;
+        constructor(
+            status: number,
+            message: string,
+            extra: { code?: string; type?: string } = {}
+        ) {
             super(message);
             this.status = status;
+            this.code = extra.code ?? null;
+            this.type = extra.type;
         }
     }
-    return { create: vi.fn(), list: vi.fn(), MockAPIError, constructed: [] as unknown[] };
+    class MockAPIConnectionTimeoutError extends MockAPIError {
+        constructor(message = 'Request timed out.') {
+            super(undefined as unknown as number, message);
+        }
+    }
+    return {
+        create: vi.fn(),
+        list: vi.fn(),
+        MockAPIError,
+        MockAPIConnectionTimeoutError,
+        constructed: [] as unknown[],
+    };
 });
 
 const { MockAPIError } = mocks;
@@ -29,6 +50,7 @@ vi.mock('openai', () => ({
         }
     },
     APIError: mocks.MockAPIError,
+    APIConnectionTimeoutError: mocks.MockAPIConnectionTimeoutError,
 }));
 
 function completion(content: string, extra: Record<string, unknown> = {}) {
