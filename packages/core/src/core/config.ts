@@ -1,4 +1,5 @@
 import { type ILanguageModel } from '../types/language-model';
+import { MemoryCache, type Cache } from './cache';
 import { type TraceEntry } from '../types/module';
 
 /**
@@ -8,9 +9,15 @@ import { type TraceEntry } from '../types/module';
 export type TraceHandler = (entry: TraceEntry) => void;
 
 export interface ConfigureOptions {
-    /** Language model used by modules constructed without an explicit one. */
+    /** Model used by any module constructed without an explicit one. */
     lm?: ILanguageModel;
-    cache?: boolean;
+    /**
+     * Response caching, off unless you ask for it. `true` uses a process-wide
+     * {@link MemoryCache}, `false` disables caching, and a {@link Cache}
+     * implementation routes lookups through your own store — Redis, SQLite,
+     * disk, anything.
+     */
+    cache?: boolean | Cache;
     /**
      * Record a trace for every module invocation. Off by default, and costs
      * nothing while off.
@@ -30,7 +37,13 @@ const DEFAULT_TRACE_HISTORY_SIZE = 100;
 class DSPyConfig {
     private static instance: DSPyConfig;
     private _defaultLM?: ILanguageModel;
-    private _cache: boolean = true;
+    /**
+     * Opt-in: a process-wide cache that replays a previous answer for a
+     * repeated prompt changes what a program does, so it is never switched on
+     * behind the caller's back.
+     */
+    private _cache: boolean | Cache = false;
+    private _defaultCache?: MemoryCache;
     private _tracing: boolean = false;
     private _onTrace?: TraceHandler;
     private _traceHistorySize: number = DEFAULT_TRACE_HISTORY_SIZE;
@@ -70,7 +83,35 @@ class DSPyConfig {
     }
 
     static isCacheEnabled(): boolean {
-        return DSPyConfig.getInstance()._cache;
+        return DSPyConfig.getInstance()._cache !== false;
+    }
+
+    /**
+     * The active cache, or `undefined` when caching is off. The built-in
+     * memory cache is created on first use so that a process which never
+     * caches never allocates one.
+     */
+    static getCache(): Cache | undefined {
+        const config = DSPyConfig.getInstance();
+        if (config._cache === false) return undefined;
+        if (config._cache !== true) return config._cache;
+
+        config._defaultCache ??= new MemoryCache();
+        return config._defaultCache;
+    }
+
+    /**
+     * Empty every cache this config knows about, whether or not caching is
+     * currently enabled — otherwise `configure({ cache: false })` followed by a
+     * reset would leave entries in place for the next time it is switched on.
+     * A custom {@link Cache} without a `clear` method is left untouched.
+     */
+    static async clearCache(): Promise<void> {
+        const config = DSPyConfig.getInstance();
+        config._defaultCache?.clear();
+        if (typeof config._cache === 'object') {
+            await config._cache.clear?.();
+        }
     }
 
     static isTracingEnabled(): boolean {
@@ -89,6 +130,8 @@ class DSPyConfig {
 export const configure = DSPyConfig.configure;
 export const getDefaultLM = DSPyConfig.getDefaultLM;
 export const isCacheEnabled = DSPyConfig.isCacheEnabled;
+export const getCache = DSPyConfig.getCache;
+export const clearCache = DSPyConfig.clearCache;
 export const isTracingEnabled = DSPyConfig.isTracingEnabled;
 export const getTraceHandler = DSPyConfig.getTraceHandler;
 export const getTraceHistorySize = DSPyConfig.getTraceHistorySize;
