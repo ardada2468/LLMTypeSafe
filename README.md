@@ -240,6 +240,36 @@ Tool descriptions are what the model uses to decide when to call each tool, so
 they earn the detail. Never pass model output to `eval()` — see
 [`examples/utils.ts`](examples/utils.ts) for a bounded arithmetic evaluator.
 
+### Testing
+
+`@ts-dspy/core/testing` ships the test doubles the library's own suite uses, so
+you never have to hand-roll a fake model. Nothing there touches the network.
+
+```ts
+import { MockLM, CassetteLM } from '@ts-dspy/core/testing';
+
+const lm = new MockLM({ responses: ['answer: Paris\nconfidence: 0.95'] });
+const result = await new Predict(AnswerQuestion, lm).forward({ question: 'Capital?' });
+
+lm.lastPrompt(); // the prompt the module actually sent
+```
+
+`CassetteLM` records real provider replies into a JSON file once, then replays
+them forever:
+
+```ts
+// Once, with a key:
+const recorder = CassetteLM.record('cassettes/answer.json', new OpenAILM({ apiKey }));
+await new Predict(AnswerQuestion, recorder).forward({ question: 'Capital?' });
+
+// In CI, with no key and no network:
+const replay = CassetteLM.replay('cassettes/answer.json');
+```
+
+Cassettes are an array of `{ key, request, response }` entries keyed by a hash
+of the request, so they review like any other fixture and an unrecorded request
+fails loudly instead of calling out.
+
 ### Tracing
 
 `configure({ tracing: true })` records every module invocation: the prompt as
