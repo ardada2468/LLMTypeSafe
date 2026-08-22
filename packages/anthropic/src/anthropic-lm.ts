@@ -11,7 +11,6 @@ import {
     type FinishReason,
     type ImageContentPart,
     type LLMCallOptions,
-    type MessageContent,
     type ModelCapabilities,
     type StreamChunk,
     type ToolCall,

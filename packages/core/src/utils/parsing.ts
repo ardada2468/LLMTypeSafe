@@ -468,6 +468,9 @@ function extractFieldValue(
  * rules runs exactly as it does for a text-only prompt, and the image is spliced
  * back in at the end. NUL is used because no prompt legitimately contains one.
  */
+// NUL is the point here: it is the one character a prompt can never
+// legitimately contain, so the marker cannot collide with caller input.
+// eslint-disable-next-line no-control-regex
 const IMAGE_MARKER = /\u0000ts-dspy:image:(\d+)\u0000/;
 
 /** Input fields declared as images. Only class signatures can declare one. */
