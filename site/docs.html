@@ -205,6 +205,7 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
           <tr><td class="sym">string[]<br>array<br>list</td><td class="note">JSON arrays, or <code>"a, b, c"</code></td><td class="note">unparseable text</td></tr>
           <tr><td class="sym">number[]</td><td class="note"><code>[1,2]</code>, <code>"1, 2, 3"</code></td><td class="note">non-numeric members</td></tr>
           <tr><td class="sym">object<br>json</td><td class="note">JSON objects, fenced or bare</td><td class="note">invalid JSON</td></tr>
+          <tr><td class="sym">enum</td><td class="note">any declared member, trimmed and case-insensitive</td><td class="note">anything outside the set</td></tr>
         </tbody>
       </table>
     </div>
@@ -214,6 +215,85 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
       because models write <code>1,200</code> and <code>87%</code> when asked for a
       figure. That is a deliberate accommodation, not an accident &mdash; and it
       stops well short of guessing at prose.
+    </p>
+
+    <h3>Enums</h3>
+    <p>
+      A <code>string</code> field asked for a sentiment will accept
+      <code>euphoric</code> as readily as <code>positive</code>. An
+      <code>enum</code> field will not: it names the closed set, validates against
+      it, and &mdash; on providers with structured output &mdash; puts that set in
+      the schema, so the constraint reaches decoding rather than only the check
+      afterwards. Members are declared on <code>values</code>:
+    </p>
+    <pre class="code"><code><span class="kw">class</span> <span class="ty">Classify</span> <span class="kw">extends</span> <span class="ty">Signature</span> {
+  <span class="at">@InputField</span>({ description: <span class="s">'the review text'</span> })
+  review!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({
+    description: <span class="s">'overall sentiment'</span>,
+    type: <span class="s">'enum'</span>,
+    values: [<span class="s">'positive'</span>, <span class="s">'negative'</span>, <span class="s">'neutral'</span>],
+  })
+  sentiment!: <span class="ty">string</span>
+}</code></pre>
+    <p>
+      String signatures say the same thing inline. The members are separated by
+      <code>|</code> rather than <code>,</code>, because commas already separate
+      fields:
+    </p>
+    <pre class="code"><code><span class="kw">const</span> p = <span class="kw">new</span> Predict(<span class="s">'review -&gt; sentiment: enum(positive|negative|neutral)'</span>)</code></pre>
+    <p>
+      Matching is lenient in the same spirit as the other types &mdash;
+      <code>&nbsp;Positive&nbsp;</code> is the same answer as
+      <code>positive</code>, and the declared spelling is what you get back. A
+      value outside the set is a <code>ValidationError</code>, not a shrug. An
+      <code>enum</code> declared with no members throws immediately, since it would
+      constrain nothing, and so does a malformed inline declaration such as
+      <code>enum(a|b</code> &mdash; quietly falling back to an open string is the
+      one thing this type must never do.
+    </p>
+
+    <h3>Strict mode and open-ended types</h3>
+    <p>
+      OpenAI&rsquo;s <code>strict</code> structured output is stricter than JSON
+      Schema itself: every object in the document, nested ones included, must carry
+      <code>additionalProperties: false</code>, and <code>items</code> must be a
+      real schema rather than the empty <code>{}</code> that means &ldquo;any
+      element&rdquo;. Both open-ended types are emitted accordingly &mdash; an
+      <code>array</code> declares <code>items: { type: 'string' }</code>, and an
+      <code>object</code> declares an empty, closed object.
+    </p>
+    <div class="callout callout-warn">
+      <span class="label">Know this</span>
+      <p>
+        One schema is built per signature and handed to whichever provider is
+        configured, so the constraint lands everywhere, not only on OpenAI. Strict
+        mode cannot express a free-form object at all, which means a bare
+        <code>object</code> or <code>json</code> output field is pinned to
+        <code>{}</code> on <em>every</em> provider with structured output. Declare
+        the keys you actually want as their own signature fields. Only the text
+        path &mdash; a model reporting
+        <code>supportsStructuredOutput: false</code> &mdash; still accepts an
+        arbitrary object.
+      </p>
+    </div>
+    <p>
+      The array case has a milder version of the same edge. A bare
+      <code>array</code> or <code>list</code> now tells the provider its elements
+      are strings, so a list of figures comes back as <code>['1', '2']</code> rather
+      than <code>[1, 2]</code>. Declare <code>number[]</code> or
+      <code>string[]</code> whenever the elements have a type worth naming;
+      validation accepts either way, but only the declared form constrains what the
+      model may emit.
+    </p>
+    <p>
+      Optional fields are emitted as <code>type: [base, 'null']</code> rather than
+      being dropped from <code>required</code>. OpenAI documents that form, Anthropic
+      takes plain JSON Schema, and Gemini&rsquo;s <code>responseJsonSchema</code>
+      documents it too. Gemini&rsquo;s older <code>responseSchema</code> keyword
+      models nullability with a <code>nullable</code> boolean instead, so a provider
+      pinned to that older shape would have to translate.
     </p>
   </section>
 
