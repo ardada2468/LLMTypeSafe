@@ -17,6 +17,7 @@ export type {
     ZodSignatureDefinition,
 } from './core/signature';
 export { Module } from './core/module';
+export type { BatchOptions, BatchResult } from './core/module';
 export { BaseLM } from './core/base-lm';
 export { Prediction } from './core/prediction';
 export { Example } from './core/example';
@@ -61,3 +62,5 @@ export type { ToolFunction, ToolWithDescription, ToolDefinition } from './module
 // Utilities
 export { buildPrompt, parseOutput } from './utils/parsing';
 export { fieldConfigToZod, buildOutputSchema, buildOutputJsonSchema } from './utils/schema';
+export { mapWithConcurrency, DEFAULT_CONCURRENCY } from './utils/pool';
+export type { MapWithConcurrencyOptions, SettledResult } from './utils/pool';

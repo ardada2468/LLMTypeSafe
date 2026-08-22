@@ -168,6 +168,32 @@ When a provider supports native structured output, `Predict` and `ChainOfThought
 use it — the model is constrained to your schema rather than merely asked for it —
 and fall back to parsing labelled text otherwise.
 
+### Batch and concurrency
+
+Every module inherits `batch()`, a bounded worker pool over a list of inputs.
+Results come back **in input order**, whatever order the calls finished in, and a
+failing input is captured rather than thrown — one bad row does not destroy a
+ten-thousand-row job.
+
+```ts
+const results = await predict.batch(rows, {
+  concurrency: 16, // in flight at once; defaults to 8
+  onProgress: (done, total) => bar.update(done / total),
+});
+
+for (const [i, result] of results.entries()) {
+  if (result.status === 'fulfilled') save(rows[i], result.value);
+  else quarantine(rows[i], result.reason);
+}
+```
+
+Pass `stopOnError: true` to reject the whole batch on the first failure instead,
+or a `signal` to stop starting new inputs on cancellation — both reject rather
+than returning the inputs that already finished, so wrap a cancellable batch in a
+`try`. Every other option is passed through to each underlying call. The pool
+itself is exported as `mapWithConcurrency(items, worker, options)` for anything
+else with a rate limit.
+
 ### Validation
 
 ```ts
