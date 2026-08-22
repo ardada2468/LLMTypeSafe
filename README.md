@@ -184,6 +184,39 @@ Tool descriptions are what the model uses to decide when to call each tool, so
 they earn the detail. Never pass model output to `eval()` — see
 [`examples/utils.ts`](examples/utils.ts) for a bounded arithmetic evaluator.
 
+### Tracing
+
+`configure({ tracing: true })` records every module invocation: the prompt as
+sent, the raw reply, the parsed output, the tokens that call cost, and how long
+it took. `inspectHistory(n)` reads the last `n` back out of a bounded in-memory
+buffer — including inside a `catch`, which is where you usually want it.
+
+```ts
+import { clearHistory, configure, inspectHistory } from '@ts-dspy/core';
+
+configure({ lm, tracing: true });
+
+try {
+  await triage.forward({ ticket });
+} catch (error) {
+  const [failed] = inspectHistory(1);
+  console.error(failed.rawLMInput, '\n---\n', failed.rawLMOutput);
+}
+```
+
+Multi-step modules record each call under `calls`, so a `ChainOfThought` trace
+holds both the reasoning prompt and the final one. The buffer keeps 100 entries
+by default (`traceHistorySize`), and `clearHistory()` empties it.
+
+Pass `onTrace` to forward entries to Langfuse, OpenTelemetry, or your own
+logger as they are recorded — the library never prints:
+
+```ts
+configure({ lm, tracing: true, onTrace: (entry) => logger.debug(entry) });
+```
+
+Tracing is off by default and costs a single boolean check while off.
+
 ## Examples
 
 ```bash

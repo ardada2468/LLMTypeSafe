@@ -64,6 +64,7 @@
       <li><a href="#testing">Testing</a></li>
       <li><a href="#api">API reference</a></li>
       <li><a href="#migration">Migrating to 0.5</a></li>
+      <li><a href="#tracing">Tracing &amp; history</a></li>
     </ol>
   </nav>
 
@@ -587,6 +588,90 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
         Upgrade core and every provider together. Providers declare
         <code>@ts-dspy/core@^0.5.0</code>, and a mismatched pair is exactly the bug
         0.5.0 fixed &mdash; 0.4.2 shipped providers that resolved a stale core.
+      </p>
+    </div>
+  </section>
+
+  <section id="tracing">
+    <p class="anchor">14</p>
+    <h2>Tracing and history</h2>
+    <p>
+      When a signature misbehaves the first question is always the same: what
+      prompt did it actually send? Turn tracing on and every module invocation
+      records one &mdash; the prompt, the raw reply, what was parsed out of it,
+      the tokens it cost, and how long it took.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { configure, inspectHistory, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+configure({ lm, tracing: <span class="kw">true</span> })
+
+<span class="kw">const</span> out = <span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket).forward({ ticket })
+
+out.trace?.rawLMInput    <span class="c">// the prompt as sent</span>
+out.trace?.rawLMOutput   <span class="c">// the reply, before parsing</span>
+out.trace?.usage         <span class="c">// tokens for this call, not the model's lifetime</span></code></pre>
+    <p>
+      The same entries land in a ring buffer, so you can read them after the
+      fact &mdash; including from a <code>catch</code> block, where the prediction
+      you would have inspected does not exist.
+    </p>
+    <pre class="code"><code><span class="kw">try</span> {
+  <span class="kw">await</span> triage.forward({ ticket })
+} <span class="kw">catch</span> (error) {
+  <span class="kw">const</span> [failed] = inspectHistory(<span class="s">1</span>)
+  console.error(failed.rawLMInput, <span class="s">'\n---\n'</span>, failed.rawLMOutput)
+}</code></pre>
+    <p>
+      <code>inspectHistory(n)</code> returns the last <code>n</code> entries,
+      oldest first; omit <code>n</code> for everything still retained. The buffer
+      holds 100 entries by default &mdash; raise or lower it with
+      <code>traceHistorySize</code> &mdash; and <code>clearHistory()</code> empties
+      it, which is what you want between tests.
+    </p>
+
+    <h3>What an entry holds</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Field</th><th scope="col">Contents</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">moduleId</td><td class="note">Which instance ran, e.g. <code>ChainOfThought#2</code>.</td></tr>
+          <tr><td class="sym">input<br>output</td><td class="note">Arguments in, parsed fields out. <code>output</code> is empty on failure.</td></tr>
+          <tr><td class="sym">rawLMInput<br>rawLMOutput</td><td class="note">The last call &mdash; the one that produced <code>output</code>.</td></tr>
+          <tr><td class="sym">calls</td><td class="note">Every round trip, in order, each with its own prompt, reply, duration, and usage.</td></tr>
+          <tr><td class="sym">usage</td><td class="note">Tokens for this invocation, differenced from the model's running totals. Exact for sequential calls; approximate when several run concurrently against one model.</td></tr>
+          <tr><td class="sym">duration<br>timestamp</td><td class="note">Milliseconds elapsed, and when it started.</td></tr>
+          <tr><td class="sym">error</td><td class="note">Set when the invocation threw instead of returning.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <code>ChainOfThought</code> makes two calls and <code>RespAct</code> makes
+      one per step, so <code>calls</code> is where a multi-step module becomes
+      readable. Failures are recorded too &mdash; a <code>ValidationError</code> is
+      precisely when the prompt is worth reading.
+    </p>
+
+    <h3>Forwarding entries</h3>
+    <p>
+      <code>onTrace</code> receives each entry as it is recorded. Send them to
+      Langfuse, an OpenTelemetry span, or your own logger; the library itself
+      never prints.
+    </p>
+    <pre class="code"><code>configure({
+  lm,
+  tracing: <span class="kw">true</span>,
+  onTrace: (entry) =&gt; span.addEvent(<span class="s">'lm.call'</span>, {
+    module: entry.moduleId,
+    tokens: entry.usage.totalTokens,
+    ms: entry.duration,
+  }),
+})</code></pre>
+    <div class="callout">
+      <span class="label">Off by default</span>
+      <p>
+        Tracing costs one boolean check while it is off &mdash; nothing is timed,
+        copied, or retained. A handler that throws is swallowed, so a broken
+        exporter cannot fail the run it is instrumenting.
       </p>
     </div>
   </section>
