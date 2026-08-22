@@ -45,15 +45,33 @@ console.log(result.confidence); // 0.98 — a number, verified at runtime
 
 ## Packages
 
-| Package                                    | Provider                                                     |
-| ------------------------------------------ | ------------------------------------------------------------ |
-| [`@ts-dspy/core`](packages/core)           | Signatures, modules, validation. No provider.                |
-| [`@ts-dspy/openai`](packages/openai)       | OpenAI, via the official `openai` SDK                        |
-| [`@ts-dspy/gemini`](packages/gemini)       | Google Gemini, via `@google/genai` (Gemini API or Vertex AI) |
-| [`@ts-dspy/anthropic`](packages/anthropic) | Anthropic Claude, via `@anthropic-ai/sdk`                    |
+| Package                                    | Provider                                                                   |
+| ------------------------------------------ | -------------------------------------------------------------------------- |
+| [`@ts-dspy/core`](packages/core)           | Signatures, modules, validation. No provider.                              |
+| [`@ts-dspy/openai`](packages/openai)       | OpenAI, plus any OpenAI-compatible endpoint, via the official `openai` SDK |
+| [`@ts-dspy/gemini`](packages/gemini)       | Google Gemini, via `@google/genai` (Gemini API or Vertex AI)               |
+| [`@ts-dspy/anthropic`](packages/anthropic) | Anthropic Claude, via `@anthropic-ai/sdk`                                  |
 
 Install core plus whichever providers you use. Each provider defaults to a current
 model for that vendor; pass `model` to pin one yourself.
+
+`@ts-dspy/openai` also exports `OpenAICompatibleLM` for the many servers that speak
+the OpenAI chat-completions API — Ollama, LM Studio, vLLM, Groq, Together, and
+OpenRouter. It requires `baseURL` and `model`, defaults the API key to a
+placeholder for local servers that ignore it, and takes model capabilities from
+config rather than assuming OpenAI's:
+
+```ts
+import { OpenAICompatibleLM } from '@ts-dspy/openai';
+
+const lm = new OpenAICompatibleLM({
+  baseURL: 'http://localhost:11434/v1',
+  model: 'llama3.2',
+});
+```
+
+`npm run example:ollama` runs it end to end against a local Ollama, with no cloud
+key involved.
 
 Requires Node.js 22 or newer. Packages ship both ESM and CommonJS builds.
 

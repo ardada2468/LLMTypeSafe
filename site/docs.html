@@ -303,9 +303,11 @@ console.log(out.answer, out.steps)</code></pre>
     <p class="anchor">07</p>
     <h2>Providers</h2>
     <p>
-      Each provider wraps its vendor's official SDK and reports
+      Each vendor provider wraps its vendor's official SDK and reports
       <code>supportsStructuredOutput: true</code>, so <code>Predict</code> uses the
       native JSON-schema mode rather than scraping labelled text.
+      <code>OpenAICompatibleLM</code> is the exception &mdash; it declares its
+      capabilities from config, because the endpoint behind it might be anything.
     </p>
 
     <h3>Anthropic</h3>
@@ -335,6 +337,66 @@ console.log(out.answer, out.steps)</code></pre>
     <p>
       Sampling parameters are sent only when you set them, so reasoning models
       that reject a non-default <code>temperature</code> work untouched.
+    </p>
+
+    <h3>OpenAI-compatible endpoints</h3>
+    <p>
+      Ollama, LM&nbsp;Studio, vLLM, Groq, Together, and OpenRouter all speak the
+      OpenAI chat-completions API, so <code>@ts-dspy/openai</code> already talks to
+      them &mdash; but the OpenAI defaults are wrong once you leave
+      <code>api.openai.com</code>. <code>OpenAICompatibleLM</code> corrects them:
+      <code>baseURL</code> and <code>model</code> are required, the API key
+      defaults to a placeholder for local servers that want the header but ignore
+      its value, and capabilities are declared rather than assumed.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { OpenAICompatibleLM } <span class="kw">from</span> <span class="s">'@ts-dspy/openai'</span>
+
+<span class="kw">new</span> OpenAICompatibleLM({
+  baseURL: <span class="s">'http://localhost:11434/v1'</span>,  <span class="c">// required</span>
+  model: <span class="s">'llama3.2'</span>,                      <span class="c">// required</span>
+  <span class="c">// apiKey defaults to a placeholder Ollama and LM Studio ignore</span>
+  supportsStructuredOutput: <span class="kw">false</span>,       <span class="c">// default</span>
+  maxContextLength: <span class="s">8192</span>,               <span class="c">// default</span>
+})</code></pre>
+    <p>
+      <code>supportsStructuredOutput</code> is the flag that matters.
+      <code>Predict</code> branches on it: left at OpenAI's <code>true</code>, every
+      call ships a <code>response_format: { type: 'json_schema', strict: true }</code>
+      that most compatible servers reject outright, and the provider looks broken
+      rather than merely unsupported. At <code>false</code>, structured output goes
+      through the prompt-based fallback and the reply is validated against the
+      signature exactly as before.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Endpoint</th><th scope="col"><code>baseURL</code></th><th scope="col">Key</th><th scope="col">Capabilities to set</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">Ollama</td><td class="path">http://localhost:11434/v1</td><td class="note">none</td><td class="note">Defaults. Raise <code>maxContextLength</code> to match the model.</td></tr>
+          <tr><td class="sym">LM Studio</td><td class="path">http://localhost:1234/v1</td><td class="note">none</td><td class="note">Defaults.</td></tr>
+          <tr><td class="sym">vLLM</td><td class="path">http://localhost:8000/v1</td><td class="note">none</td><td class="note"><code>supportsStructuredOutput: true</code> when guided decoding is enabled.</td></tr>
+          <tr><td class="sym">Groq</td><td class="path">https://api.groq.com/openai/v1</td><td class="note"><code>GROQ_API_KEY</code></td><td class="note"><code>supportsFunctionCalling: true</code> on the tool-capable models.</td></tr>
+          <tr><td class="sym">Together</td><td class="path">https://api.together.xyz/v1</td><td class="note"><code>TOGETHER_API_KEY</code></td><td class="note"><code>supportsStructuredOutput: true</code> on models listing JSON mode.</td></tr>
+          <tr><td class="sym">OpenRouter</td><td class="path">https://openrouter.ai/api/v1</td><td class="note"><code>OPENROUTER_API_KEY</code></td><td class="note">Per routed model &mdash; the safe default is to set nothing.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Those URLs are also exported as <code>OPENAI_COMPATIBLE_BASE_URLS</code>, keyed
+      <code>ollama</code>, <code>lmstudio</code>, <code>vllm</code>,
+      <code>groq</code>, <code>together</code>, and <code>openrouter</code>. The
+      runnable version is <code>examples/ollama-local.ts</code>:
+    </p>
+    <pre class="code" data-lang="bash"><code>ollama serve      <span class="c"># leave running</span>
+ollama pull llama3.2
+npm run example:ollama</code></pre>
+    <p>
+      Note that <code>OPENAI_API_KEY</code> is deliberately <em>not</em> read from
+      the environment here, unlike <code>OpenAILM</code>. <code>baseURL</code> is by
+      definition somewhere other than <code>api.openai.com</code>, so forwarding an
+      OpenAI credential to it would be a leak rather than a convenience &mdash; pass
+      the endpoint's own key as <code>apiKey</code>.
     </p>
 
     <h3>Gemini</h3>
