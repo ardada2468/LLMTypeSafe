@@ -303,10 +303,15 @@ function samplingParams(options?: LLMCallOptions): Record<string, unknown> {
     return params;
 }
 
-function requestOptions(options?: LLMCallOptions): { timeout?: number; maxRetries?: number } {
-    const request: { timeout?: number; maxRetries?: number } = {};
+function requestOptions(options?: LLMCallOptions): {
+    timeout?: number;
+    maxRetries?: number;
+    signal?: AbortSignal;
+} {
+    const request: { timeout?: number; maxRetries?: number; signal?: AbortSignal } = {};
     if (options?.timeout !== undefined) request.timeout = options.timeout;
     if (options?.retries !== undefined) request.maxRetries = options.retries;
+    if (options?.signal !== undefined) request.signal = options.signal;
     return request;
 }
 

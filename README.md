@@ -121,6 +121,17 @@ All three accept per-call options that are passed through to the provider SDK:
 await predict.forward({ question: '...' }, { temperature: 0, timeout: 30_000, retries: 2 });
 ```
 
+Pass `signal` to cancel a call that is already in flight — a React effect tearing
+down, or a server request whose client disconnected. It composes with `timeout`:
+whichever fires first ends the call.
+
+```ts
+const controller = new AbortController();
+// React: return () => controller.abort() from the effect.
+
+await predict.forward({ question: '...' }, { signal: controller.signal, timeout: 30_000 });
+```
+
 When a provider supports native structured output, `Predict` and `ChainOfThought`
 use it — the model is constrained to your schema rather than merely asked for it —
 and fall back to parsing labelled text otherwise.
