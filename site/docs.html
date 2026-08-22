@@ -64,6 +64,7 @@
       <li><a href="#testing">Testing</a></li>
       <li><a href="#api">API reference</a></li>
       <li><a href="#migration">Migrating to 0.5</a></li>
+      <li><a href="#zod">Zod signatures</a></li>
     </ol>
   </nav>
 
@@ -589,6 +590,145 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
         0.5.0 fixed &mdash; 0.4.2 shipped providers that resolved a stale core.
       </p>
     </div>
+  </section>
+
+  <section id="zod">
+    <p class="anchor">18</p>
+    <h2>Zod signatures</h2>
+    <p>
+      A third signature form, built from zod schemas. Decorators record their
+      fields at runtime, so TypeScript never learns them and results come back
+      typed loosely unless you write the output shape out by hand. A zod schema
+      carries that shape in the type system instead &mdash; so the result type is
+      inferred exactly, with no type argument and no
+      <code>experimentalDecorators</code>.
+    </p>
+
+    <pre class="code"><code><span class="kw">import</span> { z } <span class="kw">from</span> <span class="s">'zod'</span>
+<span class="kw">import</span> { signature, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> AnalyzeReview = signature({
+  description: <span class="s">'Analyze a product review.'</span>,
+  input: z.object({ review: z.string() }),
+  output: z.object({
+    sentiment: z.enum([<span class="s">'positive'</span>, <span class="s">'negative'</span>, <span class="s">'neutral'</span>]),
+    rating: z.number().int().min(<span class="kw">1</span>).max(<span class="kw">5</span>),
+    themes: z.array(z.string()),
+    followUp: z.string().optional(),
+  }),
+})
+
+<span class="kw">const</span> r = <span class="kw">await</span> <span class="kw">new</span> Predict(AnalyzeReview).forward({ review })
+
+r.sentiment       <span class="c">// 'positive' | 'negative' | 'neutral'</span>
+r.themes.join(<span class="s">', '</span>) <span class="c">// string[]</span>
+r.followUp?.trim() <span class="c">// string | undefined</span></code></pre>
+
+    <p>
+      Input keys are typed from the input schema too, so a misspelt input is a
+      compile error rather than a field the model never sees. Everything else
+      behaves as it always has: <code>Predict</code>,
+      <code>ChainOfThought</code> and <code>RespAct</code> all accept this form,
+      and decorated classes and string signatures keep working untouched.
+    </p>
+
+    <h3>What you can express</h3>
+    <p>
+      The zod schema is itself the validator, so every constraint you write is
+      enforced against the model's reply &mdash; including the kinds the flat
+      field-type list has no spelling for.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Written as</th><th scope="col">Enforced as</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="note"><code>z.enum(['p0', 'p1', 'p2'])</code></td>
+            <td class="note">A union of literals in TypeScript; the options are listed in the prompt and in the provider schema.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>z.number().int().min(1).max(5)</code></td>
+            <td class="note">Bounds checked after coercion; <code>"9"</code> fails rather than passing through as a number.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>z.object({ &hellip; })</code></td>
+            <td class="note">A nested object, parsed from JSON on the text path and typed all the way down.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>z.union([z.number(), z.literal('unknown')])</code></td>
+            <td class="note">Either branch, as an <code>anyOf</code> in the provider schema.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>.optional()</code></td>
+            <td class="note">Optional in the inferred type, and nullable in the provider schema.</td>
+          </tr>
+          <tr>
+            <td class="note"><code>.refine(&hellip;)</code></td>
+            <td class="note">Object-level checks, run after every field has been coerced.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Coercion still applies</h3>
+    <p>
+      Models emit text, so the text path coerces before your schema sees the
+      value &mdash; <code>"42"</code> satisfies a number field and
+      <code>"a, b"</code> satisfies a <code>string[]</code>, exactly as with the
+      other two forms. Coercion happens field by field on the way in; your schema
+      is used verbatim, so defaults, optionality and refinements all survive.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> out = parseOutput(AnalyzeReview, <span class="s">'sentiment: positive\nrating: 5\nthemes: price, build'</span>)
+<span class="c">// { sentiment: 'positive', rating: 5, themes: ['price', 'build'] }</span></code></pre>
+
+    <h3>The schema sent to the provider</h3>
+    <p>
+      When the provider supports native structured output, the zod schema is
+      converted with <code>z.toJSONSchema()</code> and then rewritten for
+      OpenAI's strict mode: every property listed in <code>required</code>,
+      <code>additionalProperties: false</code> on every object including nested
+      ones, and optional fields expressed as <code>[base, 'null']</code> rather
+      than left out of <code>required</code>.
+    </p>
+    <pre class="code" data-lang="json"><code>{
+  "type": "object",
+  "properties": {
+    "sentiment": { "type": "string", "enum": ["positive", "negative", "neutral"] },
+    "rating": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "themes": { "type": "array", "items": { "type": "string" } },
+    "followUp": { "type": ["string", "null"] }
+  },
+  "required": ["sentiment", "rating", "themes", "followUp"],
+  "additionalProperties": false
+}</code></pre>
+
+    <div class="callout">
+      <span class="label">Which form to reach for</span>
+      <p>
+        Reach for a zod signature when you want the output type without writing
+        it twice, when a field is an enum or a nested object, or when your
+        project cannot enable <code>experimentalDecorators</code>. The class form
+        still reads best when per-field prompt descriptions are the point, and
+        the string form is still the fastest way to sketch something.
+      </p>
+    </div>
+
+    <div class="callout callout-warn">
+      <span class="label">Peer requirement</span>
+      <p>
+        <code>zod</code> 4 is already a dependency of
+        <code>@ts-dspy/core</code>, but import <code>z</code> from your own
+        <code>zod</code> so the schema classes match &mdash; two copies of zod in
+        one tree will fail <code>instanceof</code> checks.
+      </p>
+    </div>
+
+    <p>
+      A runnable version of everything above lives in
+      <code>examples/zod-signature.ts</code>:
+    </p>
+    <pre class="code" data-lang="bash"><code>npm run example:zod</code></pre>
   </section>
 
   </div>

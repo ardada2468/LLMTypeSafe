@@ -1,3 +1,4 @@
+import type { z } from 'zod';
 import type { FieldConfig, ParsedSignature } from '../types/signature';
 
 // Symbol keys for decorator metadata
@@ -108,4 +109,101 @@ export abstract class Signature {
             },
         };
     }
+}
+
+/**
+ * A signature declared with zod schemas rather than decorators or a string.
+ *
+ * Decorators record fields on a static at runtime, so TypeScript learns nothing
+ * about them; a zod object carries its shape in the type system, which is what
+ * lets `Predict` infer the result type with no explicit type argument. It also
+ * unlocks the field kinds the flat decorator type list cannot express — enums,
+ * unions, nested objects, and numeric bounds.
+ *
+ * Build one with {@link signature}; the `kind` brand is what every consumer
+ * branches on.
+ */
+export interface ZodSignature<
+    TInput extends z.ZodObject = z.ZodObject,
+    TOutput extends z.ZodObject = z.ZodObject,
+> {
+    readonly kind: 'zod-signature';
+    readonly description?: string;
+    readonly input: TInput;
+    readonly output: TOutput;
+}
+
+/** Any zod signature, whatever its input and output shapes. */
+export type AnyZodSignature = ZodSignature<any, any>;
+
+/** Anything that declares fields: a `Signature` subclass or a zod signature. */
+export type SignatureSource = typeof Signature | AnyZodSignature;
+
+/** Every accepted signature form, including the string shorthand. */
+export type SignatureLike = SignatureSource | string;
+
+export interface ZodSignatureDefinition<
+    TInput extends z.ZodObject,
+    TOutput extends z.ZodObject,
+> {
+    /** Task description, placed at the top of the prompt. */
+    description?: string;
+    input: TInput;
+    output: TOutput;
+}
+
+function assertZodObject(value: unknown, side: 'input' | 'output'): void {
+    if (
+        typeof value !== 'object' ||
+        value === null ||
+        typeof (value as { shape?: unknown }).shape !== 'object'
+    ) {
+        throw new Error(
+            `signature(): "${side}" must be a z.object({ ... }). ` +
+                `Received ${value === null ? 'null' : typeof value}.`
+        );
+    }
+}
+
+/**
+ * Declare a signature from zod schemas.
+ *
+ * ```ts
+ * const AnalyzeReview = signature({
+ *     description: 'Analyze a product review.',
+ *     input: z.object({ review: z.string() }),
+ *     output: z.object({
+ *         sentiment: z.enum(['positive', 'negative', 'neutral']),
+ *         rating: z.number().int().min(1).max(5),
+ *     }),
+ * });
+ *
+ * const result = await new Predict(AnalyzeReview).forward({ review });
+ * result.sentiment; // 'positive' | 'negative' | 'neutral'
+ * ```
+ *
+ * Needs no `experimentalDecorators`, and the zod schema is used verbatim for
+ * validation, so every constraint you express is enforced.
+ */
+export function signature<TInput extends z.ZodObject, TOutput extends z.ZodObject>(
+    definition: ZodSignatureDefinition<TInput, TOutput>
+): ZodSignature<TInput, TOutput> {
+    assertZodObject(definition?.input, 'input');
+    assertZodObject(definition?.output, 'output');
+
+    return {
+        kind: 'zod-signature',
+        description: definition.description,
+        input: definition.input,
+        output: definition.output,
+    };
+}
+
+/** Narrow an unknown signature value to a zod signature. */
+export function isZodSignature(value: unknown): value is AnyZodSignature {
+    return (
+        typeof value === 'object' &&
+        value !== null &&
+        (value as { kind?: unknown }).kind === 'zod-signature'
+    );
 }

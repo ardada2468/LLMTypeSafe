@@ -109,6 +109,9 @@ Set `required: false` to make a field optional.
 
 Class signatures need `experimentalDecorators` in your `tsconfig.json`.
 
+Or zod schemas, which need no decorators and infer their own types — see
+[Zod signatures](#zod-signatures).
+
 ### Modules
 
 - **`Predict`** — one call, validated against the signature.
@@ -147,11 +150,53 @@ Coercion is deliberately lenient — models emit text, so `"42"` satisfies a
 failure: anything that cannot be coerced throws rather than silently passing
 through.
 
+### Zod signatures
+
+`signature()` builds a signature from zod schemas. The shape lives in the type
+system rather than in runtime metadata, so results are inferred exactly — no
+type argument, and no `experimentalDecorators`:
+
+```ts
+import { z } from 'zod';
+import { signature, Predict } from '@ts-dspy/core';
+
+const AnalyzeReview = signature({
+  description: 'Analyze a product review.',
+  input: z.object({ review: z.string() }),
+  output: z.object({
+    sentiment: z.enum(['positive', 'negative', 'neutral']),
+    rating: z.number().int().min(1).max(5),
+    themes: z.array(z.string()),
+    followUp: z.string().optional(),
+  }),
+});
+
+const r = await new Predict(AnalyzeReview).forward({ review });
+
+r.sentiment; // 'positive' | 'negative' | 'neutral' — inferred
+r.themes.join(', '); // string[]
+r.followUp?.trim(); // string | undefined
+```
+
+The zod schema is the validator, so anything you can express is enforced:
+enums, unions, nested objects, numeric bounds, string formats, and
+object-level refinements — none of which the flat decorator field-type list can
+spell. Input keys are typed too, so a misspelt input is a compile error.
+
+On the provider structured-output path the same schema becomes the JSON Schema
+sent to the model, rewritten for OpenAI strict mode: every property in
+`required`, `additionalProperties: false` at every level of nesting, and
+optional fields expressed as `type: [base, 'null']`.
+
+Decorator and string signatures keep working unchanged; this is a third form,
+not a replacement.
+
 ### Output types
 
-Decorators record fields at runtime, so TypeScript cannot infer per-field types
-from the class. Results are therefore typed loosely by default. Name the shape
-when you want precise types:
+A zod signature infers its output type, as above. Decorators record fields at
+runtime, so TypeScript cannot infer per-field types from the class — results
+from a class signature are typed loosely by default. Name the shape when you
+want precise types:
 
 ```ts
 type ReviewAnalysis = { sentiment: string; rating: number; themes: string[] };
@@ -194,9 +239,11 @@ npm run build
 
 export OPENAI_API_KEY="sk-..."
 npm run example:openai
+npm run example:zod
 ```
 
-See [`examples/`](examples) for OpenAI, Gemini, Anthropic, and tool-use programs.
+See [`examples/`](examples) for OpenAI, Gemini, Anthropic, zod-signature, and
+tool-use programs.
 
 ## Development
 

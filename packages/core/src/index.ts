@@ -2,7 +2,20 @@
 export * from './types';
 
 // Core classes
-export { Signature, InputField, OutputField } from './core/signature';
+export {
+    Signature,
+    InputField,
+    OutputField,
+    signature,
+    isZodSignature,
+} from './core/signature';
+export type {
+    AnyZodSignature,
+    SignatureLike,
+    SignatureSource,
+    ZodSignature,
+    ZodSignatureDefinition,
+} from './core/signature';
 export { Module } from './core/module';
 export { BaseLM } from './core/base-lm';
 export { Prediction } from './core/prediction';
