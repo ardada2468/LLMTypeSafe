@@ -65,7 +65,7 @@ Requires Node.js 22 or newer. Packages ship both ESM and CommonJS builds.
 [![@ts-dspy/gemini](https://img.shields.io/npm/dm/@ts-dspy/gemini?label=%40ts-dspy%2Fgemini&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/gemini)
 [![@ts-dspy/anthropic](https://img.shields.io/npm/dm/@ts-dspy/anthropic?label=%40ts-dspy%2Fanthropic&color=2a78d6)](https://www.npmjs.com/package/@ts-dspy/anthropic)
 
-<img src="assets/npm-downloads.svg" alt="Monthly npm downloads for @ts-dspy/core" width="840">
+<!-- <img src="assets/npm-downloads.svg" alt="Monthly npm downloads for @ts-dspy/core" width="840"> -->
 
 The chart is regenerated from the
 [public npm downloads API](https://github.com/npm/registry/blob/main/docs/download-counts.md)
