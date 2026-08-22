@@ -5,7 +5,7 @@ import { Predict } from '../modules/predict';
 import { RespAct } from '../modules/respact';
 import { MockLM } from '../test-utils';
 import { ValidationError } from './errors';
-import { type TraceEntry } from '../types/module';
+import { type LMCall, type TraceEntry } from '../types/module';
 
 describe('tracing', () => {
     beforeEach(() => {
@@ -135,7 +135,10 @@ describe('tracing', () => {
             question: 'Q',
         });
 
-        const calls = result.trace?.calls ?? [];
+        // A string signature widens TOutput to Record<string, any>, and the
+        // Prediction<T> & T intersection then types every access as any --
+        // annotate so this asserts against the real LMCall shape.
+        const calls: LMCall[] = result.trace?.calls ?? [];
         expect(calls.map((call) => call.usage.totalTokens)).toEqual([15, 15]);
         expect(result.trace?.usage.totalTokens).toBe(30);
     });
