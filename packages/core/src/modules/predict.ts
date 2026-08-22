@@ -79,7 +79,7 @@ export class Predict<
 
         for (let attempt = 0; ; attempt++) {
             try {
-                return await this.completeOnce(attemptPrompt, structured, options);
+                return await this.completeOnce(attemptPrompt, structured, options, span);
             } catch (error) {
                 if (!(error instanceof ValidationError) || attempt >= repairAttempts) {
                     throw error;
@@ -103,11 +103,17 @@ export class Predict<
         }
     }
 
-    /** One completion plus validation, with no repair loop around it. */
+    /**
+     * One completion plus validation, with no repair loop around it.
+     *
+     * Each repair attempt reports its own call to `span`, so a trace shows every
+     * round trip that was paid for rather than only the one that succeeded.
+     */
     protected async completeOnce(
         prompt: string,
         structured: boolean,
-        options?: LLMCallOptions
+        options?: LLMCallOptions,
+        span?: TraceSpan
     ): Promise<Record<string, any>> {
         const signature = this.requireSignature();
 
