@@ -470,13 +470,94 @@ lm.resetUsage()</code></pre>
     <h2>Testing</h2>
     <p>
       Modules take a language model, so a test needs no network and no API key.
-      Implement <code>ILanguageModel</code>, or extend <code>BaseLM</code> for the
-      shared plumbing.
+      The doubles ts-dspy tests itself with ship alongside it, under the
+      <code>@ts-dspy/core/testing</code> subpath &mdash; a separate entry point, so
+      nothing in it is pulled into your production bundle.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { MockLM, CassetteLM } <span class="kw">from</span> <span class="s">'@ts-dspy/core/testing'</span></code></pre>
+
+    <h3>Scripted replies</h3>
+    <p>
+      <code>MockLM</code> answers with the strings you hand it, in order, and
+      records every call it received &mdash; including the prompt the module built,
+      which is usually the part worth asserting on.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { MockLM } <span class="kw">from</span> <span class="s">'@ts-dspy/core/testing'</span>
+
+it(<span class="s">'asks about the ticket it was handed'</span>, <span class="kw">async</span> () =&gt; {
+  <span class="kw">const</span> lm = <span class="kw">new</span> MockLM({ responses: [<span class="s">'category: bug\nurgency: 3'</span>] })
+
+  <span class="kw">const</span> result = <span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket, lm).forward({ ticket: <span class="s">'login broken'</span> })
+
+  expect(result.urgency).toBe(<span class="s">3</span>)
+  expect(lm.lastPrompt()).toContain(<span class="s">'login broken'</span>)
+})</code></pre>
+    <p>
+      Pass <code>structuredResponses</code> alongside
+      <code>capabilities: { supportsStructuredOutput: true }</code> to exercise the
+      native structured-output path instead, and read <code>lm.calls</code> or
+      <code>lm.structuredCalls</code> for the options each call carried.
+      <code>chatStream</code> and <code>generateStream</code> replay the same
+      scripted text in chunks.
+    </p>
+
+    <h3>Cassettes</h3>
+    <p>
+      A cassette records real provider replies once and replays them ever after.
+      Capture them with a key on your own machine, commit the file, and CI runs the
+      same test with no key, no network, and no flake.
+    </p>
+    <pre class="code"><code><span class="c">// Once, against the real provider:</span>
+<span class="kw">const</span> recorder = CassetteLM.record(<span class="s">'cassettes/triage.json'</span>, <span class="kw">new</span> OpenAILM({ apiKey }))
+<span class="kw">await</span> <span class="kw">new</span> Predict(TriageTicket, recorder).forward({ ticket: <span class="s">'login broken'</span> })
+
+<span class="c">// Everywhere else, ever after:</span>
+<span class="kw">const</span> lm = CassetteLM.replay(<span class="s">'cassettes/triage.json'</span>)</code></pre>
+    <p>
+      What it writes is a plain array of entries, each keyed by a hash of its
+      request, so a changed prompt reviews as a readable diff rather than an opaque
+      blob.
+    </p>
+    <pre class="code" data-lang="json"><code>[
+  {
+    <span class="s">"key"</span>: <span class="s">"6f1c3b0a9e7d5241"</span>,
+    <span class="s">"request"</span>: {
+      <span class="s">"kind"</span>: <span class="s">"chat"</span>,
+      <span class="s">"model"</span>: <span class="s">"gpt-4o-mini"</span>,
+      <span class="s">"messages"</span>: [{ <span class="s">"role"</span>: <span class="s">"user"</span>, <span class="s">"content"</span>: <span class="s">"Ticket: login broken\n..."</span> }],
+      <span class="s">"options"</span>: { <span class="s">"temperature"</span>: <span class="s">0</span> }
+    },
+    <span class="s">"response"</span>: <span class="s">"category: bug\nurgency: 3"</span>
+  }
+]</code></pre>
+    <p>
+      The key covers the messages, the model name, and the sampling options that
+      change a reply. <code>timeout</code> and <code>retries</code> are left out, so
+      re-running a test with a longer deadline still hits the recording. Identical
+      requests replay in the order they were recorded, and an unrecorded one fails
+      loudly rather than calling out.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Mode</th><th scope="col">Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">replay</td><td class="note">The default, and what CI runs. Never calls a live model; a miss throws <code>LMError</code>.</td></tr>
+          <tr><td class="sym">record</td><td class="note">Calls the wrapped model for everything and rewrites the file from scratch.</td></tr>
+          <tr><td class="sym">auto</td><td class="note">Replays what the file holds, calls the wrapped model for the rest and appends it.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Rolling your own</h3>
+    <p>
+      Anything implementing <code>ILanguageModel</code> will do; extend
+      <code>BaseLM</code> to inherit the usage accounting and the structured-output
+      fallback.
     </p>
     <pre class="code"><code><span class="kw">import</span> { BaseLM, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
 
 <span class="kw">class</span> <span class="ty">StubLM</span> <span class="kw">extends</span> <span class="ty">BaseLM</span> {
-  <span class="kw">constructor</span>(<span class="kw">private</span> reply: <span class="ty">string</span>) { <span class="kw">super</span>({ model: <span class="s">'stub'</span> }) }
+  <span class="kw">constructor</span>(<span class="kw">private</span> reply: <span class="ty">string</span>) { <span class="kw">super</span>(<span class="s">'stub'</span>, <span class="s">'stub-model'</span>) }
   <span class="kw">async</span> chat() { <span class="kw">return</span> <span class="kw">this</span>.reply }
   getCapabilities() {
     <span class="kw">return</span> { supportsStructuredOutput: <span class="kw">false</span>, supportsStreaming: <span class="kw">false</span>,
