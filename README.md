@@ -184,6 +184,40 @@ Tool descriptions are what the model uses to decide when to call each tool, so
 they earn the detail. Never pass model output to `eval()` — see
 [`examples/utils.ts`](examples/utils.ts) for a bounded arithmetic evaluator.
 
+### Evaluation
+
+`evaluate` runs a program over a dataset of `Example`s and grades every
+prediction, so a prompt or signature change comes with a number attached rather
+than a hunch.
+
+```ts
+import { evaluate, exactMatch, Example, Predict, formatReport } from '@ts-dspy/core';
+
+const dataset = [
+  new Example({ question: 'Capital of France?', answer: 'Paris' }).withInputs('question'),
+  new Example({ question: 'Capital of Japan?', answer: 'Tokyo' }).withInputs('question'),
+];
+
+const report = await evaluate(new Predict(AnswerQuestion), dataset, exactMatch, {
+  concurrency: 8,
+});
+
+report.score; // mean across every example
+report.results; // per example: inputs, expected, prediction, score, error?
+report.usage; // tokens and latency for this run only
+
+console.log(formatReport(report));
+```
+
+A metric is `(example, prediction) => number | boolean`, so writing your own is a
+one-line function. Built in: `exactMatch`, `normalizedMatch`, `numericMatch`,
+`fieldAccuracy` for per-field partial credit, and `tokenF1` for free text.
+
+An example whose program or metric throws is recorded as a zero with the error
+attached and the run continues — an evaluation that dies on row 40 of 500 tells
+you nothing. Usage is measured by diffing the model's own counters around the
+run; as everywhere else, there is no cost estimate.
+
 ## Examples
 
 ```bash

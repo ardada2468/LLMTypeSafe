@@ -64,6 +64,7 @@
       <li><a href="#testing">Testing</a></li>
       <li><a href="#api">API reference</a></li>
       <li><a href="#migration">Migrating to 0.5</a></li>
+      <li><a href="#evaluate">Evaluation</a></li>
     </ol>
   </nav>
 
@@ -587,6 +588,130 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
         Upgrade core and every provider together. Providers declare
         <code>@ts-dspy/core@^0.5.0</code>, and a mismatched pair is exactly the bug
         0.5.0 fixed &mdash; 0.4.2 shipped providers that resolved a stale core.
+      </p>
+    </div>
+  </section>
+
+  <section id="evaluate">
+    <p class="anchor">20</p>
+    <h2>Evaluation</h2>
+    <p>
+      A prompt change either helped or it did not, and the only way to know is to
+      measure. <code>evaluate</code> runs a program over a dataset, grades every
+      prediction with a metric you choose, and hands back one number plus the
+      working behind it.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { evaluate, exactMatch, Example, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> dataset = [
+  <span class="kw">new</span> Example({ question: <span class="s">'Capital of France?'</span>, answer: <span class="s">'Paris'</span> }).withInputs(<span class="s">'question'</span>),
+  <span class="kw">new</span> Example({ question: <span class="s">'Capital of Japan?'</span>, answer: <span class="s">'Tokyo'</span> }).withInputs(<span class="s">'question'</span>),
+]
+
+<span class="kw">const</span> report = <span class="kw">await</span> evaluate(<span class="kw">new</span> Predict(AnswerQuestion), dataset, exactMatch, {
+  concurrency: <span class="s">8</span>,
+})
+
+report.score    <span class="c">// 0.5 &mdash; the mean across every example</span>
+report.results  <span class="c">// per example: inputs, expected, prediction, score, error?</span>
+report.usage    <span class="c">// tokens and latency for this run only</span></code></pre>
+
+    <h3>Datasets</h3>
+    <p>
+      A dataset is an array of <code>Example</code>.
+      <code>withInputs()</code> names the input fields; everything else is what
+      the program is expected to produce, which is exactly the split an
+      evaluation needs. Pass <code>inputKeys</code> instead if the whole dataset
+      shares one shape.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> dataset = rows.map((row) =&gt; <span class="kw">new</span> Example(row))
+
+<span class="kw">await</span> evaluate(program, dataset, exactMatch, { inputKeys: [<span class="s">'question'</span>] })</code></pre>
+
+    <h3>Metrics</h3>
+    <p>
+      A metric is <code>(example, prediction) =&gt; number | boolean</code>, awaited
+      if it returns a promise. That is the whole contract, and it is deliberately
+      small: the same function works unchanged as an optimiser's objective.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Metric</th><th scope="col">Grades</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">exactMatch</td><td class="note">Every expected field, compared as text, character for character.</td></tr>
+          <tr><td class="sym">normalizedMatch</td><td class="note">The same, ignoring case and runs of whitespace.</td></tr>
+          <tr><td class="sym">numericMatch(tolerance)</td><td class="note">Numeric fields within an absolute tolerance.</td></tr>
+          <tr><td class="sym">fieldAccuracy</td><td class="note">Fraction of fields that match, ignoring case and whitespace &mdash; partial credit for multi-output signatures.</td></tr>
+          <tr><td class="sym">tokenF1</td><td class="note">Token-level F1, for free text where exact match is too blunt.</td></tr>
+          <tr><td class="sym">matchMetric<br>fieldAccuracyMetric<br>tokenF1Metric</td><td class="note">Factories behind the above, taking <code>fields</code>, <code>normalize</code>, and <code>tolerance</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Anything else is a function you write.</p>
+    <pre class="code"><code><span class="kw">const</span> mentionsSource: <span class="ty">Metric</span> = (example, prediction) =&gt;
+  <span class="ty">String</span>(prediction.get(<span class="s">'answer'</span>)).includes(example.get(<span class="s">'citation'</span>))
+
+<span class="kw">const</span> report = <span class="kw">await</span> evaluate(program, dataset, mentionsSource)</code></pre>
+    <p>
+      Read the prediction through <code>get()</code> or <code>toObject()</code>.
+      <code>Prediction</code> defines its fields with
+      <code>Object.defineProperty</code>, so spreading it is not the same thing.
+    </p>
+
+    <h3>The report</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Field</th><th scope="col">Meaning</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">score</td><td class="note">Mean score across every example, failures included.</td></tr>
+          <tr><td class="sym">totalScore<br>count</td><td class="note">The sum and the denominator behind that mean.</td></tr>
+          <tr><td class="sym">errorCount</td><td class="note">How many examples threw.</td></tr>
+          <tr><td class="sym">results</td><td class="note">One entry per example, in dataset order.</td></tr>
+          <tr><td class="sym">usage</td><td class="note">Tokens, request count, mean latency, wall-clock duration.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Usage comes from diffing the model's own counters around the run, so it
+      counts this evaluation and nothing that came before it. There is no cost
+      figure, for the reason given under
+      <a href="#reliability">usage accounting</a>.
+    </p>
+
+    <h3>Failures are results</h3>
+    <p>
+      An example whose program or metric throws is recorded as a zero with the
+      error attached, and the run carries on. An evaluation that dies on row 40
+      of 500 tells you nothing at all.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> failures = report.results.filter((result) =&gt; result.error)
+
+failures[<span class="s">0</span>].error.message
+failures[<span class="s">0</span>].inputs       <span class="c">// what was fed in, to reproduce it</span></code></pre>
+
+    <h3>Printing</h3>
+    <p>
+      The library never writes to a console. <code>formatReport</code> returns a
+      string, and where it goes &mdash; a terminal, a log line, a CI annotation
+      &mdash; is your decision.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { formatReport } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+console.log(formatReport(report, { maxRows: <span class="s">20</span>, includePassing: <span class="kw">false</span> }))
+
+<span class="c">// score 0.800  (4.00 / 5)  errors 1</span>
+<span class="c">// tokens 3120 (2480 prompt + 640 completion)  requests 5  ...</span>
+<span class="c">//</span>
+<span class="c">// #  score  detail</span>
+<span class="c">// 4  0.000  Error: 429 rate limit exceeded</span></code></pre>
+
+    <div class="callout">
+      <span class="label">Concurrency</span>
+      <p>
+        Four examples run at once by default. Raise <code>concurrency</code> when
+        your rate limit allows it &mdash; a 500-row set at one call a second is
+        eight minutes you did not need to spend &mdash; and lower it to one when
+        you want the run to be reproducible against a scripted model.
       </p>
     </div>
   </section>
