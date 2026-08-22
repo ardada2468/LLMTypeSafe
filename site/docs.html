@@ -64,6 +64,7 @@
       <li><a href="#testing">Testing</a></li>
       <li><a href="#api">API reference</a></li>
       <li><a href="#migration">Migrating to 0.5</a></li>
+      <li><a href="#batch">Batch &amp; concurrency</a></li>
     </ol>
   </nav>
 
@@ -589,6 +590,105 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
         0.5.0 fixed &mdash; 0.4.2 shipped providers that resolved a stale core.
       </p>
     </div>
+  </section>
+
+  <section id="batch">
+    <p class="anchor">17</p>
+    <h2>Batch &amp; concurrency</h2>
+    <p>
+      Every module inherits <code>batch()</code>, so <code>Predict</code>,
+      <code>ChainOfThought</code> and <code>RespAct</code> all take a list of inputs
+      and run them through a bounded worker pool. Eight calls in flight by default.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> rows = tickets.map((ticket) =&gt; ({ ticket }))
+<span class="kw">const</span> results = <span class="kw">await</span> triage.batch(rows, { concurrency: <span class="s">16</span> })
+
+<span class="kw">const</span> done = results.filter((r) =&gt; r.status === <span class="s">'fulfilled'</span>)
+console.log(<span class="s">`${done.length} of ${results.length} classified`</span>)</code></pre>
+    <p>
+      Results come back <strong>in input order</strong>, whatever order the calls
+      actually finished in. This is the detail a hand-written loop gets wrong:
+      <code>Promise.all</code> over fixed-size slices keeps the order but stalls
+      each slice on its slowest call, and a queue that pushes results as they
+      settle quietly loses the correspondence between row and answer.
+    </p>
+
+    <h3>One bad row does not kill the job</h3>
+    <p>
+      Each input settles independently, in the shape of
+      <code>Promise.allSettled</code>. A model that returns nonsense for row 4 812
+      of 10 000 costs you row 4 812, not the run.
+    </p>
+    <pre class="code"><code><span class="kw">for</span> (<span class="kw">const</span> [i, result] <span class="kw">of</span> results.entries()) {
+  <span class="kw">if</span> (result.status === <span class="s">'fulfilled'</span>) {
+    save(rows[i], result.value.category)
+  } <span class="kw">else</span> {
+    <span class="c">// result.reason is the ValidationError or LMError that was thrown</span>
+    quarantine(rows[i], result.reason)
+  }
+}</code></pre>
+    <p>
+      Pass <code>stopOnError: true</code> when a single failure means the whole run
+      is worthless &mdash; the batch then rejects and starts no further inputs.
+      Calls already in flight are still awaited, so nothing is left running behind
+      your back, and the rejection carries the lowest-indexed failure rather than
+      whichever one happened to land first.
+    </p>
+
+    <h3>Options</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Option</th><th scope="col">Effect</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">concurrency</td><td class="note">Maximum calls in flight. Defaults to 8. A value that is not a positive integer throws <code>RangeError</code> rather than hanging.</td></tr>
+          <tr><td class="sym">onProgress</td><td class="note"><code>(done, total)</code>, fired as each input settles &mdash; failures included. Advisory: if it throws, it is dropped and the batch carries on.</td></tr>
+          <tr><td class="sym">stopOnError</td><td class="note">Reject the batch on the first failure instead of capturing it. Defaults to <code>false</code>.</td></tr>
+          <tr><td class="sym">signal</td><td class="note">An <code>AbortSignal</code>. Once aborted, no further inputs start and the batch rejects with the abort reason.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Everything else &mdash; <code>temperature</code>, <code>timeout</code>,
+      <code>retries</code>, <code>model</code> &mdash; is passed through to every
+      underlying call unchanged.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> controller = <span class="kw">new</span> <span class="ty">AbortController</span>()
+setTimeout(() =&gt; controller.abort(), <span class="s">60_000</span>)
+
+<span class="kw">await</span> triage.batch(rows, {
+  concurrency: <span class="s">16</span>,
+  signal: controller.signal,
+  onProgress: (done, total) =&gt; bar.update(done / total),
+  temperature: <span class="s">0</span>,
+})</code></pre>
+    <div class="callout callout-warn">
+      <span class="label">Aborting discards</span>
+      <p>
+        An aborted batch rejects rather than returning the inputs that already
+        finished, in line with the rest of the platform&#8217;s
+        <code>AbortSignal</code> behaviour &mdash; so wrap a cancellable batch in a
+        <code>try</code>. If you need to keep completed work across a cancellation,
+        run the inputs in chunks and abort between them.
+      </p>
+    </div>
+
+    <h3>The pool on its own</h3>
+    <p>
+      The primitive underneath is exported, so anything else with a rate limit can
+      use it &mdash; embedding calls, database writes, an image API.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { mapWithConcurrency } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> embeddings = <span class="kw">await</span> mapWithConcurrency(
+  documents,
+  (doc) =&gt; embed(doc),
+  { concurrency: <span class="s">4</span>, onSettled: (done, total) =&gt; log(done, total) }
+)</code></pre>
+    <p>
+      Same guarantees: input order, per-item settlement, a hard ceiling on
+      in-flight work, and no dependency to install &mdash; it is roughly eighty
+      lines of core.
+    </p>
   </section>
 
   </div>
