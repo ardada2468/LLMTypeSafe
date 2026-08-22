@@ -1,12 +1,15 @@
 import {
     BaseLM,
+    ContentFilterError,
     LMError,
+    classify,
     type ChatMessage,
     type LLMCallOptions,
     type ModelCapabilities,
     type StreamChunk,
 } from '@ts-dspy/core';
 import {
+    FinishReason,
     GoogleGenAI,
     HarmBlockThreshold,
     HarmCategory,
@@ -52,6 +55,22 @@ const DEFAULT_SAFETY_SETTINGS: SafetySetting[] = [
     HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
 ].map((category) => ({ category, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE }));
+
+/**
+ * Finish reasons that mean the candidate was withheld, not merely stopped.
+ *
+ * Every one of these leaves the candidate without usable content, so checking
+ * only `SAFETY` would still hand the caller an empty string for the rest.
+ */
+const BLOCKING_FINISH_REASONS: ReadonlySet<FinishReason> = new Set([
+    FinishReason.SAFETY,
+    FinishReason.PROHIBITED_CONTENT,
+    FinishReason.BLOCKLIST,
+    FinishReason.SPII,
+    FinishReason.RECITATION,
+    FinishReason.IMAGE_SAFETY,
+    FinishReason.IMAGE_PROHIBITED_CONTENT,
+]);
 
 /** Context windows by model family; the 1M default matches current Gemini models. */
 function contextLengthFor(model: string): number {
@@ -110,6 +129,14 @@ export class GeminiLM extends BaseLM {
             responseJsonSchema: schema,
         });
 
+        // A truncated reply is never valid JSON, and until this check existed it
+        // surfaced as a misleading "not valid JSON" error. OpenAI and Anthropic
+        // have always reported truncation; Gemini was the odd one out.
+        if (response.candidates?.[0]?.finishReason === FinishReason.MAX_TOKENS) {
+            this.recordError();
+            throw new LMError('gemini', 'Structured response was truncated; raise maxTokens.');
+        }
+
         const text = response.text ?? '';
         try {
             return JSON.parse(text) as T;
@@ -148,13 +175,19 @@ export class GeminiLM extends BaseLM {
             // LMError and is counted, rather than escaping as a raw SDK error.
             for await (const chunk of stream) {
                 last = chunk;
+                // A stream can be cut short by the classifiers just as a one-shot
+                // reply can. Without this the stream simply ended early and
+                // looked like a short answer.
+                this.assertNotFiltered(chunk);
                 const text = chunk.text;
                 if (text) {
                     yield { content: text, done: false };
                 }
             }
         } catch (error) {
-            this.recordError();
+            // assertNotFiltered counts the errors it raises, so only count what
+            // arrives here uncounted from the SDK.
+            if (!(error instanceof LMError)) this.recordError();
             throw toLMError(error);
         }
 
@@ -200,17 +233,42 @@ export class GeminiLM extends BaseLM {
             throw toLMError(error);
         }
 
+        this.assertNotFiltered(response);
+        this.recordUsageFrom(response, startedAt);
+        return response;
+    }
+
+    /**
+     * Raise on a filtered reply.
+     *
+     * Gemini reports filtering on a normal 200 response, in two different
+     * places: `promptFeedback.blockReason` when the prompt was rejected, and
+     * `candidates[].finishReason` when the reply itself was. Only the first was
+     * ever checked, so a dropped candidate simply came back as empty text.
+     */
+    private assertNotFiltered(response: GenerateContentResponse): void {
         // Check the block reason before touching `text`. The previous
         // implementation read `response.text()` first, which threw on blocked
         // responses and made this branch unreachable.
         const blockReason = response.promptFeedback?.blockReason;
         if (blockReason) {
             this.recordError();
-            throw new LMError('gemini', `Request blocked by safety filters: ${blockReason}`);
+            throw new ContentFilterError(
+                'gemini',
+                `Request blocked by safety filters: ${blockReason}`,
+                { category: String(blockReason) }
+            );
         }
 
-        this.recordUsageFrom(response, startedAt);
-        return response;
+        const finishReason = response.candidates?.[0]?.finishReason;
+        if (finishReason !== undefined && BLOCKING_FINISH_REASONS.has(finishReason)) {
+            this.recordError();
+            throw new ContentFilterError(
+                'gemini',
+                `Response blocked by safety filters: ${finishReason}`,
+                { category: String(finishReason) }
+            );
+        }
     }
 
     private buildConfig(
@@ -381,8 +439,18 @@ function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
     });
 }
 
+/**
+ * Wrap a Gemini SDK failure.
+ *
+ * `ApiError` carries a numeric `status` and nothing else — no code, no typed
+ * error union — so classification leans on the status, with message matching as
+ * the only route to a context-length verdict.
+ */
 function toLMError(error: unknown): LMError {
     if (error instanceof LMError) return error;
     const message = error instanceof Error ? error.message : String(error);
-    return new LMError('gemini', message, { cause: error, status: statusOf(error) });
+    const status = statusOf(error);
+
+    const ErrorClass = classify(status, { message });
+    return new ErrorClass('gemini', message, { cause: error, status });
 }

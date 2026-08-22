@@ -1,12 +1,15 @@
 import {
     BaseLM,
+    ContentFilterError,
     LMError,
+    TimeoutError,
+    classify,
     type ChatMessage,
     type LLMCallOptions,
     type ModelCapabilities,
     type StreamChunk,
 } from '@ts-dspy/core';
-import Anthropic, { APIError } from '@anthropic-ai/sdk';
+import Anthropic, { APIConnectionTimeoutError, APIError } from '@anthropic-ai/sdk';
 import type { Message, MessageParam } from '@anthropic-ai/sdk/resources/messages';
 
 /** Current Claude Opus. Model IDs are exact — never append a date suffix. */
@@ -36,21 +39,17 @@ export interface AnthropicConfig {
 /**
  * Raised when Claude's safety classifiers decline a request.
  *
- * The API returns HTTP 200 with `stop_reason: "refusal"` and no usable content,
- * so this must be checked before reading the response body.
+ * @deprecated Renamed to `ContentFilterError` in `@ts-dspy/core`, which every
+ * provider now throws for the same condition. This is an alias of that class,
+ * not a subclass of it, so two things changed: the constructor now takes
+ * `(provider, message, options)` rather than `(category, explanation)`, and an
+ * `instanceof` check now also matches an OpenAI or Gemini content filter. Check
+ * `error.provider === 'anthropic'` if you need to tell them apart. The alias
+ * will be removed in a future release.
  */
-export class AnthropicRefusalError extends LMError {
-    readonly category?: string;
-
-    constructor(category?: string, explanation?: string) {
-        super(
-            'anthropic',
-            `Request was declined by safety classifiers${category ? ` (${category})` : ''}` +
-                `${explanation ? `: ${explanation}` : ''}`
-        );
-        this.category = category;
-    }
-}
+export const AnthropicRefusalError = ContentFilterError;
+/** @deprecated Renamed to `ContentFilterError` in `@ts-dspy/core`. */
+export type AnthropicRefusalError = ContentFilterError;
 
 export class AnthropicLM extends BaseLM {
     private readonly client: Anthropic;
@@ -180,35 +179,38 @@ export class AnthropicLM extends BaseLM {
             requestOptions(options)
         );
 
+        // `assertNotRefused` records the error itself, so it must stay outside
+        // this try — inside it, the catch counted the same refusal twice.
+        let final: Message;
         try {
             for await (const event of stream) {
                 if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
                     yield { content: event.delta.text, done: false };
                 }
             }
-
-            const final = await stream.finalMessage();
-            this.recordUsage({
-                promptTokens: final.usage?.input_tokens ?? 0,
-                completionTokens: final.usage?.output_tokens ?? 0,
-                latencyMs: Date.now() - startedAt,
-            });
-            this.assertNotRefused(final);
-
-            yield {
-                content: '',
-                done: true,
-                usage: {
-                    promptTokens: final.usage?.input_tokens ?? 0,
-                    completionTokens: final.usage?.output_tokens ?? 0,
-                    totalTokens:
-                        (final.usage?.input_tokens ?? 0) + (final.usage?.output_tokens ?? 0),
-                },
-            };
+            final = await stream.finalMessage();
         } catch (error) {
             this.recordError();
             throw toLMError(error);
         }
+
+        this.recordUsage({
+            promptTokens: final.usage?.input_tokens ?? 0,
+            completionTokens: final.usage?.output_tokens ?? 0,
+            latencyMs: Date.now() - startedAt,
+        });
+        this.assertNotRefused(final);
+
+        yield {
+            content: '',
+            done: true,
+            usage: {
+                promptTokens: final.usage?.input_tokens ?? 0,
+                completionTokens: final.usage?.output_tokens ?? 0,
+                totalTokens:
+                    (final.usage?.input_tokens ?? 0) + (final.usage?.output_tokens ?? 0),
+            },
+        };
     }
 
     getCapabilities(): ModelCapabilities {
@@ -232,9 +234,14 @@ export class AnthropicLM extends BaseLM {
         this.recordError();
         const details = message.stop_details as
             { category?: string | null; explanation?: string | null } | null | undefined;
-        throw new AnthropicRefusalError(
-            details?.category ?? undefined,
-            details?.explanation ?? undefined
+        const category = details?.category ?? undefined;
+        const explanation = details?.explanation ?? undefined;
+
+        throw new ContentFilterError(
+            'anthropic',
+            `Request was declined by safety classifiers${category ? ` (${category})` : ''}` +
+                `${explanation ? `: ${explanation}` : ''}`,
+            { category }
         );
     }
 }
@@ -317,8 +324,21 @@ function requestOptions(options?: LLMCallOptions): {
 
 function toLMError(error: unknown): LMError {
     if (error instanceof LMError) return error;
+    // Checked before APIError: this is a subclass of it, and a client-side
+    // timeout carries neither a status nor a `type`. The `timeout_error` type
+    // only ever covers a server-side gateway timeout.
+    if (error instanceof APIConnectionTimeoutError) {
+        return new TimeoutError('anthropic', error.message, { cause: error });
+    }
     if (error instanceof APIError) {
-        return new LMError('anthropic', error.message, {
+        // `error.type` is a typed union here — the cleanest discriminator of
+        // the three SDKs. There is no context-length member, though: an
+        // over-long prompt arrives as a 400 `invalid_request_error`.
+        const ErrorClass = classify(error.status, {
+            type: error.type,
+            message: error.message,
+        });
+        return new ErrorClass('anthropic', error.message, {
             cause: error,
             status: error.status,
         });

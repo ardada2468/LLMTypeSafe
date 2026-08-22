@@ -1,4 +1,10 @@
-import { LMError } from '@ts-dspy/core';
+import {
+    AuthError,
+    ContentFilterError,
+    ContextLengthError,
+    LMError,
+    RateLimitError,
+} from '@ts-dspy/core';
 import { GeminiLM, toGeminiContents, DEFAULT_GEMINI_MODEL } from './gemini-lm';
 
 const mocks = vi.hoisted(() => ({
@@ -24,6 +30,17 @@ vi.mock('@google/genai', () => ({
         HARM_CATEGORY_DANGEROUS_CONTENT: 'HARM_CATEGORY_DANGEROUS_CONTENT',
     },
     HarmBlockThreshold: { BLOCK_MEDIUM_AND_ABOVE: 'BLOCK_MEDIUM_AND_ABOVE' },
+    FinishReason: {
+        STOP: 'STOP',
+        MAX_TOKENS: 'MAX_TOKENS',
+        SAFETY: 'SAFETY',
+        RECITATION: 'RECITATION',
+        BLOCKLIST: 'BLOCKLIST',
+        PROHIBITED_CONTENT: 'PROHIBITED_CONTENT',
+        SPII: 'SPII',
+        IMAGE_SAFETY: 'IMAGE_SAFETY',
+        IMAGE_PROHIBITED_CONTENT: 'IMAGE_PROHIBITED_CONTENT',
+    },
 }));
 
 function response(text: string, extra: Record<string, unknown> = {}) {
@@ -142,6 +159,78 @@ describe('GeminiLM', () => {
             );
         });
 
+        it('reports a blocked prompt as ContentFilterError carrying the block reason', async () => {
+            // This used to be a bare LMError with no status and no category, so
+            // a caller could not tell a safety block from a network failure.
+            mocks.generateContent.mockResolvedValue({
+                promptFeedback: { blockReason: 'SAFETY' },
+                text: '',
+            });
+
+            const error = await new GeminiLM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
+
+            expect(error).toBeInstanceOf(ContentFilterError);
+            expect(error).toBeInstanceOf(LMError);
+            expect(error.category).toBe('SAFETY');
+        });
+
+        it('throws when the candidate itself was blocked, rather than returning empty text', async () => {
+            // Only promptFeedback.blockReason was checked before, so a blocked
+            // candidate came back as an empty string.
+            mocks.generateContent.mockResolvedValue(
+                response('', { candidates: [{ finishReason: 'SAFETY' }] })
+            );
+            const lm = new GeminiLM({ apiKey: 'k' });
+
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(ContentFilterError);
+            expect(lm.getUsage().errorCount).toBe(1);
+        });
+
+        it('covers every finish reason that withholds the candidate', async () => {
+            // Checking only SAFETY still handed the caller an empty string for
+            // the rest of the withholding reasons.
+            const lm = new GeminiLM({ apiKey: 'k' });
+
+            for (const reason of ['BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'RECITATION']) {
+                mocks.generateContent.mockResolvedValue(
+                    response('', { candidates: [{ finishReason: reason }] })
+                );
+                const error = await lm.generate('Hi').catch((e) => e);
+
+                expect(error).toBeInstanceOf(ContentFilterError);
+                expect(error.category).toBe(reason);
+            }
+        });
+
+        it('leaves an ordinary STOP alone', async () => {
+            mocks.generateContent.mockResolvedValue(
+                response('fine', { candidates: [{ finishReason: 'STOP' }] })
+            );
+
+            expect(await new GeminiLM({ apiKey: 'k' }).generate('Hi')).toBe('fine');
+        });
+
+        it('throws when a stream is cut short by the classifiers', async () => {
+            // The safety checks lived only in the one-shot path, so a blocked
+            // stream just ended early and looked like a short answer.
+            mocks.generateContentStream.mockResolvedValue(
+                (async function* () {
+                    yield { text: 'Sure, ' };
+                    yield { text: '', candidates: [{ finishReason: 'SAFETY' }] };
+                })()
+            );
+            const lm = new GeminiLM({ apiKey: 'k' });
+
+            const consume = async () => {
+                for await (const _chunk of lm.generateStream('Hi')) {
+                    // drain
+                }
+            };
+
+            await expect(consume()).rejects.toBeInstanceOf(ContentFilterError);
+            expect(lm.getUsage().errorCount).toBe(1);
+        });
+
         it('configures all four harm categories by default', async () => {
             mocks.generateContent.mockResolvedValue(response('ok'));
             await new GeminiLM({ apiKey: 'k' }).generate('Hi');
@@ -170,6 +259,18 @@ describe('GeminiLM', () => {
             await expect(
                 new GeminiLM({ apiKey: 'k' }).generateStructured('Q', {})
             ).rejects.toThrow(/not valid JSON/);
+        });
+
+        it('reports truncation rather than blaming the JSON', async () => {
+            // MAX_TOKENS was never checked, so a truncated reply fell through to
+            // JSON.parse and surfaced as a misleading "not valid JSON" error.
+            mocks.generateContent.mockResolvedValue(
+                response('{"answer":"Par', { candidates: [{ finishReason: 'MAX_TOKENS' }] })
+            );
+
+            await expect(
+                new GeminiLM({ apiKey: 'k' }).generateStructured('Q', {})
+            ).rejects.toThrow(/truncated; raise maxTokens/);
         });
     });
 
@@ -486,5 +587,64 @@ describe('GeminiLM', () => {
 
         await expect(lm.generate('Hi')).rejects.toThrow(LMError);
         expect(lm.getUsage().errorCount).toBe(1);
+    });
+
+    describe('error classification', () => {
+        it('never reports a NaN status', async () => {
+            // `Number(error.status)` used to produce status: NaN for any error
+            // that carried a non-numeric `status`, e.g. a Node system error.
+            const systemError = Object.assign(new Error('getaddrinfo ENOTFOUND'), {
+                status: 'ENOTFOUND',
+            });
+            mocks.generateContent.mockRejectedValue(systemError);
+
+            const error = await new GeminiLM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
+
+            expect(error.status).toBeUndefined();
+            expect(Number.isNaN(error.status)).toBe(false);
+        });
+
+        it('maps a 429 to RateLimitError and 401/403 to AuthError', async () => {
+            const lm = new GeminiLM({ apiKey: 'k' });
+
+            mocks.generateContent.mockRejectedValue(
+                Object.assign(new Error('Quota exceeded'), { status: 429 })
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(RateLimitError);
+
+            mocks.generateContent.mockRejectedValue(
+                Object.assign(new Error('API key not valid'), { status: 401 })
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(AuthError);
+
+            mocks.generateContent.mockRejectedValue(
+                Object.assign(new Error('Permission denied'), { status: 403 })
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(AuthError);
+        });
+
+        it('falls back to the message for context length, having nothing better', async () => {
+            const lm = new GeminiLM({ apiKey: 'k' });
+
+            mocks.generateContent.mockRejectedValue(
+                Object.assign(
+                    new Error(
+                        'INVALID_ARGUMENT: The input token count exceeds the maximum ' +
+                            'number of tokens allowed'
+                    ),
+                    { status: 400 }
+                )
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(ContextLengthError);
+
+            mocks.generateContent.mockRejectedValue(
+                Object.assign(new Error('INVALID_ARGUMENT: unknown field "foo"'), {
+                    status: 400,
+                })
+            );
+            const other = await lm.generate('Hi').catch((e) => e);
+            expect(other).toBeInstanceOf(LMError);
+            expect(other).not.toBeInstanceOf(ContextLengthError);
+        });
     });
 });
