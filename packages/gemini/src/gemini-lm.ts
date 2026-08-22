@@ -185,7 +185,9 @@ export class GeminiLM extends BaseLM {
                 }
             }
         } catch (error) {
-            this.recordError();
+            // assertNotFiltered counts the errors it raises, so only count what
+            // arrives here uncounted from the SDK.
+            if (!(error instanceof LMError)) this.recordError();
             throw toLMError(error);
         }
 
