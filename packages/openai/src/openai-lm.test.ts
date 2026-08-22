@@ -1,19 +1,46 @@
-import { LMError } from '@ts-dspy/core';
+import {
+    AuthError,
+    ContentFilterError,
+    ContextLengthError,
+    LMError,
+    RateLimitError,
+    TimeoutError,
+} from '@ts-dspy/core';
 import { OpenAILM, toOpenAIMessages, DEFAULT_OPENAI_MODEL } from './openai-lm';
 
 // Everything the hoisted vi.mock factory touches must itself be hoisted.
 const mocks = vi.hoisted(() => {
     class MockAPIError extends Error {
         status: number;
-        constructor(status: number, message: string) {
+        // The real APIError also carries `code` and `type`, and `code` is what
+        // separates a context-length 400 from any other 400.
+        code: string | null;
+        type: string | undefined;
+        constructor(
+            status: number,
+            message: string,
+            extra: { code?: string; type?: string } = {}
+        ) {
             super(message);
             this.status = status;
+            this.code = extra.code ?? null;
+            this.type = extra.type;
         }
     }
-    return { create: vi.fn(), list: vi.fn(), MockAPIError };
+    class MockAPIConnectionTimeoutError extends MockAPIError {
+        constructor(message = 'Request timed out.') {
+            super(undefined as unknown as number, message);
+        }
+    }
+    return {
+        create: vi.fn(),
+        list: vi.fn(),
+        MockAPIError,
+        MockAPIConnectionTimeoutError,
+    };
 });
 
-const { MockAPIError } = mocks;
+const { MockAPIError, MockAPIConnectionTimeoutError } = mocks;
 
 vi.mock('openai', () => ({
     default: class {
@@ -22,6 +49,7 @@ vi.mock('openai', () => ({
         constructor(public options: unknown) {}
     },
     APIError: mocks.MockAPIError,
+    APIConnectionTimeoutError: mocks.MockAPIConnectionTimeoutError,
 }));
 
 function completion(content: string, extra: Record<string, unknown> = {}) {
@@ -123,6 +151,22 @@ describe('OpenAILM', () => {
             expect(mocks.create.mock.calls[0][1]).toEqual({ timeout: 5000, maxRetries: 1 });
         });
 
+        it('forwards an abort signal to the SDK request options', async () => {
+            mocks.create.mockResolvedValue(completion('ok'));
+            const controller = new AbortController();
+
+            await new OpenAILM({ apiKey: 'k' }).generate('Hi', { signal: controller.signal });
+
+            expect(mocks.create.mock.calls[0][1]).toEqual({ signal: controller.signal });
+        });
+
+        it('omits the signal when no cancellation is requested', async () => {
+            mocks.create.mockResolvedValue(completion('ok'));
+            await new OpenAILM({ apiKey: 'k' }).generate('Hi');
+
+            expect(mocks.create.mock.calls[0][1]).not.toHaveProperty('signal');
+        });
+
         it('allows a per-call model override', async () => {
             mocks.create.mockResolvedValue(completion('ok'));
             await new OpenAILM({ apiKey: 'k' }).generate('Hi', { model: 'gpt-4.1' });
@@ -192,6 +236,25 @@ describe('OpenAILM', () => {
                 usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
             });
         });
+
+        it('wraps and counts a mid-stream failure', async () => {
+            mocks.create.mockResolvedValue(
+                (async function* () {
+                    yield { choices: [{ delta: { content: 'Hel' } }] };
+                    throw Object.assign(new Error('Request was aborted.'), {
+                        name: 'APIUserAbortError',
+                    });
+                })()
+            );
+
+            const lm = new OpenAILM({ apiKey: 'k' });
+
+            // Aborting mid-stream used to escape as a raw SDK error, uncounted.
+            await expect(async () => {
+                for await (const chunk of lm.generateStream('Hi')) void chunk;
+            }).rejects.toThrow(LMError);
+            expect(lm.getUsage().errorCount).toBe(1);
+        });
     });
 
     describe('error handling', () => {
@@ -212,6 +275,104 @@ describe('OpenAILM', () => {
 
             await expect(lm.generate('Hi')).rejects.toThrow();
             expect(lm.getUsage().errorCount).toBe(1);
+        });
+
+        it('classifies a 429 as RateLimitError', async () => {
+            mocks.create.mockRejectedValue(new MockAPIError(429, 'Rate limit reached'));
+
+            const error = await new OpenAILM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
+
+            expect(error).toBeInstanceOf(RateLimitError);
+            // Every new class still satisfies the old catch blocks.
+            expect(error).toBeInstanceOf(LMError);
+        });
+
+        it('classifies 401 and 403 as AuthError', async () => {
+            const lm = new OpenAILM({ apiKey: 'k' });
+
+            mocks.create.mockRejectedValue(new MockAPIError(401, 'Bad key'));
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(AuthError);
+
+            mocks.create.mockRejectedValue(new MockAPIError(403, 'Not entitled'));
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(AuthError);
+        });
+
+        it('classifies a 400 by its code, not its message text', async () => {
+            const lm = new OpenAILM({ apiKey: 'k' });
+
+            mocks.create.mockRejectedValue(
+                // Deliberately unhelpful wording: `code` is the discriminator.
+                new MockAPIError(400, 'Bad request', { code: 'context_length_exceeded' })
+            );
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(ContextLengthError);
+
+            mocks.create.mockRejectedValue(
+                new MockAPIError(400, 'Unknown parameter', { code: 'unknown_parameter' })
+            );
+            const other = await lm.generate('Hi').catch((e) => e);
+            expect(other).toBeInstanceOf(LMError);
+            expect(other).not.toBeInstanceOf(ContextLengthError);
+        });
+
+        it('classifies a connection timeout as TimeoutError despite having no status', async () => {
+            mocks.create.mockRejectedValue(new MockAPIConnectionTimeoutError());
+
+            const error = await new OpenAILM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
+
+            expect(error).toBeInstanceOf(TimeoutError);
+            expect(error.status).toBeUndefined();
+        });
+
+        it('leaves an unrecognised failure as a plain LMError', async () => {
+            mocks.create.mockRejectedValue(new MockAPIError(500, 'boom'));
+
+            const error = await new OpenAILM({ apiKey: 'k' }).generate('Hi').catch((e) => e);
+
+            expect(error.constructor.name).toBe('LMError');
+            expect(error.status).toBe(500);
+        });
+    });
+
+    describe('content filtering', () => {
+        it('throws on a filtered completion instead of returning an empty string', async () => {
+            // The old implementation checked only finish_reason 'length', so a
+            // filtered completion came back as '' with no error at all.
+            mocks.create.mockResolvedValue({
+                choices: [{ message: { content: '' }, finish_reason: 'content_filter' }],
+                usage: { prompt_tokens: 4, completion_tokens: 0 },
+            });
+            const lm = new OpenAILM({ apiKey: 'k' });
+
+            await expect(lm.generate('Hi')).rejects.toBeInstanceOf(ContentFilterError);
+            expect(lm.getUsage().errorCount).toBe(1);
+        });
+
+        it('throws on a filtered structured completion', async () => {
+            mocks.create.mockResolvedValue({
+                choices: [{ message: { content: '' }, finish_reason: 'content_filter' }],
+                usage: { prompt_tokens: 4, completion_tokens: 0 },
+            });
+
+            await expect(
+                new OpenAILM({ apiKey: 'k' }).generateStructured('x', {})
+            ).rejects.toBeInstanceOf(ContentFilterError);
+        });
+
+        it('throws when a stream ends on the content filter', async () => {
+            mocks.create.mockResolvedValue(
+                (async function* () {
+                    yield { choices: [{ delta: { content: 'Hel' } }] };
+                    yield { choices: [{ delta: {}, finish_reason: 'content_filter' }] };
+                })()
+            );
+
+            const consume = async () => {
+                for await (const _chunk of new OpenAILM({ apiKey: 'k' }).generateStream('Hi')) {
+                    // drain
+                }
+            };
+
+            await expect(consume()).rejects.toBeInstanceOf(ContentFilterError);
         });
     });
 

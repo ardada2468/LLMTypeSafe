@@ -26,7 +26,11 @@ export default tseslint.config(
     },
     {
         // Tests may reach into internals and stub globals.
-        files: ['packages/*/src/**/*.test.ts', 'packages/core/src/test-utils.ts'],
+        files: [
+            'packages/*/src/**/*.test.ts',
+            'packages/core/src/test-utils.ts',
+            'packages/core/src/testing/**/*.ts',
+        ],
         rules: {
             'no-console': 'off',
             '@typescript-eslint/no-explicit-any': 'off',
