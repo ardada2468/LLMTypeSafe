@@ -4,9 +4,12 @@ import {
     LMError,
     TimeoutError,
     classify,
+    contentToText,
+    normalizeImageSource,
     type ChatMessage,
     type ChatResult,
     type FinishReason,
+    type ImageContentPart,
     type LLMCallOptions,
     type ModelCapabilities,
     type StreamChunk,
@@ -14,7 +17,9 @@ import {
 } from '@ts-dspy/core';
 import Anthropic, { APIConnectionTimeoutError, APIError } from '@anthropic-ai/sdk';
 import type {
+    Base64ImageSource,
     ContentBlockParam,
+    ImageBlockParam,
     Message,
     MessageParam,
 } from '@anthropic-ai/sdk/resources/messages';
@@ -259,7 +264,7 @@ export class AnthropicLM extends BaseLM {
             supportsStreaming: true,
             supportsStructuredOutput: true,
             supportsFunctionCalling: true,
-            supportsVision: true,
+            supportsVision: supportsVisionFor(this.model),
             maxContextLength: 1_000_000,
             supportedFormats: ['text', 'json_schema'],
         };
@@ -303,6 +308,13 @@ function textOf(message: Message): string {
         .join('');
 }
 
+/** Claude models that take text only; every other current model reads images. */
+const TEXT_ONLY_MODELS = [/^claude-3-5-haiku/, /^claude-2/, /^claude-instant/];
+
+function supportsVisionFor(model: string): boolean {
+    return !TEXT_ONLY_MODELS.some((pattern) => pattern.test(model));
+}
+
 /** Extract the `tool_use` blocks a turn requested. Anthropic sends `input` already parsed. */
 function toolCallsOf(message: Message): ToolCall[] {
     return message.content
@@ -324,8 +336,10 @@ function toolCallsOf(message: Message): ToolCall[] {
  * Convert ts-dspy messages into the Messages API shape.
  *
  * System messages become the top-level `system` parameter — Anthropic has no
- * system role inside `messages`. Consecutive same-role turns are merged, since
- * the API requires strict alternation.
+ * system role inside `messages`, and that parameter is text-only, so an image
+ * addressed to it is flattened to its placeholder rather than silently dropped.
+ * Consecutive same-role turns are merged, since the API requires strict
+ * alternation.
  *
  * Tool traffic is structural rather than textual: an assistant turn carrying
  * tool calls becomes `text` + `tool_use` blocks, and a `tool` result turn becomes
@@ -343,7 +357,7 @@ export function toAnthropicMessages(messages: ChatMessage[]): {
 
     for (const message of messages) {
         if (message.role === 'system') {
-            systemParts.push(message.content);
+            systemParts.push(contentToText(message.content));
             continue;
         }
 
@@ -356,10 +370,14 @@ export function toAnthropicMessages(messages: ChatMessage[]): {
             continue;
         }
 
+        // Two plain strings still merge as a string. Anything block-shaped — an
+        // image, a tool call, a tool result — merges at the block level instead:
+        // concatenating those as text would destroy the structure the API needs,
+        // and refusing to merge would break its strict role alternation.
         if (typeof previous.content === 'string' && typeof content === 'string') {
             previous.content = `${previous.content}\n\n${content}`;
         } else {
-            previous.content = [...asBlocks(previous.content), ...asBlocks(content)];
+            previous.content = mergeBlocks(toBlocks(previous.content), toBlocks(content));
         }
     }
 
@@ -369,12 +387,16 @@ export function toAnthropicMessages(messages: ChatMessage[]): {
     };
 }
 
-/** A plain turn stays a string; anything carrying tool traffic becomes blocks. */
+/**
+ * A plain turn stays a string; anything carrying tool traffic or an image
+ * becomes blocks.
+ */
 function toAnthropicContent(message: ChatMessage): string | ContentBlockParam[] {
     if (message.role === 'assistant' && message.toolCalls?.length) {
         const blocks: ContentBlockParam[] = [];
-        if (message.content) {
-            blocks.push({ type: 'text', text: message.content });
+        const text = contentToText(message.content);
+        if (text) {
+            blocks.push({ type: 'text', text });
         }
         message.toolCalls.forEach((call, index) => {
             blocks.push({
@@ -392,24 +414,74 @@ function toAnthropicContent(message: ChatMessage): string | ContentBlockParam[] 
     }
 
     if (message.role === 'tool' || message.role === 'function') {
+        const text = contentToText(message.content);
         // Without a `tool_use_id` there is nothing to correlate against, so the
         // result degrades to ordinary user text rather than a rejected request.
-        if (!message.toolCallId) return message.content;
+        if (!message.toolCallId) return text;
         return [
             {
                 type: 'tool_result',
                 tool_use_id: message.toolCallId,
-                content: message.content,
+                content: text,
             },
         ];
     }
 
-    return message.content;
+    // An assistant turn cannot carry an image, so only user content keeps parts.
+    if (typeof message.content === 'string') return message.content;
+    if (message.role === 'assistant') return contentToText(message.content);
+    return message.content.map((part) =>
+        part.type === 'text'
+            ? { type: 'text' as const, text: part.text }
+            : toAnthropicImage(part)
+    );
 }
 
-function asBlocks(content: string | ContentBlockParam[]): ContentBlockParam[] {
-    if (typeof content !== 'string') return content;
-    return content ? [{ type: 'text', text: content }] : [];
+/**
+ * Images are either inline base64 with an explicit media type, or a URL the API
+ * fetches. A `data:` URI handed in as a URL is rewritten to the base64 form,
+ * which is the only shape `URLImageSource` will not accept.
+ */
+function toAnthropicImage(part: ImageContentPart): ImageBlockParam {
+    const source = normalizeImageSource(part.source);
+    if (source.kind === 'url') {
+        return { type: 'image', source: { type: 'url', url: source.url } };
+    }
+    return {
+        type: 'image',
+        source: {
+            type: 'base64',
+            // The SDK narrows media_type to the four types the API accepts;
+            // ours stays open so a new one needs no core release.
+            media_type: source.mediaType as Base64ImageSource['media_type'],
+            data: source.data,
+        },
+    };
+}
+
+function toBlocks(content: MessageParam['content']): ContentBlockParam[] {
+    return typeof content === 'string' ? [{ type: 'text', text: content }] : [...content];
+}
+
+/**
+ * Concatenate two turns' blocks, folding a text block that meets another text
+ * block into one. Without the fold the two turns would abut with no separator;
+ * the blank line is what the string merge used to provide.
+ */
+function mergeBlocks(
+    left: ContentBlockParam[],
+    right: ContentBlockParam[]
+): ContentBlockParam[] {
+    const last = left.at(-1);
+    const first = right[0];
+    if (last?.type === 'text' && first?.type === 'text') {
+        return [
+            ...left.slice(0, -1),
+            { ...last, text: `${last.text}\n\n${first.text}` },
+            ...right.slice(1),
+        ];
+    }
+    return [...left, ...right];
 }
 
 /** Translate tool declarations into the Messages API request shape. */

@@ -6,6 +6,9 @@ import {
     type SignatureLike,
 } from '../core/signature';
 import { type Example } from '../core/example';
+import { isImageFieldType } from '../core/signature';
+import type { ContentPart, ImageInput, MessageContent } from '../types/language-model';
+import { contentToText, imagePart, textPart } from './content';
 import { ValidationError, type FieldValidationIssue } from '../core/errors';
 import { buildOutputSchema, getOutputFieldConfigs, zodFieldHint } from './schema';
 
@@ -34,6 +37,17 @@ export interface RenderDemosOptions {
  * byte-for-byte what it was before few-shot support existed.
  */
 export function buildPrompt(
+    signature: SignatureLike,
+    inputs: Record<string, any>,
+    demos: Example[] = [],
+    options: RenderDemosOptions = {}
+): string {
+    const content = buildPromptContent(signature, inputs, demos, options);
+    return typeof content === 'string' ? content : contentToText(content);
+}
+
+/** The text prompt, with image inputs left exactly as they were passed in. */
+function buildPromptText(
     signature: SignatureLike,
     inputs: Record<string, any>,
     demos: Example[] = [],
@@ -444,4 +458,81 @@ function extractFieldValue(
     }
 
     return null;
+}
+
+/**
+ * A marker standing in for an image while the prompt is built as text.
+ *
+ * Building the prompt as a string first and splitting afterwards is what lets
+ * images coexist with demos, zod signatures and enum hints: every one of those
+ * rules runs exactly as it does for a text-only prompt, and the image is spliced
+ * back in at the end. NUL is used because no prompt legitimately contains one.
+ */
+// NUL is the point here: it is the one character a prompt can never
+// legitimately contain, so the marker cannot collide with caller input.
+// eslint-disable-next-line no-control-regex
+const IMAGE_MARKER = /\u0000ts-dspy:image:(\d+)\u0000/;
+
+/** Input fields declared as images. Only class signatures can declare one. */
+function imageInputFields(signature: SignatureLike): Set<string> {
+    if (typeof signature === 'string') {
+        const parsed = Signature.parseStringSignature(signature);
+        return new Set(parsed.inputs.filter((name) => isImageFieldType(parsed.types[name])));
+    }
+    if (isZodSignature(signature)) return new Set();
+    return new Set(
+        Object.entries(signature.getInputFields())
+            .filter(([, config]) => isImageFieldType(config.type))
+            .map(([name]) => name)
+    );
+}
+
+/**
+ * Render a signature and its inputs as chat message content.
+ *
+ * Returns a plain `string` when every input is text — byte-for-byte what
+ * {@link buildPrompt} produces — and an array of {@link ContentPart}s when an
+ * input field is declared `image`, so the image travels as an image rather than
+ * as the `[image: …]` placeholder a string is limited to:
+ *
+ * ```ts
+ * const content = buildPromptContent(DescribeReceipt, { receipt: dataUri });
+ * await lm.chat([{ role: 'user', content }]);
+ * ```
+ */
+export function buildPromptContent(
+    signature: SignatureLike,
+    inputs: Record<string, any>,
+    demos: Example[] = [],
+    options: RenderDemosOptions = {}
+): MessageContent {
+    const imageFields = imageInputFields(signature);
+    if (imageFields.size === 0) {
+        return buildPromptText(signature, inputs, demos, options);
+    }
+
+    const images: ImageInput[] = [];
+    const substituted: Record<string, any> = { ...inputs };
+    for (const key of Object.keys(inputs)) {
+        if (inputs[key] !== undefined && imageFields.has(key)) {
+            substituted[key] = `\u0000ts-dspy:image:${images.length}\u0000`;
+            images.push(inputs[key] as ImageInput);
+        }
+    }
+
+    const text = buildPromptText(signature, substituted, demos, options);
+    if (images.length === 0) return text;
+
+    const parts: ContentPart[] = [];
+    let rest = text;
+    for (;;) {
+        const match = IMAGE_MARKER.exec(rest);
+        if (!match) break;
+        if (match.index > 0) parts.push(textPart(rest.slice(0, match.index)));
+        parts.push(imagePart(images[Number(match[1])]));
+        rest = rest.slice(match.index + match[0].length);
+    }
+    if (rest !== '') parts.push(textPart(rest));
+
+    return parts.length === 1 && parts[0].type === 'text' ? parts[0].text : parts;
 }

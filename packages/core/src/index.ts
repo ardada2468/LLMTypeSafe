@@ -8,6 +8,9 @@ export {
     OutputField,
     signature,
     isZodSignature,
+    ImageField,
+    IMAGE_FIELD_TYPE,
+    isImageFieldType,
 } from './core/signature';
 export type {
     AnyZodSignature,
@@ -96,7 +99,18 @@ export type {
 export * from './evaluate';
 
 // Utilities
-export { buildPrompt, parseOutput, renderDemos } from './utils/parsing';
+export { buildPrompt, buildPromptContent, parseOutput, renderDemos } from './utils/parsing';
+export {
+    textPart,
+    imagePart,
+    isImagePart,
+    imageToUrl,
+    imageMediaType,
+    normalizeImageSource,
+    toContentParts,
+    hasImageContent,
+    contentToText,
+} from './utils/content';
 export { fieldConfigToZod, buildOutputSchema, buildOutputJsonSchema } from './utils/schema';
 export { parsePartialJson } from './utils/partial-json';
 export type { PartialJsonOptions } from './utils/partial-json';

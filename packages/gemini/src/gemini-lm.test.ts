@@ -4,6 +4,8 @@ import {
     ContextLengthError,
     LMError,
     RateLimitError,
+    imagePart,
+    textPart,
 } from '@ts-dspy/core';
 import { GeminiLM, toGeminiContents, DEFAULT_GEMINI_MODEL } from './gemini-lm';
 
@@ -60,6 +62,9 @@ beforeEach(() => {
     mocks.generateContentStream.mockReset();
     mocks.constructorOptions.mockReset();
 });
+
+const PNG = 'iVBORw0KGgo=';
+const DATA_URI = `data:image/png;base64,${PNG}`;
 
 describe('GeminiLM', () => {
     it('defaults to a current model', () => {
@@ -794,6 +799,50 @@ describe('GeminiLM', () => {
             const other = await lm.generate('Hi').catch((e) => e);
             expect(other).toBeInstanceOf(LMError);
             expect(other).not.toBeInstanceOf(ContextLengthError);
+        });
+    });
+
+    describe('image content', () => {
+        it('sends inline bytes as inlineData alongside the text part', () => {
+            const { contents } = toGeminiContents([
+                { role: 'user', content: [textPart('what is this?'), imagePart(DATA_URI)] },
+            ]);
+
+            expect(contents).toEqual([
+                {
+                    role: 'user',
+                    parts: [
+                        { text: 'what is this?' },
+                        { inlineData: { mimeType: 'image/png', data: PNG } },
+                    ],
+                },
+            ]);
+        });
+
+        it('sends a Files API URI as fileData', () => {
+            const uri = 'https://generativelanguage.googleapis.com/v1beta/files/abc123';
+            const { contents } = toGeminiContents([
+                { role: 'user', content: [imagePart(uri)] },
+            ]);
+
+            expect(contents[0].parts).toEqual([{ fileData: { fileUri: uri } }]);
+        });
+
+        it('refuses an arbitrary web URL, which fileData cannot dereference', () => {
+            expect(() =>
+                toGeminiContents([
+                    { role: 'user', content: [imagePart('https://example.com/a.png')] },
+                ])
+            ).toThrow(LMError);
+        });
+
+        it('flattens an image in a system message, which is text-only', () => {
+            const { systemInstruction } = toGeminiContents([
+                { role: 'system', content: [textPart('logo: '), imagePart(DATA_URI)] },
+                { role: 'user', content: 'hi' },
+            ]);
+
+            expect(systemInstruction).toBe('logo: [image: image/png]');
         });
     });
 });

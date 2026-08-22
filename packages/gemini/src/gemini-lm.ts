@@ -3,9 +3,14 @@ import {
     ContentFilterError,
     LMError,
     classify,
+    contentToText,
+    imageMediaType,
+    normalizeImageSource,
     type ChatMessage,
     type ChatResult,
     type FinishReason,
+    type ImageContentPart,
+    type MessageContent,
     type LLMCallOptions,
     type ModelCapabilities,
     type StreamChunk,
@@ -59,6 +64,11 @@ const DEFAULT_SAFETY_SETTINGS: SafetySetting[] = [
     HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
 ].map((category) => ({ category, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE }));
+
+/** Embedding models take text only; every generative Gemini model reads images. */
+function supportsVisionFor(model: string): boolean {
+    return !model.includes('embedding');
+}
 
 /**
  * Finish reasons that mean the candidate was withheld, not merely stopped.
@@ -225,7 +235,7 @@ export class GeminiLM extends BaseLM {
             supportsStreaming: true,
             supportsStructuredOutput: true,
             supportsFunctionCalling: true,
-            supportsVision: true,
+            supportsVision: supportsVisionFor(this.model),
             maxContextLength: contextLengthFor(this.model),
             supportedFormats: ['text', 'json_object', 'json_schema'],
         };
@@ -411,7 +421,9 @@ export function toGeminiContents(messages: ChatMessage[]): {
 
     for (const message of messages) {
         if (message.role === 'system') {
-            systemParts.push(message.content);
+            // `systemInstruction` is text-only, so an image aimed at it is
+            // flattened to its placeholder rather than silently dropped.
+            systemParts.push(contentToText(message.content));
             continue;
         }
 
@@ -448,7 +460,8 @@ export function toGeminiContents(messages: ChatMessage[]): {
 function toGeminiParts(message: ChatMessage): Part[] {
     if (message.role === 'assistant' && message.toolCalls?.length) {
         const parts: Part[] = [];
-        if (message.content) parts.push({ text: message.content });
+        const text = contentToText(message.content);
+        if (text) parts.push({ text });
         for (const call of message.toolCalls) {
             parts.push({
                 functionCall: { name: call.name, args: call.arguments ?? {} },
@@ -460,19 +473,55 @@ function toGeminiParts(message: ChatMessage): Part[] {
     if (message.role === 'tool' || message.role === 'function') {
         // Without a name there is nothing to correlate against, so the result
         // degrades to ordinary text rather than an unaddressed response part.
-        if (!message.name) return [{ text: message.content }];
+        const text = contentToText(message.content);
+        if (!message.name) return [{ text }];
         return [
             {
                 functionResponse: {
                     name: message.name,
                     // `response` must be an object, not a bare string.
-                    response: { result: message.content },
+                    response: { result: text },
                 },
             },
         ];
     }
 
-    return [{ text: message.content }];
+    return toGeminiContentParts(message.content);
+}
+
+/** A plain string is one text part; parts map one-to-one. */
+function toGeminiContentParts(content: MessageContent): Part[] {
+    if (typeof content === 'string') return [{ text: content }];
+    return content.map((part) =>
+        part.type === 'text' ? { text: part.text } : toGeminiImage(part)
+    );
+}
+
+/** URI schemes `fileData` can actually dereference. */
+const FILE_URI_PATTERN = /^(gs:\/\/|https:\/\/generativelanguage\.googleapis\.com\/)/i;
+
+/**
+ * Inline bytes go in `inlineData`; a URI the API can resolve goes in `fileData`.
+ * A `data:` URI arriving as a URL is rewritten to inline bytes, since `fileData`
+ * cannot dereference one either.
+ *
+ * Unlike OpenAI and Anthropic, Gemini will not fetch an arbitrary web URL, so
+ * one is refused here with an explanation rather than sent on to earn a 400.
+ */
+function toGeminiImage(part: ImageContentPart): Part {
+    const source = normalizeImageSource(part.source);
+    if (source.kind === 'url') {
+        if (!FILE_URI_PATTERN.test(source.url)) {
+            throw new LMError(
+                'gemini',
+                `Gemini cannot fetch "${source.url}": fileData accepts a Files API or ` +
+                    'Cloud Storage URI. Pass the image as base64 bytes instead.'
+            );
+        }
+        const mimeType = imageMediaType(source);
+        return { fileData: { fileUri: source.url, ...(mimeType ? { mimeType } : {}) } };
+    }
+    return { inlineData: { mimeType: source.mediaType, data: source.data } };
 }
 
 function isFunctionResponses(parts: Part[] | undefined): boolean {

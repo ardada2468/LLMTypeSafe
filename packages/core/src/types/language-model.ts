@@ -45,6 +45,66 @@ export interface LLMCallOptions {
 }
 
 /**
+ * Media type of an image. The four listed types are the intersection every
+ * provider accepts; the open arm keeps the union accepting anything a provider
+ * adds later, without giving up autocompletion on the four.
+ */
+export type ImageMediaType =
+    'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' | (string & Record<never, never>);
+
+/** An image fetched by the provider from a URL. */
+export interface ImageUrlSource {
+    kind: 'url';
+    /** An `https://` URL, or a `data:image/…;base64,…` URI. */
+    url: string;
+    /** Optional hint; providers that need one infer it from a data URI. */
+    mediaType?: ImageMediaType;
+}
+
+/** An image carried inline as base64. */
+export interface ImageBase64Source {
+    kind: 'base64';
+    /** Base64 payload only — no `data:` prefix. */
+    data: string;
+    mediaType: ImageMediaType;
+}
+
+export type ImageSource = ImageUrlSource | ImageBase64Source;
+
+export interface TextContentPart {
+    type: 'text';
+    text: string;
+}
+
+export interface ImageContentPart {
+    type: 'image';
+    source: ImageSource;
+    /**
+     * Fidelity hint. Only OpenAI has an equivalent (`image_url.detail`); other
+     * providers ignore it.
+     */
+    detail?: 'auto' | 'low' | 'high';
+}
+
+/** One piece of a multimodal message. */
+export type ContentPart = TextContentPart | ImageContentPart;
+
+/**
+ * The content of a chat message.
+ *
+ * Plain `string` is still a valid content: every text-only call site keeps
+ * working unchanged, and providers keep sending a bare string when that is all
+ * they were given.
+ */
+export type MessageContent = string | ContentPart[];
+
+/**
+ * What callers may hand to an image field or {@link imagePart}: an `https://`
+ * URL, a `data:` URI, an explicit {@link ImageSource}, or a ready-made part.
+ */
+export type ImageInput = string | ImageSource | ImageContentPart;
+
+/**
  * A tool offered to the model.
  *
  * `parameters` is a JSON Schema object describing the arguments. Every provider
@@ -84,7 +144,7 @@ export interface ToolCall {
 
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant' | 'function' | 'tool';
-    content: string;
+    content: MessageContent;
     /** On a `tool`/`function` turn, the name of the tool that produced the result. */
     name?: string;
     /** On a `tool`/`function` turn, the id of the call being answered. */

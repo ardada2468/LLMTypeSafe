@@ -4,16 +4,24 @@ import {
     LMError,
     TimeoutError,
     classify,
+    contentToText,
+    imageToUrl,
     type ChatMessage,
     type ChatResult,
     type FinishReason,
+    type ImageContentPart,
+    type MessageContent,
     type LLMCallOptions,
     type ModelCapabilities,
     type StreamChunk,
     type ToolCall,
 } from '@ts-dspy/core';
 import OpenAI, { APIConnectionTimeoutError, APIError } from 'openai';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import type {
+    ChatCompletionContentPart,
+    ChatCompletionContentPartImage,
+    ChatCompletionMessageParam,
+} from 'openai/resources/chat/completions';
 
 /**
  * Current default. Confirm against `client.models.list()` if you need a specific
@@ -52,6 +60,25 @@ function contextLengthFor(model: string): number {
         if (model.startsWith(prefix)) return length;
     }
     return 128_000;
+}
+
+/**
+ * Model families that take text only. Everything else in the current lineup
+ * accepts images, so this is a deny-list: a new vision model works on the day it
+ * ships, and the flag stops claiming vision for models that never had it.
+ */
+const TEXT_ONLY_PREFIXES = [
+    'gpt-3.5',
+    'gpt-4-0', // gpt-4-0314 / gpt-4-0613, before vision
+    'gpt-4-32k',
+    'o1-mini',
+    'o1-preview',
+    'o3-mini',
+    'text-',
+];
+
+function supportsVisionFor(model: string): boolean {
+    return !TEXT_ONLY_PREFIXES.some((prefix) => model.startsWith(prefix));
 }
 
 export class OpenAILM extends BaseLM {
@@ -241,7 +268,7 @@ export class OpenAILM extends BaseLM {
             supportsStreaming: true,
             supportsStructuredOutput: true,
             supportsFunctionCalling: true,
-            supportsVision: true,
+            supportsVision: supportsVisionFor(this.model),
             maxContextLength: contextLengthFor(this.model),
             supportedFormats: ['text', 'json_object', 'json_schema'],
         };
@@ -253,21 +280,29 @@ export class OpenAILM extends BaseLM {
     }
 }
 
+/**
+ * Convert ts-dspy messages into the Chat Completions shape.
+ *
+ * `ChatCompletionMessageParam` is a discriminated union in which only the
+ * `user` variant accepts image parts, so the conversion is role-aware: system
+ * and assistant content is flattened to text (an image there would be rejected
+ * by the API), and only user turns keep their parts.
+ */
 export function toOpenAIMessages(messages: ChatMessage[]): ChatCompletionMessageParam[] {
     return messages.map((message) => {
         switch (message.role) {
             case 'system':
-                return { role: 'system', content: message.content };
+                return { role: 'system', content: contentToText(message.content) };
             case 'assistant':
                 if (message.toolCalls?.length) {
                     return {
                         role: 'assistant',
                         // The API rejects an empty string alongside tool_calls.
-                        content: message.content || null,
+                        content: contentToText(message.content) || null,
                         tool_calls: message.toolCalls.map(toOpenAIToolCall),
                     };
                 }
-                return { role: 'assistant', content: message.content };
+                return { role: 'assistant', content: contentToText(message.content) };
             case 'tool':
             case 'function':
                 // `tool_call_id` is what pairs a result with its call. Without
@@ -277,14 +312,36 @@ export function toOpenAIMessages(messages: ChatMessage[]): ChatCompletionMessage
                     return {
                         role: 'tool',
                         tool_call_id: message.toolCallId,
-                        content: message.content,
+                        content: contentToText(message.content),
                     };
                 }
-                return { role: 'user', content: message.content };
+                return { role: 'user', content: toOpenAIUserContent(message.content) };
             default:
-                return { role: 'user', content: message.content };
+                return { role: 'user', content: toOpenAIUserContent(message.content) };
         }
     });
+}
+
+/** User content: a plain string stays a string, parts become the SDK's part union. */
+function toOpenAIUserContent(content: MessageContent): string | ChatCompletionContentPart[] {
+    if (typeof content === 'string') return content;
+    return content.map((part) =>
+        part.type === 'text' ? { type: 'text' as const, text: part.text } : toOpenAIImage(part)
+    );
+}
+
+/**
+ * Images travel in `image_url.url`, which accepts an `https://` URL or a
+ * `data:image/…;base64,…` URI — so a base64 source is rendered as a data URI.
+ */
+function toOpenAIImage(part: ImageContentPart): ChatCompletionContentPartImage {
+    return {
+        type: 'image_url',
+        image_url: {
+            url: imageToUrl(part.source),
+            ...(part.detail ? { detail: part.detail } : {}),
+        },
+    };
 }
 
 function toOpenAIToolCall(call: ToolCall, index: number) {

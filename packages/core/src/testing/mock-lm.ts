@@ -1,4 +1,5 @@
 import { BaseLM } from '../core/base-lm';
+import { contentToText } from '../utils/content';
 import type {
     ChatMessage,
     LLMCallOptions,
@@ -116,7 +117,7 @@ export class MockLM extends BaseLM {
     /** The prompt text of the most recent chat call. */
     lastPrompt(): string {
         const last = this.calls.at(-1);
-        return last?.messages.map((message) => message.content).join('\n') ?? '';
+        return last?.messages.map((message) => contentToText(message.content)).join('\n') ?? '';
     }
 }
 

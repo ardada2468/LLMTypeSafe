@@ -69,6 +69,7 @@
       <li><a href="#repair">Self-repair</a></li>
       <li><a href="#batch">Batch &amp; concurrency</a></li>
       <li><a href="#zod">Zod signatures</a></li>
+      <li><a href="#vision">Images &amp; multimodal</a></li>
       <li><a href="#evaluate">Evaluation</a></li>
       <li><a href="#optimizers">Few-shot &amp; optimizers</a></li>
     </ol>
@@ -1636,6 +1637,125 @@ r.followUp?.trim() <span class="c">// string | undefined</span></code></pre>
       <code>examples/zod-signature.ts</code>:
     </p>
     <pre class="code" data-lang="bash"><code>npm run example:zod</code></pre>
+  </section>
+
+  <section id="vision">
+    <p class="anchor">19</p>
+    <h2>Images and multimodal</h2>
+    <p>
+      All three providers read images, and until now there was no way to send
+      one. <code>ChatMessage.content</code> was a <code>string</code> and every
+      converter passed it straight through, so <code>supportsVision: true</code>
+      was a claim the library could not honour. Content is now
+      <code>string | ContentPart[]</code> &mdash; a plain string still means
+      exactly what it always did, and an array carries text and images in order.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { imagePart, textPart, type ChatMessage } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> messages: <span class="ty">ChatMessage</span>[] = [
+  { role: <span class="s">'user'</span>, content: [
+    textPart(<span class="s">'What does this sign say?'</span>),
+    imagePart(<span class="s">'data:image/png;base64,iVBORw0KGgo&hellip;'</span>),
+  ] },
+]
+
+<span class="kw">await</span> lm.chat(messages)</code></pre>
+    <p>
+      <code>imagePart()</code> accepts an <code>https://</code> URL, a
+      <code>data:</code> URI, or an explicit source such as
+      <code>{ kind: 'base64', data, mediaType }</code>. A bare base64 blob is
+      refused: nothing in it says whether the bytes are a PNG or a JPEG, and
+      every provider insists on being told.
+    </p>
+
+    <h3>Image input fields</h3>
+    <p>
+      A signature can declare an input as an image &mdash; with
+      <code>@ImageField</code>, or the <code>image</code> type in a string
+      signature. <code>buildPromptContent()</code> then renders the prompt as
+      content parts, with the image sitting where its label falls.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { Signature, ImageField, OutputField, buildPromptContent } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">class</span> <span class="ty">ReadSign</span> <span class="kw">extends</span> <span class="ty">Signature</span> {
+  <span class="kw">static</span> description = <span class="s">'Read the sign in the photo.'</span>
+
+  <span class="at">@ImageField</span>({ description: <span class="s">'photo of the sign'</span> })
+  photo!: <span class="ty">string</span>
+
+  <span class="at">@OutputField</span>({ description: <span class="s">'the words on the sign'</span> })
+  words!: <span class="ty">string</span>
+}
+
+<span class="kw">const</span> content = buildPromptContent(ReadSign, { photo: dataUri })
+<span class="kw">await</span> lm.chat([{ role: <span class="s">'user'</span>, content }])
+
+<span class="c">// string signatures take a type too</span>
+buildPromptContent(<span class="s">'photo: image, question -&gt; answer'</span>, { photo, question })</code></pre>
+    <div class="callout callout-warn">
+      <span class="label">Modules send text</span>
+      <p>
+        <code>buildPromptContent()</code> returns a plain <code>string</code>
+        when every input is text, byte for byte what <code>buildPrompt()</code>
+        produces. <code>buildPrompt()</code> always returns a
+        <code>string</code>, rendering an image input as an
+        <code>[image: image/png]</code> placeholder &mdash; and that placeholder
+        is what <code>Predict</code>, <code>ChainOfThought</code> and
+        <code>RespAct</code> send, because they build string prompts. Until the
+        modules carry content parts, send images through <code>lm.chat()</code>
+        yourself.
+      </p>
+    </div>
+
+    <h3>What each provider sends</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Provider</th><th scope="col">Inline bytes</th><th scope="col">Remote URL</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">OpenAI</td><td class="note"><code>image_url</code> with a <code>data:</code> URI</td><td class="note"><code>image_url.url</code>, plus <code>detail</code> when set</td></tr>
+          <tr><td class="sym">Anthropic</td><td class="note"><code>image</code> block, <code>source.type: "base64"</code></td><td class="note"><code>image</code> block, <code>source.type: "url"</code></td></tr>
+          <tr><td class="sym">Gemini</td><td class="note"><code>inlineData</code> with <code>mimeType</code></td><td class="note"><code>fileData.fileUri</code>, Files API or Cloud Storage only</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      A <code>data:</code> URI handed to Anthropic or Gemini as a URL is rewritten
+      to inline bytes, because neither can dereference one. Gemini will not fetch
+      an arbitrary web URL at all &mdash; <code>fileData</code> resolves only a
+      Files API or Cloud Storage URI &mdash; so anything else is refused with an
+      <code>LMError</code> rather than sent on to earn a 400. <code>detail</code>
+      is an OpenAI-only fidelity hint; the others ignore it.
+    </p>
+
+    <h3>Roles and alternation</h3>
+    <p>
+      Only a user turn may carry an image. OpenAI's message type is a
+      discriminated union in which <code>system</code> and <code>assistant</code>
+      accept text alone, and Anthropic's <code>system</code> and Gemini's
+      <code>systemInstruction</code> are top-level strings &mdash; so an image
+      addressed to any of those is flattened to its placeholder rather than
+      dropped without trace.
+    </p>
+    <p>
+      Anthropic additionally requires strict user/assistant alternation, so
+      consecutive same-role turns are merged. That merge now concatenates block
+      arrays: it used to run only when both turns were strings, which meant a
+      text turn followed by an image turn was sent as two adjacent user messages
+      and rejected outright. Merged content is therefore a block array, with
+      two adjoining text blocks folded into one so the blank line between the
+      turns survives.
+    </p>
+
+    <div class="callout callout-warn">
+      <span class="label">Capability, honestly</span>
+      <p>
+        <code>supportsVision</code> is now reported per model rather than
+        hardcoded to <code>true</code>: <code>false</code> for
+        <code>gpt-3.5</code>, <code>o1-mini</code> and <code>o3-mini</code>, for
+        <code>claude-3-5-haiku</code> and older Claude models, and for Gemini
+        embedding models. Check it before sending pixels.
+      </p>
+    </div>
   </section>
 
   <section id="evaluate">

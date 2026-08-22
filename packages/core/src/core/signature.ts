@@ -1,6 +1,19 @@
 import type { z } from 'zod';
 import type { FieldConfig, ParsedSignature } from '../types/signature';
 
+/**
+ * Field type marking an input as an image rather than text.
+ *
+ * Only inputs may be images: a model returns text, so an output field declared
+ * `image` would be a promise nothing can keep.
+ */
+export const IMAGE_FIELD_TYPE = 'image';
+
+/** True when a field config declares an image input. */
+export function isImageFieldType(type: string | undefined): boolean {
+    return type === IMAGE_FIELD_TYPE;
+}
+
 // Symbol keys for decorator metadata
 const INPUT_FIELDS = Symbol('inputFields');
 const OUTPUT_FIELDS = Symbol('outputFields');
@@ -63,6 +76,31 @@ function defineField(
 export function InputField(config: Partial<FieldConfig> = {}) {
     return function (target: any, propertyKey: string | symbol | any) {
         defineField('input', INPUT_FIELDS, target, propertyKey, config);
+    };
+}
+
+/**
+ * Declare an image input. Sugar for `@InputField({ type: 'image' })`.
+ *
+ * The decorated property holds an {@link ImageInput}: an `https://` URL, a
+ * `data:` URI, or an explicit source object.
+ *
+ * ```ts
+ * class DescribeReceipt extends Signature {
+ *     @ImageField({ description: 'photo of the receipt' })
+ *     receipt!: ImageInput;
+ *
+ *     @OutputField({ description: 'total charged', type: 'number' })
+ *     total!: number;
+ * }
+ * ```
+ */
+export function ImageField(config: Omit<Partial<FieldConfig>, 'type'> = {}) {
+    return function (target: any, propertyKey: string | symbol | any) {
+        defineField('input', INPUT_FIELDS, target, propertyKey, {
+            ...config,
+            type: IMAGE_FIELD_TYPE,
+        });
     };
 }
 
