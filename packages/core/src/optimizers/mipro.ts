@@ -1,6 +1,6 @@
 import { type Example } from '../core/example';
 import { type Module } from '../core/module';
-import { context } from '../core/config';
+import { context, findDefaultLM } from '../core/config';
 import type { ILanguageModel } from '../types/language-model';
 import { type Metric } from './types';
 import { createRng } from './random';
@@ -21,6 +21,7 @@ import {
     summarizeDataset,
     type BaseOptimizerOptions,
     type CompileConfig,
+    withoutDemos,
 } from './utils';
 
 /** Budget presets, as in DSPy: instruction/demo candidates and validation-set cap. */
@@ -169,14 +170,19 @@ export class MIPROv2 {
         config: CompileConfig
     ): Promise<M & { miproResults: MIPROResults }> {
         const o = this.options;
+        // Resolve the prompt model *before* the task model becomes the scoped
+        // default: like DSPy, an unset prompt model means the configured model,
+        // not the task model the search happens to run under.
+        const promptModel = o.promptModel ?? (o.taskModel ? findDefaultLM() : undefined);
         const run = <T>(fn: () => Promise<T>) =>
             o.taskModel ? context({ lm: o.taskModel }, fn) : fn();
-        return run(() => this.search(student, config));
+        return run(() => this.search(student, config, promptModel));
     }
 
     private async search<M extends Module>(
         student: M,
-        config: CompileConfig
+        config: CompileConfig,
+        promptModel: ILanguageModel | undefined
     ): Promise<M & { miproResults: MIPROResults }> {
         const o = this.options;
         const seed = o.seed ?? 0;
@@ -206,7 +212,7 @@ export class MIPROv2 {
             const plans = demoSetPlans(numCandidates, seed);
             for (const [index, plan] of plans.entries()) {
                 demoSets.push(
-                    await buildDemoSet(base.resetCopy(), config.trainset, o.metric, plan, {
+                    await buildDemoSet(withoutDemos(base), config.trainset, o.metric, plan, {
                         maxBootstrappedDemos: maxBoot,
                         maxLabeledDemos: maxLabeled,
                         seed,
@@ -227,7 +233,7 @@ export class MIPROv2 {
             o.dataAwareProposer === false
                 ? undefined
                 : await summarizeDataset(config.trainset, {
-                      lm: o.promptModel,
+                      lm: promptModel,
                       rng: createRng(seed + 2),
                   });
         const programDescription =
@@ -243,8 +249,10 @@ export class MIPROv2 {
                         ? undefined
                         : MIPRO_TIPS[randomInt(rng, MIPRO_TIPS.length)];
                 const [proposal] = await proposeInstructions({
-                    lm: o.promptModel,
+                    lm: promptModel,
                     n: 1,
+                    index: i - 1,
+                    total: numCandidates - 1,
                     basicInstruction: original,
                     programDescription,
                     datasetSummary,

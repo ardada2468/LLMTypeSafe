@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BootstrapFewShotWithRandomSearch } from './random-search';
 import { Predict } from '../modules/predict';
+import type { PredictorState } from '../core/module';
 import type { OptimizerProgressEvent } from './utils';
 import {
     demoQuestions,
@@ -98,6 +99,30 @@ describe('BootstrapFewShotWithRandomSearch', () => {
             'labeled',
             'zero-shot',
         ]);
+    });
+
+    it('keeps the student instructions on every candidate, clearing only its demos', async () => {
+        const lm = goldenDemoLM();
+        const student = new Predict('question -> answer', lm)
+            .withInstructions('Double the number.')
+            .withDemos(doublingSet([99]));
+        const optimizer = new BootstrapFewShotWithRandomSearch({
+            metric: exactAnswer,
+            numCandidatePrograms: 1,
+            maxBootstrappedDemos: 2,
+            maxLabeledDemos: 0,
+        });
+        const compiled = await optimizer.compile(student, { trainset, valset });
+
+        for (const candidate of optimizer.results!.candidates) {
+            expect((candidate.state.self as PredictorState).instructions).toBe(
+                'Double the number.'
+            );
+        }
+        const zeroShot = optimizer.results!.candidates.find((c) => c.kind === 'zero-shot')!;
+        expect((zeroShot.state.self as PredictorState).demos).toEqual([]);
+        expect(compiled.getInstructions()).toBe('Double the number.');
+        expect(student.getDemos().map((d) => d.get('question'))).toEqual(['double 99']);
     });
 
     it('requires a metric', () => {

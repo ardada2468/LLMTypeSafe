@@ -297,6 +297,9 @@ export class GEPA {
         const valset = config.valset ?? trainset;
         if (valset.length === 0)
             throw new Error('GEPA needs a non-empty valset (or trainset).');
+        // Reflection minibatches come from the trainset. With none, no
+        // iteration would spend any budget and the loop would never end.
+        if (trainset.length === 0) throw new Error('GEPA needs a non-empty trainset.');
         const base = student.deepCopy();
         const paths = base.namedPredictors().map(([path]) => path);
         if (paths.length === 0) throw new Error('GEPA found no predictors to optimize.');
@@ -425,15 +428,16 @@ export class GEPA {
                 let feedback: string | undefined;
                 if (run.prediction) {
                     try {
-                        const verdict = await o.metric(
-                            example,
-                            run.prediction,
-                            run.trace,
-                            path,
-                            predTrace
+                        // Score as every other evaluation does — without a
+                        // predictor name — so the parent's minibatch score is
+                        // comparable with the child's, which `evaluateProgram`
+                        // measures that way. Then ask again, naming the
+                        // predictor, for feedback aimed at it (as DSPy does: a
+                        // metric may grade differently when it sees `predName`).
+                        score = metricScore(await o.metric(example, run.prediction, run.trace));
+                        feedback = metricFeedback(
+                            await o.metric(example, run.prediction, run.trace, path, predTrace)
                         );
-                        score = metricScore(verdict);
-                        feedback = metricFeedback(verdict);
                     } catch (error) {
                         feedback = `The metric failed on this output: ${describeError(error)}`;
                     }

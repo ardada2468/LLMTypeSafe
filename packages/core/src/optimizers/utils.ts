@@ -421,6 +421,21 @@ export function withDemosByPath<M extends Module>(
     return copy;
 }
 
+/**
+ * A copy of `program` with every predictor's demos cleared and everything
+ * else — instructions included — kept.
+ *
+ * This is what DSPy's `reset_copy()` means for a program whose instructions
+ * live in its signatures: a fresh demo slate, not a fresh prompt. (`resetCopy`
+ * here also drops instruction overrides, which would silently undo an earlier
+ * instruction optimizer such as COPRO when a demo optimizer runs after it.)
+ */
+export function withoutDemos<M extends Module>(program: M): M {
+    const copy = program.deepCopy();
+    for (const predictor of copy.predictors()) predictor.setDemos([]);
+    return copy;
+}
+
 /** How a candidate demo set is built, by DSPy's seed convention. */
 export interface DemoSetPlan {
     kind: 'zero-shot' | 'labeled' | 'bootstrap' | 'shuffled-bootstrap';
@@ -606,6 +621,14 @@ export interface ProposeInstructionsOptions {
     previous?: Array<{ instruction: string; score: number }>;
     /** A tip per proposal, cycled. */
     tips?: string[];
+    /**
+     * Position of the first proposal in a longer series, from 0. Default 0.
+     * A caller asking for one proposal at a time passes its running count, so
+     * every request in the series is distinct (see {@link proposeInstructions}).
+     */
+    index?: number;
+    /** Length of the whole series. Default `index + n`. */
+    total?: number;
     /** Sampling temperature for the proposer. Default 1. */
     temperature?: number;
     callOptions?: LLMCallOptions;
@@ -617,8 +640,10 @@ export interface ProposeInstructionsOptions {
  * previous attempts with scores, and a tip.
  *
  * Proposals are requested one at a time, in order, so a seeded run asks the
- * same questions in the same order. Each proposal names its position, so a
- * cache never serves one proposal for every slot. Blank and duplicate replies
+ * same questions in the same order. Each proposal names its position in the
+ * series — even when it also carries a tip, since tips repeat — so with the
+ * cache on, two slots never send the identical request and get one cached
+ * reply back for both. Blank and duplicate replies
  * are dropped, so fewer than `n` may come back; a proposer that fails is
  * skipped rather than failing the compile.
  */
@@ -634,11 +659,14 @@ export async function proposeInstructions(
             : 'None yet.';
     const results: string[] = [];
     const seen = new Set<string>();
+    const offset = Math.max(0, Math.trunc(options.index ?? 0));
+    const total = options.total ?? offset + options.n;
     for (let i = 0; i < options.n; i++) {
         const tip =
             options.tips && options.tips.length > 0
                 ? options.tips[i % options.tips.length]
                 : '';
+        const position = `Proposal ${offset + i + 1} of ${total}.`;
         try {
             const prediction = await proposer.forward(
                 {
@@ -647,7 +675,7 @@ export async function proposeInstructions(
                     dataset_summary: options.datasetSummary ?? 'Not available.',
                     task_demos: options.demos ?? 'Not available.',
                     previous_instructions: previous,
-                    tip: tip || `Proposal ${i + 1} of ${options.n}.`,
+                    tip: tip ? `${tip}\n(${position})` : position,
                 },
                 {
                     ...options.callOptions,

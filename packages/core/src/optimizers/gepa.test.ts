@@ -295,6 +295,57 @@ describe('GEPA', () => {
     });
 });
 
+describe('GEPA scoring and guards', () => {
+    it('scores minibatch runs without predName and asks for feedback with it', async () => {
+        // Grades leniently when told which predictor is being reflected on —
+        // if that grade were taken as the score, every minibatch would look
+        // perfect and GEPA would never reflect.
+        const calls: Array<string | undefined> = [];
+        const metric = (
+            example: Example,
+            prediction: Prediction,
+            _trace?: MetricTraceStep[],
+            predName?: string
+        ) => {
+            calls.push(predName);
+            return predName !== undefined
+                ? { score: 1, feedback: 'Wrong: the answer should be twice the number.' }
+                : feedbackMetric(example, prediction);
+        };
+        const optimizer = new GEPA({
+            metric,
+            reflectionLM: reflector(),
+            maxMetricCalls: 12,
+            reflectionMinibatchSize: 2,
+            seed: 1,
+        });
+        const compiled = await optimizer.compile(
+            new Predict('question -> answer', magicWordLM()),
+            { trainset: doublingSet([1, 2, 3, 4]), valset: doublingSet([5, 6, 7, 8]) }
+        );
+
+        expect(compiled.getInstructions()).toBe('DOUBLE the number in the question.');
+        expect(calls).toContain('self');
+        expect(calls.filter((name) => name === undefined).length).toBeGreaterThan(
+            calls.filter((name) => name === 'self').length
+        );
+    });
+
+    it('refuses an empty trainset instead of looping forever', async () => {
+        const optimizer = new GEPA({
+            metric: feedbackMetric,
+            reflectionLM: reflector(),
+            maxMetricCalls: 10,
+        });
+        await expect(
+            optimizer.compile(new Predict('question -> answer', magicWordLM()), {
+                trainset: [],
+                valset: doublingSet([1, 2]),
+            })
+        ).rejects.toThrow(/non-empty trainset/);
+    });
+});
+
 describe('GEPA prompt helpers', () => {
     it('extracts the fenced instruction, dropping a language tag', () => {
         expect(extractInstruction('Sure.\n```text\nDo the thing.\n```\nDone.')).toBe(

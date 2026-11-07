@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MIPROv2, MIPRO_TIPS, trialsFor } from './mipro';
 import { Predict } from '../modules/predict';
 import { MockLM } from '../testing/mock-lm';
+import { context } from '../core/config';
 import type { OptimizerProgressEvent } from './utils';
 import { doublingLM, doublingSet, exactAnswer, reply, viewPrompt } from './test-support';
 
@@ -92,7 +93,16 @@ describe('MIPROv2', () => {
         expect(proposal.inputs.program_description).toContain(
             'self (Predict): question -> answer'
         );
-        expect(MIPRO_TIPS).toContain(proposal.inputs.tip);
+        const [tip, position] = proposal.inputs.tip.split('\n');
+        expect(MIPRO_TIPS).toContain(tip);
+        // Each proposal names its slot, so a cache cannot collapse two slots
+        // that drew the same tip into one reply.
+        expect(position).toBe('(Proposal 1 of 3.)');
+        const tipFields = promptModel.calls
+            .map((call) => viewPrompt(call.messages))
+            .filter((view) => view.outputs.includes('proposed_instruction'))
+            .map((view) => view.inputs.tip);
+        expect(new Set(tipFields).size).toBe(tipFields.length);
 
         expect(student.getInstructions()).toBeUndefined();
         expect(student.getDemos()).toEqual([]);
@@ -132,6 +142,60 @@ describe('MIPROv2', () => {
         expect(again.trials.map((t) => [t.params, t.score])).toEqual(
             results.trials.map((t) => [t.params, t.score])
         );
+    });
+
+    it('proposes with the configured model, not the task model, when no prompt model is given', async () => {
+        const configured = proposer();
+        const taskModel = taskLM();
+        const optimizer = new MIPROv2({
+            metric: exactAnswer,
+            taskModel,
+            auto: null,
+            numCandidates: 3,
+            numTrials: 3,
+            minibatch: false,
+            maxBootstrappedDemos: 0,
+            maxLabeledDemos: 0,
+        });
+        await context({ lm: configured }, () =>
+            optimizer.compile(new Predict('question -> answer'), { trainset, valset })
+        );
+
+        const asks = (lm: MockLM, field: string) =>
+            lm.calls.filter((call) => viewPrompt(call.messages).outputs.includes(field)).length;
+        expect(asks(configured, 'observations')).toBe(1);
+        expect(asks(configured, 'proposed_instruction')).toBe(2);
+        expect(asks(taskModel, 'observations')).toBe(0);
+        expect(asks(taskModel, 'proposed_instruction')).toBe(0);
+        // The program itself still ran on the task model.
+        expect(asks(taskModel, 'answer')).toBeGreaterThan(0);
+        expect(asks(configured, 'answer')).toBe(0);
+    });
+
+    it('keeps the student instructions while bootstrapping demo sets', async () => {
+        const lm = taskLM();
+        const student = new Predict('question -> answer', lm).withInstructions('DOUBLE it.');
+        const optimizer = new MIPROv2({
+            metric: exactAnswer,
+            promptModel: proposer(),
+            auto: null,
+            numCandidates: 3,
+            numTrials: 1,
+            minibatch: false,
+            maxBootstrappedDemos: 2,
+            maxLabeledDemos: 0,
+            dataAwareProposer: false,
+        });
+        await optimizer.compile(student, { trainset, valset });
+
+        // The first task-model calls are the bootstrap runs (zero-shot and
+        // labelled sets need none). They must run with the student's own
+        // instruction: wiping it would make every run fail, leaving no demos.
+        const bootstrapRuns = lm.calls.slice(0, trainset.length);
+        for (const call of bootstrapRuns) {
+            expect(viewPrompt(call.messages).system).toContain('DOUBLE it.');
+        }
+        expect(optimizer.results!.instructionCandidates.self[0]).toBe('DOUBLE it.');
     });
 
     it('derives the trial count from an auto preset', async () => {

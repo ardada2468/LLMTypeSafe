@@ -9,6 +9,7 @@ import {
     evaluateProgram,
     reportProgress,
     withDemosByPath,
+    withoutDemos,
     type BaseOptimizerOptions,
     type CompileConfig,
     type DemoSetPlan,
@@ -64,7 +65,8 @@ export interface RandomSearchResults {
  *
  * The candidates, by seed as in DSPy:
  *
- * - `-3` — zero-shot: the student with no demos, the baseline to beat.
+ * - `-3` — zero-shot: the student with no demos (its instructions are kept),
+ *   the baseline to beat.
  * - `-2` — labelled demos only, no model calls to build.
  * - `-1` — bootstrapped demos from the trainset in its given order.
  * - `seed, seed + 1, …` — bootstrapped demos from a shuffled trainset, each
@@ -97,7 +99,7 @@ export class BootstrapFewShotWithRandomSearch {
         const valset = config.valset ?? config.trainset;
         const seed = o.seed ?? 0;
         const plans = demoSetPlans(3 + (o.numCandidatePrograms ?? 8), seed);
-        const base = student.resetCopy();
+        const base = withoutDemos(student);
         const sizeRng = createRng(seed);
 
         const candidates: Array<RandomSearchCandidate & { program: M }> = [];
