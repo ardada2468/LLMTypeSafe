@@ -23,10 +23,83 @@ const lm = new OpenAILM({
 configure({ lm });
 ```
 
-Per-call `timeout` and `retries` map onto the SDK's own request options, so
-retries honour `retry-after` headers rather than being re-implemented here.
+## Options
+
+| Option            | Default                     | Notes                                                                 |
+| ----------------- | --------------------------- | --------------------------------------------------------------------- |
+| `apiKey`          | `OPENAI_API_KEY`            |                                                                       |
+| `model`           | `DEFAULT_OPENAI_MODEL`      | Per call: `options.model`.                                            |
+| `baseURL`         | `https://api.openai.com/v1` | Azure, a proxy, or a compatible server.                               |
+| `organization`    | —                           |                                                                       |
+| `project`         | —                           |                                                                       |
+| `timeout`         | SDK default (10 min)        | Milliseconds. Per call: `options.timeout`.                            |
+| `maxRetries`      | `2`                         | Retried inside the SDK, honouring `retry-after`. Per call: `retries`. |
+| `reasoningEffort` | unset                       | `'none'`–`'max'`; sent as `reasoning_effort` only when set.           |
+
 `temperature` and `top_p` are sent only when you set them, which keeps reasoning
-models working.
+models working; `maxTokens` is sent as `max_completion_tokens`.
+
+## Reasoning effort
+
+Set a default on the constructor and override it per call through
+`providerOptions.openai`:
+
+```ts
+const lm = new OpenAILM({ model: 'gpt-5.2', reasoningEffort: 'low' });
+
+await predict.forward(inputs, {
+  providerOptions: { openai: { reasoningEffort: 'high' } },
+});
+```
+
+Any other key under `providerOptions.openai` is merged into the Chat Completions
+request body unchanged (`{ openai: { service_tier: 'flex' } }`), as an escape
+hatch for parameters ts-dspy does not model. Leave `reasoningEffort` unset for
+models without reasoning; they reject the parameter.
+
+Servers that return reasoning text (`reasoning_content` from DeepSeek or vLLM,
+`reasoning` from OpenRouter) have it surfaced as `ChatResult.reasoning` and, on
+streams, as `metadata.reasoningDelta` chunks, never mixed into the answer.
+
+## Usage, prompt caching and reasoning tokens
+
+OpenAI caches long prompt prefixes automatically. `lm.getUsage()` (and per-call
+usage) reports `cachedTokens` from `prompt_tokens_details.cached_tokens` and
+`reasoningTokens` from `completion_tokens_details.reasoning_tokens`, for both
+streaming and non-streaming calls. Both are subsets of the prompt and completion
+totals.
+
+## Embeddings
+
+```ts
+import { OpenAIEmbedder } from '@ts-dspy/openai';
+import { cosineSimilarity } from '@ts-dspy/core';
+
+const embedder = new OpenAIEmbedder({
+  // model: 'text-embedding-3-small', // default
+  // dimensions: 512,                  // shorten vectors (text-embedding-3-*)
+  // batchSize: 512,                   // inputs per request, capped at 2048
+});
+const [a, b] = await embedder.embed(['refund policy', 'returns within 30 days']);
+cosineSimilarity(a, b);
+```
+
+`OpenAIEmbedder` implements core's `Embedder`: inputs are batched, results come
+back in input order, `embed(texts, { signal })` honours cancellation, and
+failures raise the same `RateLimitError`/`AuthError`/… as `OpenAILM`. Pass
+`client` to share an existing `OpenAI` instance.
+
+## Retries
+
+The SDK retries 408/409/429/5xx and connection errors itself (`maxRetries`,
+default 2). For a policy that spans providers — or fallback to another model —
+use core's middleware and turn the SDK's off:
+
+```ts
+import { wrapLM, retry } from '@ts-dspy/core';
+
+const lm = wrapLM(new OpenAILM({ maxRetries: 0 }), retry({ maxRetries: 4 }));
+```
 
 ## OpenAI-compatible endpoints
 

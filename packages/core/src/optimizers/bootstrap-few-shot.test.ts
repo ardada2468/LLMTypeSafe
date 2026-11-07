@@ -5,6 +5,11 @@ import { Predict } from '../modules/predict';
 import { Signature, InputField, OutputField } from '../core/signature';
 import type { ILanguageModel } from '../types/language-model';
 import { MockLM } from '../test-utils';
+import { Module } from '../core/module';
+import { context } from '../core/config';
+import { ChainOfThought } from '../modules/chain-of-thought';
+import type { LLMCallOptions } from '../types/language-model';
+import { doublingLM, doublingSet, exactAnswer, numberIn, reply } from './test-support';
 
 class QA extends Signature {
     @InputField({ description: 'the question' })
@@ -434,5 +439,115 @@ describe('BootstrapFewShot', () => {
 
         expect(compiled.getDemos()).toHaveLength(0);
         expect(lm.lastPrompt()).not.toContain('worked example');
+    });
+
+    describe('per-predictor demos for a Module', () => {
+        class Pipeline extends Module {
+            hint = new Predict('question -> hint');
+            solve = new ChainOfThought('question, hint -> answer');
+
+            async forward(inputs: Record<string, any>, options?: LLMCallOptions) {
+                const { hint } = await this.hint.forward(inputs, options);
+                return this.solve.forward({ question: inputs.question, hint }, options);
+            }
+        }
+
+        /** Hints are the question reversed; answers are right for even numbers only. */
+        const pipelineLM = () =>
+            doublingLM(
+                (_view, n) => n % 2 === 0,
+                (view) =>
+                    view.outputs.includes('hint')
+                        ? reply({ hint: `hint for ${view.inputs.question}` })
+                        : undefined
+            );
+
+        it('gives each predictor demos of its own inputs and outputs from passing runs', async () => {
+            const lm = pipelineLM();
+            const student = new Pipeline();
+            const optimizer = new BootstrapFewShot({
+                metric: exactAnswer,
+                maxBootstrappedDemos: 2,
+                seed: 3,
+            });
+
+            const compiled = await context({ lm }, () =>
+                optimizer.compile(student, { trainset: doublingSet([1, 2, 3, 4, 5, 6]) })
+            );
+
+            const hintDemos = compiled.hint.getDemos();
+            const solveDemos = compiled.solve.getDemos();
+            expect(hintDemos).toHaveLength(2);
+            expect(solveDemos).toHaveLength(2);
+            for (const demo of hintDemos) {
+                expect(demo.getInputKeys()).toEqual(['question']);
+                expect(demo.get('hint')).toBe(`hint for ${demo.get('question')}`);
+                expect(numberIn(demo.get('question')) % 2).toBe(0);
+            }
+            for (const demo of solveDemos) {
+                expect(demo.getInputKeys()).toEqual(['question', 'hint']);
+                expect(demo.get('reasoning')).toMatch(/^thinking about/);
+                expect(demo.get('answer')).toBe(String(numberIn(demo.get('question')) * 2));
+            }
+            expect(optimizer.results?.demos.hint).toHaveLength(2);
+
+            // The student is untouched; the compiled program is a separate tree.
+            expect(student.hint.getDemos()).toEqual([]);
+            expect(student.solve.getDemos()).toEqual([]);
+            expect(compiled).not.toBe(student);
+            expect(compiled.hint).not.toBe(student.hint);
+        });
+
+        it('passes the run trace to the metric while bootstrapping', async () => {
+            const traces: unknown[] = [];
+            await context({ lm: pipelineLM() }, () =>
+                new BootstrapFewShot({
+                    metric: (example, prediction, trace) => {
+                        traces.push(trace);
+                        return exactAnswer(example, prediction);
+                    },
+                    maxBootstrappedDemos: 1,
+                }).compile(new Pipeline(), { trainset: doublingSet([2]) })
+            );
+            expect(traces).toHaveLength(1);
+            expect((traces[0] as Array<{ path: string }>).map((step) => step.path)).toEqual([
+                'hint',
+                'solve',
+            ]);
+        });
+
+        it('runs the teacher on every predictor, even ones with their own model', async () => {
+            const teacher = pipelineLM();
+            const studentLM = new MockLM({
+                respond: () => {
+                    throw new Error('student must not be called while bootstrapping');
+                },
+            });
+            const student = new Pipeline();
+            const pinned = student.hint.withLM(studentLM);
+            student.hint = pinned;
+
+            const compiled = await new BootstrapFewShot({
+                metric: exactAnswer,
+                maxBootstrappedDemos: 1,
+                teacher,
+            }).compile(student, { trainset: doublingSet([2]) });
+
+            expect(studentLM.calls).toHaveLength(0);
+            expect(teacher.calls.length).toBeGreaterThan(0);
+            expect(compiled.hint.getDemos()).toHaveLength(1);
+        });
+
+        it('adds labelled demos to every predictor after the bootstrapped ones', async () => {
+            const compiled = await context({ lm: pipelineLM() }, () =>
+                new BootstrapFewShot({
+                    metric: exactAnswer,
+                    maxBootstrappedDemos: 1,
+                    maxLabeledDemos: 1,
+                }).compile(new Pipeline(), { trainset: doublingSet([2, 3]) })
+            );
+            expect(compiled.hint.getDemos()).toHaveLength(2);
+            expect(compiled.solve.getDemos()[1].get('question')).toBe('double 3');
+        });
     });
 });

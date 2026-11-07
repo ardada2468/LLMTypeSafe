@@ -54,6 +54,7 @@ export {
     isTracingEnabled,
     getCallbacks,
     isUsageTrackingEnabled,
+    getRetriever,
 } from './core/config';
 export type {
     ConfigureOptions,
@@ -112,6 +113,22 @@ export type { ToolOptions, ToolInit, ToolParameters } from './core/tool';
 export { cosineSimilarity } from './core/embedder';
 export type { Embedder } from './core/embedder';
 
+// Retrieval
+export { InMemoryVectorStore } from './core/retrieve';
+export type { Passage, Retriever, DocumentInput } from './core/retrieve';
+
+// Program streaming
+export { streamify, defaultStatusMessageProvider } from './core/streaming';
+export type {
+    StreamEvent,
+    StatusStreamEvent,
+    FieldStreamEvent,
+    PredictionStreamEvent,
+    StatusMessageProvider,
+    StreamifyOptions,
+    StreamifiedProgram,
+} from './core/streaming';
+
 // Adapters
 export {
     Adapter,
@@ -131,6 +148,7 @@ export type {
     SignatureLayout,
     TwoStepAdapterOptions,
 } from './adapters';
+export { providerOptionsFor, mergeRequestBody } from './core/provider-options';
 
 // Caching
 export { MemoryCache } from './core/cache';
@@ -185,9 +203,53 @@ export type {
 } from './modules/react';
 export { RespAct } from './modules/respact';
 export type { RespActEvent, RespActOptions } from './modules/respact';
+export { BestOfN } from './modules/best-of-n';
+export type { BestOfNOptions, RewardFn } from './modules/best-of-n';
+export { Refine, OfferFeedback } from './modules/refine';
+export type { RefineOptions } from './modules/refine';
+export { Parallel, ParallelError } from './modules/parallel';
+export type {
+    ExecPair,
+    ParallelOptions,
+    ParallelOutcome,
+    FailedExec,
+} from './modules/parallel';
+export { MultiChainComparison } from './modules/multi-chain-comparison';
+export type { MultiChainComparisonOptions, Completion } from './modules/multi-chain-comparison';
+export { ProgramOfThought, runSandboxed, extractCode } from './modules/program-of-thought';
+export type { ProgramOfThoughtOptions, SandboxResult } from './modules/program-of-thought';
+export { Retrieve } from './modules/retrieve';
+export type { RetrieveOptions, RetrieveOutput } from './modules/retrieve';
 
 // Optimizers
-export { LabeledFewShot, BootstrapFewShot } from './optimizers';
+export {
+    LabeledFewShot,
+    BootstrapFewShot,
+    BootstrapFewShotWithRandomSearch,
+    KNNFewShot,
+    KNNProgram,
+    defaultVectorizeInputs,
+    Ensemble,
+    EnsembleProgram,
+    majority,
+    COPRO,
+    TPESampler,
+    MIPROv2,
+    MIPRO_AUTO_PRESETS,
+    MIPRO_TIPS,
+    SIMBA,
+    GEPA,
+    GEPA_AUTO_CANDIDATES,
+    evaluateProgram,
+    runWithTrace,
+    bootstrapTraces,
+    proposeInstructions,
+    summarizeDataset,
+    describeProgram,
+    sampleMinibatch,
+    createRng,
+    shuffled,
+} from './optimizers';
 // `Metric` and `MetricResult` are exported once, from './evaluate' below.
 export type {
     DemoModule,
@@ -196,6 +258,40 @@ export type {
     BootstrapFewShotOptions,
     BootstrapFewShotConfig,
     BootstrapProgressEvent,
+    BootstrapFewShotWithRandomSearchOptions,
+    RandomSearchCandidate,
+    RandomSearchResults,
+    KNNFewShotOptions,
+    KNNNeighbour,
+    EnsembleOptions,
+    MajorityOptions,
+    ReduceFn,
+    COPROOptions,
+    COPROAttempt,
+    COPROResults,
+    TPEOptions,
+    TPESpace,
+    TPETrial,
+    MIPROv2Options,
+    MIPROTrial,
+    MIPROResults,
+    SIMBAOptions,
+    SIMBAResults,
+    SIMBAStep,
+    SIMBAStrategy,
+    GEPAOptions,
+    GEPACandidate,
+    GEPADetailedResults,
+    GEPAIterationLog,
+    BaseOptimizerOptions,
+    CompileConfig,
+    OptimizerProgressEvent,
+    ProgramEvaluation,
+    TracedRun,
+    BootstrapTracesOptions,
+    BootstrapTracesResult,
+    ProposeInstructionsOptions,
+    Rng,
 } from './optimizers';
 
 // Evaluation

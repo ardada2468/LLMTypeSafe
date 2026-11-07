@@ -240,6 +240,24 @@ describe('ChatAdapter JSON fallback', () => {
         );
     });
 
+    it('falls back for a streamed reply too, as Predict.stream does', async () => {
+        const lm = new MockLM({
+            responses: [
+                'I refuse to follow formats.',
+                '{"answer": "Paris", "confidence": 0.9}',
+            ],
+            chunkSize: 5,
+        });
+
+        let last: Record<string, unknown> | undefined;
+        for await (const partial of new Predict(QA, lm).stream({ question: 'Q' })) {
+            last = partial;
+        }
+
+        expect(last).toEqual({ answer: 'Paris', confidence: 0.9 });
+        expect(lm.calls).toHaveLength(2);
+    });
+
     it('does not fall back when the reply has fields that fail validation', async () => {
         const lm = new MockLM({ responses: ['answer: Paris\nconfidence: very high'] });
 

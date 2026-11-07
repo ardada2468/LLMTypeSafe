@@ -6,6 +6,8 @@ import {
     classify,
     contentToText,
     imageToUrl,
+    mergeRequestBody,
+    providerOptionsFor,
     type ChatMessage,
     type ChatResult,
     type FinishReason,
@@ -15,19 +17,39 @@ import {
     type ModelCapabilities,
     type StreamChunk,
     type ToolCall,
+    type UsageStats,
 } from '@ts-dspy/core';
 import OpenAI, { APIConnectionTimeoutError, APIError } from 'openai';
 import type {
     ChatCompletionContentPart,
     ChatCompletionContentPartImage,
+    ChatCompletionCreateParamsNonStreaming,
+    ChatCompletionCreateParamsStreaming,
     ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions';
+import type { CompletionUsage } from 'openai/resources/completions';
+import type { ReasoningEffort } from 'openai/resources/shared';
 
 /**
  * Current default. Confirm against `client.models.list()` if you need a specific
  * tier — model identifiers move faster than release cycles.
  */
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.2';
+
+/** How hard a reasoning model thinks before answering. Not every model takes every value. */
+export type OpenAIReasoningEffort = Exclude<ReasoningEffort, null>;
+
+/**
+ * Per-call options read from `providerOptions.openai`.
+ *
+ * `reasoningEffort` is translated to `reasoning_effort`; every other key is
+ * merged into the Chat Completions request body unchanged — e.g.
+ * `{ openai: { service_tier: 'flex', user: 'u-1' } }`.
+ */
+export interface OpenAIProviderOptions {
+    reasoningEffort?: OpenAIReasoningEffort;
+    [key: string]: unknown;
+}
 
 export interface OpenAIConfig {
     apiKey?: string;
@@ -38,8 +60,17 @@ export interface OpenAIConfig {
     baseURL?: string;
     /** Default per-request timeout in milliseconds. */
     timeout?: number;
-    /** Default retry count. The SDK honours `retry-after` headers. */
+    /**
+     * Default retry count (SDK default: 2). Retries run inside the SDK, which
+     * honours `retry-after` headers. Overridden per call by `options.retries`.
+     */
     maxRetries?: number;
+    /**
+     * Default `reasoning_effort` for reasoning models (`gpt-5*`, `o*`). Sent
+     * only when set; overridden per call by `providerOptions.openai.reasoningEffort`.
+     * Leave unset for models without reasoning, which reject the parameter.
+     */
+    reasoningEffort?: OpenAIReasoningEffort;
 }
 
 /** Context windows by model family, longest-prefix first. */
@@ -83,16 +114,19 @@ function supportsVisionFor(model: string): boolean {
 
 export class OpenAILM extends BaseLM {
     private readonly client: OpenAI;
+    private readonly reasoningEffort?: OpenAIReasoningEffort;
     /** Constructor settings that change what a given prompt returns. */
     protected readonly scope: Record<string, unknown>;
 
     constructor(config: OpenAIConfig = {}) {
         super('openai', config.model ?? DEFAULT_OPENAI_MODEL);
 
+        this.reasoningEffort = config.reasoningEffort;
         this.scope = {
             baseURL: config.baseURL ?? null,
             organization: config.organization ?? null,
             project: config.project ?? null,
+            ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
         };
         this.client = new OpenAI({
             apiKey: config.apiKey,
@@ -125,30 +159,27 @@ export class OpenAILM extends BaseLM {
 
         try {
             const completion = await this.client.chat.completions.create(
-                {
-                    model: options?.model ?? this.model,
-                    messages: toOpenAIMessages(messages),
-                    ...samplingParams(options),
-                    ...toolParams(options),
-                },
+                this.buildRequest(messages, options, toolParams(options)),
                 requestOptions(options)
             );
 
             this.recordUsage({
-                promptTokens: completion.usage?.prompt_tokens ?? 0,
-                completionTokens: completion.usage?.completion_tokens ?? 0,
+                ...usageOf(completion.usage),
                 latencyMs: Date.now() - startedAt,
+                model: options?.model,
             });
 
             const choice = completion.choices[0];
             assertNotFiltered(choice?.finish_reason);
 
             const toolCalls = fromOpenAIToolCalls(choice?.message?.tool_calls);
+            const reasoning = reasoningOf(choice?.message);
 
             return {
                 content: choice?.message?.content ?? '',
                 ...(toolCalls.length > 0 ? { toolCalls } : {}),
                 finishReason: finishReasonOf(choice?.finish_reason),
+                ...(reasoning ? { reasoning } : {}),
             };
         } catch (error) {
             this.recordError();
@@ -165,10 +196,7 @@ export class OpenAILM extends BaseLM {
 
         try {
             const completion = await this.client.chat.completions.create(
-                {
-                    model: options?.model ?? this.model,
-                    messages: toOpenAIMessages([{ role: 'user', content: prompt }]),
-                    ...samplingParams(options),
+                this.buildRequest([{ role: 'user', content: prompt }], options, {
                     response_format: {
                         type: 'json_schema',
                         json_schema: {
@@ -177,14 +205,14 @@ export class OpenAILM extends BaseLM {
                             schema: schema as Record<string, unknown>,
                         },
                     },
-                },
+                }),
                 requestOptions(options)
             );
 
             this.recordUsage({
-                promptTokens: completion.usage?.prompt_tokens ?? 0,
-                completionTokens: completion.usage?.completion_tokens ?? 0,
+                ...usageOf(completion.usage),
                 latencyMs: Date.now() - startedAt,
+                model: options?.model,
             });
 
             const choice = completion.choices[0];
@@ -226,31 +254,30 @@ export class OpenAILM extends BaseLM {
     ): AsyncGenerator<StreamChunk, void, unknown> {
         const startedAt = Date.now();
 
-        let promptTokens = 0;
-        let completionTokens = 0;
+        let usage = usageOf(undefined);
 
         try {
             const stream = await this.client.chat.completions.create(
                 {
-                    model: options?.model ?? this.model,
-                    messages: toOpenAIMessages(messages),
-                    ...samplingParams(options),
+                    ...this.buildRequest(messages, options),
                     stream: true,
                     stream_options: { include_usage: true },
-                },
+                } as ChatCompletionCreateParamsStreaming,
                 requestOptions(options)
             );
 
             // The loop is inside the try so a mid-stream abort surfaces as an
             // LMError and is counted, rather than escaping as a raw SDK error.
             for await (const chunk of stream) {
-                if (chunk.usage) {
-                    promptTokens = chunk.usage.prompt_tokens ?? 0;
-                    completionTokens = chunk.usage.completion_tokens ?? 0;
-                }
+                if (chunk.usage) usage = usageOf(chunk.usage);
                 const choice = chunk.choices[0];
                 if (choice?.finish_reason === 'content_filter') {
                     assertNotFiltered(choice.finish_reason);
+                }
+                const reasoning = reasoningOf(choice?.delta);
+                if (reasoning) {
+                    // Reasoning is not answer text, so it travels in metadata.
+                    yield { content: '', done: false, metadata: { reasoningDelta: reasoning } };
                 }
                 const content = choice?.delta?.content;
                 if (content) {
@@ -262,16 +289,12 @@ export class OpenAILM extends BaseLM {
             throw toLMError(error);
         }
 
-        this.recordUsage({ promptTokens, completionTokens, latencyMs: Date.now() - startedAt });
-        yield {
-            content: '',
-            done: true,
-            usage: {
-                promptTokens,
-                completionTokens,
-                totalTokens: promptTokens + completionTokens,
-            },
-        };
+        this.recordUsage({
+            ...usage,
+            latencyMs: Date.now() - startedAt,
+            model: options?.model,
+        });
+        yield { content: '', done: true, usage: streamUsage(usage) };
     }
 
     async listModels(): Promise<string[]> {
@@ -294,6 +317,75 @@ export class OpenAILM extends BaseLM {
     getModel(): string {
         return this.model;
     }
+
+    /**
+     * Assemble a Chat Completions body: model, messages, sampling, reasoning
+     * effort, the operation's own fields, then the raw `providerOptions.openai`
+     * keys on top.
+     */
+    private buildRequest(
+        messages: ChatMessage[],
+        options: LLMCallOptions | undefined,
+        extra: Record<string, unknown> = {}
+    ): ChatCompletionCreateParamsNonStreaming {
+        const { reasoningEffort, ...raw } = providerOptionsFor(
+            options,
+            'openai'
+        ) as OpenAIProviderOptions;
+        const effort = reasoningEffort ?? this.reasoningEffort;
+
+        const body: Record<string, unknown> = {
+            model: options?.model ?? this.model,
+            messages: toOpenAIMessages(messages),
+            ...samplingParams(options),
+            ...(effort ? { reasoning_effort: effort } : {}),
+            ...extra,
+        };
+        return mergeRequestBody(body, raw) as unknown as ChatCompletionCreateParamsNonStreaming;
+    }
+}
+
+interface OpenAIUsage {
+    promptTokens: number;
+    completionTokens: number;
+    cachedTokens?: number;
+    reasoningTokens?: number;
+}
+
+/**
+ * Token usage, including the cached-prompt and reasoning breakdowns. Both are
+ * subsets of the prompt and completion totals respectively, exactly as the
+ * API reports them.
+ */
+function usageOf(usage: CompletionUsage | null | undefined): OpenAIUsage {
+    const cached = usage?.prompt_tokens_details?.cached_tokens;
+    const reasoning = usage?.completion_tokens_details?.reasoning_tokens;
+    return {
+        promptTokens: usage?.prompt_tokens ?? 0,
+        completionTokens: usage?.completion_tokens ?? 0,
+        ...(cached !== undefined ? { cachedTokens: cached } : {}),
+        ...(reasoning !== undefined ? { reasoningTokens: reasoning } : {}),
+    };
+}
+
+function streamUsage(usage: OpenAIUsage): Partial<UsageStats> {
+    return { ...usage, totalTokens: usage.promptTokens + usage.completionTokens };
+}
+
+/**
+ * Reasoning text, where the server returns any. OpenAI itself does not on
+ * Chat Completions; DeepSeek, vLLM and others send `reasoning_content`, and
+ * OpenRouter sends `reasoning`.
+ */
+function reasoningOf(message: unknown): string | undefined {
+    if (!message || typeof message !== 'object') return undefined;
+    const { reasoning_content: content, reasoning } = message as {
+        reasoning_content?: unknown;
+        reasoning?: unknown;
+    };
+    if (typeof content === 'string' && content) return content;
+    if (typeof reasoning === 'string' && reasoning) return reasoning;
+    return undefined;
 }
 
 /**
@@ -505,7 +597,8 @@ function assertNotFiltered(finishReason: string | null | undefined): void {
     });
 }
 
-function toLMError(error: unknown): LMError {
+/** Map an OpenAI SDK failure onto the core error hierarchy. */
+export function toLMError(error: unknown): LMError {
     if (error instanceof LMError) return error;
     // Checked before APIError: this is a subclass of it, and it carries no
     // status of its own to classify by.
