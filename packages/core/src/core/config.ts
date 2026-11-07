@@ -4,6 +4,7 @@ import { MemoryCache, type Cache } from './cache';
 import { type TraceEntry } from '../types/module';
 import type { Callback } from './callbacks';
 import type { Adapter } from './adapter';
+import type { Retriever } from './retrieve';
 
 /**
  * Receives every trace entry as it is recorded. Forward entries to Langfuse,
@@ -76,6 +77,11 @@ export interface SettingsOverrides {
     trackUsage?: boolean;
     /** Prices used to fill `totalCost` in usage reports. */
     pricing?: PricingTable;
+    /**
+     * Retriever used by any `Retrieve` module without one of its own — DSPy's
+     * `settings.rm`.
+     */
+    retriever?: Retriever;
 }
 
 export interface ConfigureOptions extends SettingsOverrides {
@@ -109,6 +115,7 @@ const globals: {
     adapter?: Adapter;
     trackUsage: boolean;
     pricing?: PricingTable;
+    retriever?: Retriever;
 } = {
     cache: false,
     tracing: false,
@@ -141,6 +148,7 @@ export function configure(options: ConfigureOptions): void {
     if ('adapter' in options) globals.adapter = options.adapter;
     if (options.trackUsage !== undefined) globals.trackUsage = options.trackUsage;
     if ('pricing' in options) globals.pricing = options.pricing;
+    if ('retriever' in options) globals.retriever = options.retriever;
     if (options.traceHistorySize !== undefined) {
         // A NaN limit would silently unbound the buffer, so fall back instead.
         globals.traceHistorySize = Number.isFinite(options.traceHistorySize)
@@ -281,6 +289,11 @@ export function getPricing(): PricingTable | undefined {
     return active()?.pricing ?? globals.pricing;
 }
 
+/** The retriever of the active scope, else the global one. See {@link SettingsOverrides.retriever}. */
+export function getRetriever(): Retriever | undefined {
+    return active()?.retriever ?? globals.retriever;
+}
+
 /**
  * Settings, as one object: `configure` for the globals, `context` for a scope,
  * and the getters every module consults at call time.
@@ -308,5 +321,8 @@ export const settings = {
     },
     get pricing(): PricingTable | undefined {
         return getPricing();
+    },
+    get retriever(): Retriever | undefined {
+        return getRetriever();
     },
 } as const;
