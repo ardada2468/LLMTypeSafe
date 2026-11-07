@@ -4,6 +4,8 @@ import {
     LMError,
     classify,
     contentToText,
+    mergeRequestBody,
+    providerOptionsFor,
     retryWithBackoff,
     imageMediaType,
     normalizeImageSource,
@@ -16,6 +18,7 @@ import {
     type ModelCapabilities,
     type StreamChunk,
     type ToolCall,
+    type UsageStats,
 } from '@ts-dspy/core';
 import {
     FinishReason as GenAIFinishReason,
@@ -27,10 +30,42 @@ import {
     type GenerateContentResponse,
     type Part,
     type SafetySetting,
+    type ThinkingConfig,
+    type ThinkingLevel,
 } from '@google/genai';
 
 /** Current default. Gemini 2.x models have reached end of life. */
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash';
+
+/**
+ * Thinking controls, sent as `thinkingConfig`. Which of them a model honours
+ * is model-dependent: Gemini 3 models steer with `level`, earlier thinking
+ * models with `budgetTokens`.
+ */
+export interface GeminiThinking {
+    /** `thinkingBudget`: tokens to spend thinking. `0` disables, `-1` lets the model decide. */
+    budgetTokens?: number;
+    /**
+     * `includeThoughts`: return thought summaries. They arrive as `reasoning`
+     * on `chatWithTools` and as `reasoningDelta` metadata on streams, never in
+     * the answer text.
+     */
+    includeThoughts?: boolean;
+    /** `thinkingLevel`, e.g. `'LOW'` or `'HIGH'`. */
+    level?: ThinkingLevel | `${ThinkingLevel}`;
+}
+
+/**
+ * Per-call options read from `providerOptions.gemini`.
+ *
+ * `thinking` means what it does on {@link GeminiConfig} and replaces the
+ * constructor default; every other key is merged into the request's
+ * `GenerateContentConfig` as-is — e.g. `{ gemini: { seed: 7, mediaResolution: … } }`.
+ */
+export interface GeminiProviderOptions {
+    thinking?: GeminiThinking;
+    [key: string]: unknown;
+}
 
 export interface GeminiConfig {
     /** Gemini API key. Not required when `vertexai` is true and ADC is configured. */
@@ -57,6 +92,8 @@ export interface GeminiConfig {
      * and silently left the rest at their service defaults.
      */
     safetySettings?: SafetySetting[];
+    /** Default thinking controls; overridden per call by `providerOptions.gemini.thinking`. */
+    thinking?: GeminiThinking;
 }
 
 const DEFAULT_SAFETY_SETTINGS: SafetySetting[] = [
@@ -87,13 +124,8 @@ const BLOCKING_FINISH_REASONS: ReadonlySet<GenAIFinishReason> = new Set([
     GenAIFinishReason.IMAGE_PROHIBITED_CONTENT,
 ]);
 
-/** Context windows by model family; the 1M default matches current Gemini models. */
-function contextLengthFor(model: string): number {
-    if (model.includes('flash-lite')) return 1_000_000;
-    if (model.includes('flash')) return 1_000_000;
-    if (model.includes('pro')) return 1_000_000;
-    return 1_000_000;
-}
+/** Every current Gemini model — Flash, Flash-Lite and Pro — has a 1M-token window. */
+const GEMINI_CONTEXT_LENGTH = 1_000_000;
 
 /** Statuses worth another attempt: rate limits, timeouts and transient faults. */
 const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 504]);
@@ -109,6 +141,7 @@ export class GeminiLM extends BaseLM {
     private readonly safetySettings: SafetySetting[];
     private readonly timeout?: number;
     private readonly maxRetries: number;
+    private readonly thinking?: GeminiThinking;
     /** Constructor settings that change what a given prompt returns. */
     private readonly scope: Record<string, unknown>;
 
@@ -127,12 +160,14 @@ export class GeminiLM extends BaseLM {
         // 2 is what the OpenAI and Anthropic SDKs default to; matching them is
         // the point of running a retry loop here at all.
         this.maxRetries = config.maxRetries ?? 2;
+        this.thinking = config.thinking;
         this.scope = {
             safetySettings: this.safetySettings,
             vertexai: config.vertexai ?? null,
             project: config.project ?? null,
             location: config.location ?? null,
             baseUrl: config.baseUrl ?? null,
+            ...(config.thinking ? { thinking: config.thinking } : {}),
         };
     }
 
@@ -162,10 +197,12 @@ export class GeminiLM extends BaseLM {
         );
 
         const toolCalls = toolCallsOf(response);
+        const reasoning = thoughtsOf(response);
         return {
             content: response.text ?? '',
             ...(toolCalls.length > 0 ? { toolCalls } : {}),
             finishReason: finishReasonOf(response, toolCalls.length > 0),
+            ...(reasoning ? { reasoning } : {}),
         };
     }
 
@@ -221,10 +258,7 @@ export class GeminiLM extends BaseLM {
                 this.client.models.generateContentStream({
                     model: options?.model ?? this.model,
                     contents,
-                    config: {
-                        ...this.buildConfig(systemInstruction, options),
-                        ...toolConfig(options),
-                    },
+                    config: this.buildConfig(systemInstruction, options, toolConfig(options)),
                 })
             );
 
@@ -236,6 +270,11 @@ export class GeminiLM extends BaseLM {
                 // reply can. Without this the stream simply ended early and
                 // looked like a short answer.
                 this.assertNotFiltered(chunk);
+                const thoughts = thoughtsOf(chunk);
+                if (thoughts) {
+                    // Thought summaries are not answer text, so they travel in metadata.
+                    yield { content: '', done: false, metadata: { reasoningDelta: thoughts } };
+                }
                 const text = chunk.text;
                 if (text) {
                     yield { content: text, done: false };
@@ -248,8 +287,8 @@ export class GeminiLM extends BaseLM {
             throw toLMError(error);
         }
 
-        this.recordUsageFrom(last, startedAt);
-        yield { content: '', done: true, usage: usageFrom(last) };
+        this.recordUsageFrom(last, startedAt, options);
+        yield { content: '', done: true, usage: streamUsage(last) };
     }
 
     getCapabilities(): ModelCapabilities {
@@ -258,7 +297,7 @@ export class GeminiLM extends BaseLM {
             supportsStructuredOutput: true,
             supportsFunctionCalling: true,
             supportsVision: supportsVisionFor(this.model),
-            maxContextLength: contextLengthFor(this.model),
+            maxContextLength: GEMINI_CONTEXT_LENGTH,
             supportedFormats: ['text', 'json_object', 'json_schema'],
         };
     }
@@ -282,7 +321,7 @@ export class GeminiLM extends BaseLM {
                 this.client.models.generateContent({
                     model: options?.model ?? this.model,
                     contents,
-                    config: { ...this.buildConfig(systemInstruction, options), ...extraConfig },
+                    config: this.buildConfig(systemInstruction, options, extraConfig),
                 })
             );
         } catch (error) {
@@ -291,7 +330,7 @@ export class GeminiLM extends BaseLM {
         }
 
         this.assertNotFiltered(response);
-        this.recordUsageFrom(response, startedAt);
+        this.recordUsageFrom(response, startedAt, options);
         return response;
     }
 
@@ -328,13 +367,27 @@ export class GeminiLM extends BaseLM {
         }
     }
 
+    /**
+     * Assemble the request config: safety settings, sampling, thinking,
+     * cancellation, the operation's own fields, then the raw
+     * `providerOptions.gemini` keys on top.
+     */
     private buildConfig(
         systemInstruction: string | undefined,
-        options?: LLMCallOptions
+        options?: LLMCallOptions,
+        extraConfig: Partial<GenerateContentConfig> = {}
     ): GenerateContentConfig {
+        const { thinking: callThinking, ...raw } = providerOptionsFor(
+            options,
+            'gemini'
+        ) as GeminiProviderOptions;
+
         const config: GenerateContentConfig = {
             safetySettings: this.safetySettings,
         };
+
+        const thinkingConfig = toThinkingConfig(callThinking ?? this.thinking);
+        if (thinkingConfig) config.thinkingConfig = thinkingConfig;
 
         if (systemInstruction) config.systemInstruction = systemInstruction;
         if (options?.maxTokens !== undefined) config.maxOutputTokens = options.maxTokens;
@@ -365,7 +418,11 @@ export class GeminiLM extends BaseLM {
             config.abortSignal = AbortSignal.any(signals);
         }
 
-        return config;
+        // The abort signal is not a plain object, so the merge keeps it intact.
+        return mergeRequestBody(
+            { ...config, ...extraConfig } as Record<string, unknown>,
+            raw
+        ) as GenerateContentConfig;
     }
 
     /**
@@ -401,24 +458,70 @@ export class GeminiLM extends BaseLM {
 
     private recordUsageFrom(
         response: GenerateContentResponse | undefined,
-        startedAt: number
+        startedAt: number,
+        options?: LLMCallOptions
     ): void {
-        const usage = response?.usageMetadata;
         this.recordUsage({
-            promptTokens: usage?.promptTokenCount ?? 0,
-            completionTokens: usage?.candidatesTokenCount ?? 0,
+            ...usageOf(response),
             latencyMs: Date.now() - startedAt,
+            model: options?.model,
         });
     }
 }
 
-function usageFrom(response: GenerateContentResponse | undefined) {
+/** Translate the ts-dspy thinking option into `thinkingConfig`. */
+function toThinkingConfig(thinking: GeminiThinking | undefined): ThinkingConfig | undefined {
+    if (!thinking) return undefined;
+    const config: ThinkingConfig = {};
+    if (thinking.budgetTokens !== undefined) config.thinkingBudget = thinking.budgetTokens;
+    if (thinking.includeThoughts !== undefined)
+        config.includeThoughts = thinking.includeThoughts;
+    if (thinking.level !== undefined) config.thinkingLevel = thinking.level as ThinkingLevel;
+    return Object.keys(config).length > 0 ? config : undefined;
+}
+
+interface GeminiUsage {
+    promptTokens: number;
+    completionTokens: number;
+    cachedTokens?: number;
+    reasoningTokens?: number;
+}
+
+/**
+ * Token usage. Gemini reports thought tokens apart from `candidatesTokenCount`;
+ * they are billed as output, so they are added to the completion total —
+ * `reasoningTokens` is then a subset of `completionTokens`, as elsewhere.
+ * `cachedContentTokenCount` is already included in `promptTokenCount`.
+ */
+function usageOf(response: GenerateContentResponse | undefined): GeminiUsage {
     const usage = response?.usageMetadata;
+    const cached = usage?.cachedContentTokenCount;
+    const thoughts = usage?.thoughtsTokenCount;
     return {
         promptTokens: usage?.promptTokenCount ?? 0,
-        completionTokens: usage?.candidatesTokenCount ?? 0,
-        totalTokens: usage?.totalTokenCount ?? 0,
+        completionTokens: (usage?.candidatesTokenCount ?? 0) + (thoughts ?? 0),
+        ...(cached !== undefined ? { cachedTokens: cached } : {}),
+        ...(thoughts !== undefined ? { reasoningTokens: thoughts } : {}),
     };
+}
+
+function streamUsage(response: GenerateContentResponse | undefined): Partial<UsageStats> {
+    const usage = usageOf(response);
+    return {
+        ...usage,
+        totalTokens:
+            response?.usageMetadata?.totalTokenCount ??
+            usage.promptTokens + usage.completionTokens,
+    };
+}
+
+/** Text of the thought-summary parts (`thought: true`), returned with `includeThoughts`. */
+function thoughtsOf(response: GenerateContentResponse): string {
+    const parts = response.candidates?.[0]?.content?.parts ?? [];
+    return parts
+        .filter((part) => part.thought === true && typeof part.text === 'string')
+        .map((part) => part.text)
+        .join('');
 }
 
 /**
@@ -634,7 +737,7 @@ function statusOf(error: unknown): number | undefined {
  * transport failure — Node's `fetch` reports those as a `TypeError` — so a
  * deterministic bug is not turned into four slow deterministic bugs.
  */
-function isRetryable(error: unknown): boolean {
+export function isRetryable(error: unknown): boolean {
     if (
         error instanceof Error &&
         (error.name === 'AbortError' || error.name === 'TimeoutError')
@@ -653,7 +756,7 @@ function isRetryable(error: unknown): boolean {
  * error union — so classification leans on the status, with message matching as
  * the only route to a context-length verdict.
  */
-function toLMError(error: unknown): LMError {
+export function toLMError(error: unknown): LMError {
     if (error instanceof LMError) return error;
     const message = error instanceof Error ? error.message : String(error);
     const status = statusOf(error);

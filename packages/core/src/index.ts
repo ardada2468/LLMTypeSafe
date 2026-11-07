@@ -100,6 +100,7 @@ export { Tool } from './core/tool';
 export type { ToolOptions, ToolInit, ToolParameters } from './core/tool';
 export { cosineSimilarity } from './core/embedder';
 export type { Embedder } from './core/embedder';
+export { providerOptionsFor, mergeRequestBody } from './core/provider-options';
 export type { Adapter } from './core/adapter';
 
 // Caching

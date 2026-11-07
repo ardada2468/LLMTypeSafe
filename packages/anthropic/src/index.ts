@@ -6,4 +6,9 @@ export {
     DEFAULT_MAX_TOKENS,
     DEFAULT_STREAMING_MAX_TOKENS,
 } from './anthropic-lm';
-export type { AnthropicConfig } from './anthropic-lm';
+export type {
+    AnthropicConfig,
+    AnthropicEffort,
+    AnthropicProviderOptions,
+    AnthropicThinking,
+} from './anthropic-lm';
