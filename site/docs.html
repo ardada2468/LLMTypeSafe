@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Documentation — TS-DSPy</title>
-<meta name="description" content="Install, signatures, modules, providers, validation, streaming, timeouts, testing, and the full API reference for TS-DSPy.">
+<meta name="description" content="Install, signatures, modules, adapters, ReAct, providers, validation, streaming, optimizers, integrations, and the full API reference for TS-DSPy.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -41,7 +41,7 @@
       of this page is the detail behind those four steps.
     </p>
     <p class="meta">
-      <span>0.5.0</span><span>node &gt;=22</span><span>ESM + CJS</span><span>MIT</span>
+      <span>0.7.0</span><span>node &gt;=22</span><span>ESM + CJS</span><span>MIT</span>
     </p>
   </div>
 </section>
@@ -56,14 +56,18 @@
       <li><a href="#signatures">Signatures</a></li>
       <li><a href="#types">Field types</a></li>
       <li><a href="#modules">Modules</a></li>
-      <li><a href="#tools">Tools &amp; RespAct</a></li>
+      <li><a href="#tools">Tools &amp; ReAct</a></li>
+      <li><a href="#adapters">Adapters</a></li>
+      <li><a href="#settings">Settings &amp; composition</a></li>
+      <li><a href="#callbacks">Callbacks, usage &amp; middleware</a></li>
+      <li><a href="#more-modules">More modules</a></li>
       <li><a href="#providers">Providers</a></li>
       <li><a href="#validation">Validation &amp; errors</a></li>
       <li><a href="#streaming">Streaming</a></li>
       <li><a href="#reliability">Timeouts &amp; retries</a></li>
       <li><a href="#testing">Testing</a></li>
       <li><a href="#api">API reference</a></li>
-      <li><a href="#migration">Migrating to 0.5</a></li>
+      <li><a href="#migration">Migrating to 0.7</a></li>
       <li><a href="#tracing">Tracing &amp; history</a></li>
       <li><a href="#caching">Caching</a></li>
       <li><a href="#repair">Self-repair</a></li>
@@ -72,6 +76,7 @@
       <li><a href="#vision">Images &amp; multimodal</a></li>
       <li><a href="#evaluate">Evaluation</a></li>
       <li><a href="#optimizers">Few-shot &amp; optimizers</a></li>
+      <li><a href="#integrations">Integrations</a></li>
     </ol>
   </nav>
 
@@ -310,45 +315,73 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
     <h2>Modules</h2>
     <p>
       A module is the strategy used to fill a signature. All of them accept an
-      optional <code>ILanguageModel</code> as the second constructor argument;
-      without one they use whatever <code>configure()</code> holds.
+      optional <code>ILanguageModel</code> &mdash; as the second constructor
+      argument, or as <code>{ lm }</code> &mdash; and without one they resolve a
+      model <em>at call time</em>: the call's <code>options.lm</code>, then the
+      module's own, then the active <code>settings.context</code> scope, then
+      <code>configure()</code>. A module can therefore be built at import time,
+      before anything is configured.
     </p>
 
     <h3>Predict</h3>
-    <p>One prompt, one completion, one validation. The baseline.</p>
+    <p>One request, one validated reply. The baseline every other module builds on.</p>
     <pre class="code"><code><span class="kw">const</span> p = <span class="kw">new</span> Predict(Summarize)
-<span class="kw">const</span> out = <span class="kw">await</span> p.forward({ article })</code></pre>
+<span class="kw">const</span> out = <span class="kw">await</span> p.forward({ article })
+
+<span class="c">// optimizable state, set by hand or by an optimizer</span>
+<span class="kw">new</span> Predict(Summarize, { demos, instructions: <span class="s">'Summarize in one sentence.'</span>, adapter })</code></pre>
 
     <h3>ChainOfThought</h3>
     <p>
-      Reasons in free text first, then answers with that reasoning in context.
-      Two model calls. The result carries every signature field plus
-      <code>reasoning</code>.
+      Adds a leading <code>reasoning</code> output to the signature, so the model
+      thinks before it answers &mdash; in the <strong>same call</strong>. The result
+      carries every signature field plus <code>reasoning</code>, and
+      <code>reasoning</code> streams like any other field.
     </p>
     <pre class="code"><code><span class="kw">const</span> cot = <span class="kw">new</span> ChainOfThought(SolveProblem)
 <span class="kw">const</span> out = <span class="kw">await</span> cot.forward({ problem })
 console.log(out.reasoning)  <span class="c">// how it got there</span>
 console.log(out.answer)     <span class="c">// validated as declared</span></code></pre>
 
-    <h3>RespAct</h3>
+    <h3>ReAct</h3>
     <p>
-      A reason&ndash;act&ndash;observe loop over tools you provide. Adds
-      <code>steps</code> to the result. See <a href="#tools">Tools</a> below.
+      A reason&ndash;act agent over any signature and the tools you provide. Adds
+      <code>reasoning</code>, <code>trajectory</code> and <code>steps</code> to the
+      result. See <a href="#tools">Tools</a> below. <code>RespAct</code> remains as
+      a deprecated alias.
+    </p>
+
+    <p>
+      More modules &mdash; <code>BestOfN</code>, <code>Refine</code>,
+      <code>Parallel</code>, <code>MultiChainComparison</code>,
+      <code>ProgramOfThought</code>, <code>Retrieve</code> &mdash; are covered under
+      <a href="#more-modules">More modules</a>.
     </p>
   </section>
 
   <section id="tools">
     <p class="anchor">06</p>
-    <h2>Tools and RespAct</h2>
+    <h2>Tools and ReAct</h2>
     <p>
-      In their simplest form tools are plain functions taking a string and
-      returning a string, or a promise of one. Give each a description &mdash; the
-      model picks from those descriptions, so write them as instructions.
+      <code>ReAct</code> follows DSPy. Each step is a <code>Predict</code> (the
+      agent's <code>react</code> predictor) over the signature's inputs plus the
+      <code>trajectory</code> so far, producing <code>next_thought</code>,
+      <code>next_tool_name</code> &mdash; one of your tools, or the reserved
+      <code>finish</code> &mdash; and <code>next_tool_args</code>. The tool runs, its
+      observation joins the trajectory, and the loop continues. Then a
+      <code>ChainOfThought</code> (<code>extract</code>) reads the inputs and the
+      whole trajectory and produces the signature's outputs. Nothing assumes an
+      input called <code>question</code>.
+    </p>
+    <p>
+      In their simplest form tools are plain functions taking a string. Give each a
+      description &mdash; the model picks from those descriptions, so write them as
+      instructions.
     </p>
 
-    <pre class="code"><code><span class="kw">import</span> { RespAct } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+    <pre class="code"><code><span class="kw">import</span> { ReAct } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
 
-<span class="kw">const</span> agent = <span class="kw">new</span> RespAct(
+<span class="kw">const</span> agent = <span class="kw">new</span> ReAct(
   <span class="s">'question -&gt; answer'</span>,
   {
     tools: {
@@ -367,7 +400,17 @@ console.log(out.answer)     <span class="c">// validated as declared</span></cod
 )
 
 <span class="kw">const</span> out = <span class="kw">await</span> agent.forward({ question: <span class="s">'Has order A-4182 shipped?'</span> })
-console.log(out.answer, out.steps)</code></pre>
+console.log(out.answer, out.steps)
+console.log(out.trajectory)  <span class="c">// { thought_0, tool_name_0, tool_args_0, observation_0, thought_1, ... }</span></code></pre>
+
+    <p>
+      <code>tools</code> is a record keyed by tool name, or an array of core
+      <code>Tool</code> objects named by themselves &mdash; the shape
+      <code>@ts-dspy/mcp</code>'s <code>mcpTools()</code> returns. The name
+      <code>finish</code> is reserved. <code>agent.react</code> and
+      <code>agent.extract</code> are ordinary predictors, so optimizers tune them
+      like any other.
+    </p>
 
     <h3>Typed tool arguments</h3>
     <p>
@@ -380,7 +423,7 @@ console.log(out.answer, out.steps)</code></pre>
 
     <pre class="code"><code><span class="kw">import</span> { z } <span class="kw">from</span> <span class="s">'zod'</span>
 
-<span class="kw">const</span> agent = <span class="kw">new</span> RespAct(
+<span class="kw">const</span> agent = <span class="kw">new</span> ReAct(
   <span class="s">'question -&gt; answer'</span>,
   {
     tools: {
@@ -398,44 +441,40 @@ console.log(out.answer, out.steps)</code></pre>
 )</code></pre>
 
     <p>
-      Bare functions and <code>{ description, function }</code> keep working as
-      they always did; a tool without <code>parameters</code> is still called with
-      a single string.
+      Bare functions and <code>{ description, function }</code> keep working; a
+      tool without <code>parameters</code> is still called with a single string.
     </p>
 
-    <h3>Native vs. text-mode tool calling</h3>
+    <h3>Native vs. adapter tool calling</h3>
     <p>
-      <code>RespAct</code> chooses its path from the model, not from configuration.
+      <code>ReAct</code> chooses its path from the model, not from configuration.
       When the language model reports
       <code>supportsFunctionCalling: true</code> &mdash; every provider in this
       repo does &mdash; the tool schemas travel in the request itself and the
-      model's calls come back as structured data. When it does not, the loop falls
-      back to prompting for <code>Action:</code> / <code>Action Input:</code> lines
-      and parsing them out of the completion, which works on any model that can
-      produce text.
+      model's calls come back as structured data. When it does not, each step is a
+      <code>next_thought</code> / <code>next_tool_name</code> /
+      <code>next_tool_args</code> prediction formatted and parsed by the adapter,
+      which works on any model that can produce text.
     </p>
 
     <div class="tablewrap">
       <table>
-        <thead><tr><th scope="col">&nbsp;</th><th scope="col">Native</th><th scope="col">Text mode</th></tr></thead>
+        <thead><tr><th scope="col">&nbsp;</th><th scope="col">Native</th><th scope="col">Adapter loop</th></tr></thead>
         <tbody>
           <tr><td class="sym">Requires</td><td class="note"><code>supportsFunctionCalling</code></td><td class="note">any model that emits text</td></tr>
           <tr><td class="sym">Tool schemas</td><td class="note">sent with the request</td><td class="note">described in the prompt</td></tr>
-          <tr><td class="sym">Arguments</td><td class="note">a parsed object from the provider</td><td class="note">JSON on the <code>Action Input</code> line</td></tr>
+          <tr><td class="sym">Arguments</td><td class="note">a parsed object from the provider</td><td class="note">the <code>next_tool_args</code> output field</td></tr>
           <tr><td class="sym">Calls per turn</td><td class="note">several, executed in order</td><td class="note">exactly one</td></tr>
-          <tr><td class="sym">Typical failure</td><td class="note">arguments fail your schema</td><td class="note">the model mis-formats and burns a step</td></tr>
+          <tr><td class="sym">Typical failure</td><td class="note">arguments fail your schema</td><td class="note">a step that cannot be parsed ends the loop early</td></tr>
         </tbody>
       </table>
     </div>
 
     <p>
       Both paths run the same tools, honour the same repeat guard, and emit the
-      same events, so a program written against one works against the other.
-      That is the point of keeping the text loop: a local model behind an
-      OpenAI-compatible endpoint still runs your agent. Pass
-      <code>forceTextMode: true</code> to pin a tool-capable model to the text
-      loop &mdash; useful for comparing the two, or when a particular model's tool
-      mode misbehaves.
+      same events. Pass <code>forceTextMode: true</code> to pin a tool-capable
+      model to the adapter loop &mdash; useful for comparing the two, or when a
+      particular model's tool mode misbehaves.
     </p>
 
     <div class="callout">
@@ -443,26 +482,319 @@ console.log(out.answer, out.steps)</code></pre>
       <p>
         <code>maxSteps</code> defaults to <strong>6</strong>. A repeated tool call
         is not executed twice &mdash; the loop returns an observation telling the
-        model it already has that result. A final answer that fails validation is
-        fed back with the failing field names so the model can correct it, as long
-        as a step remains. Exhausting the steps throws rather than returning a
-        half-formed answer.
+        model it already has that result. <strong>Running out of steps is not an
+        error</strong>: as in DSPy, the agent moves on to the extract step with the
+        trajectory it has, and <code>steps</code> tells you the budget was spent.
       </p>
     </div>
 
     <p>
-      <code>onEvent</code> receives each thought, tool call, observation, and
-      validation failure. Route it to your logger for a full trace of a run.
+      <code>onEvent</code> receives each <code>thought</code>,
+      <code>tool_call</code>, <code>tool_result</code>, <code>tool_error</code>,
+      <code>repeated_tool_call</code> and <code>parse_failed</code> event. Route it
+      to your logger for a full trace of a run.
     </p>
   </section>
 
-  <section id="providers">
+  <section id="adapters">
     <p class="anchor">07</p>
+    <h2>Adapters</h2>
+    <p>
+      How a signature becomes chat messages, and a reply becomes fields, is an
+      adapter's job, as in DSPy. Every module that predicts goes through one; demos
+      and <code>History</code> inputs travel as real user/assistant turns.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Adapter</th><th scope="col">Format</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">ChatAdapter</td><td class="note">DSPy's format: every field under a <code>[[ ## field ## ]]</code> marker, ending with <code>[[ ## completed ## ]]</code>. A reply that ignores the markers is read as <code>field: value</code> lines or JSON, and one with no output field at all is retried once through <code>JSONAdapter</code> (<code>jsonFallback</code>, default on).</td></tr>
+          <tr><td class="sym">JSONAdapter</td><td class="note">One JSON object. On a provider with native structured output it constrains decoding to the signature's JSON Schema.</td></tr>
+          <tr><td class="sym">XMLAdapter</td><td class="note">Each field in <code>&lt;field&gt;</code> tags.</td></tr>
+          <tr><td class="sym">TwoStepAdapter</td><td class="note"><code>{ extractionLM }</code>: a reasoning model answers freely, and a second model extracts the fields.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      With nothing chosen, modules use <code>JSONAdapter</code> on a
+      structured-output model and <code>ChatAdapter</code> otherwise. Choose one per
+      call, per module, per scope, or globally &mdash; in that order of precedence:
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { ChatAdapter, JSONAdapter, XMLAdapter, TwoStepAdapter, settings, configure } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">await</span> predict.forward(inputs, { adapter: <span class="kw">new</span> XMLAdapter() })
+<span class="kw">new</span> Predict(QA, { adapter: <span class="kw">new</span> JSONAdapter() })
+<span class="kw">await</span> settings.context({ adapter: <span class="kw">new</span> ChatAdapter() }, () =&gt; program.forward(inputs))
+configure({ adapter: <span class="kw">new</span> TwoStepAdapter({ extractionLM: cheapLM }) })</code></pre>
+    <p>
+      Subclass <code>Adapter</code> and implement <code>format</code> /
+      <code>parse</code> (and optionally <code>parsePartial</code> for streaming)
+      for a format of your own. <code>onAdapterFormat</code> and
+      <code>onAdapterParse</code> <a href="#callbacks">callbacks</a> fire around
+      each.
+    </p>
+
+    <h3>History and images</h3>
+    <p>
+      A <code>History</code> input &mdash; <code>history()</code> in a zod
+      signature, or <code>history: history</code> in a string one &mdash; replays
+      earlier turns as user/assistant messages. <code>image()</code> declares an
+      image input in a zod signature.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { History, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> chat = <span class="kw">new</span> Predict(<span class="s">'history: history, question -&gt; answer'</span>)
+<span class="kw">await</span> chat.forward({
+  history: <span class="kw">new</span> History([{ question: <span class="s">'Capital of France?'</span>, answer: <span class="s">'Paris'</span> }]),
+  question: <span class="s">'And its population?'</span>,
+})</code></pre>
+
+    <h3>Deriving signatures</h3>
+    <p>
+      <code>extendSignature(base, options)</code> returns a new signature with
+      fields prepended, appended or removed, or new instructions &mdash; the same
+      operation <code>ChainOfThought</code> uses to add <code>reasoning</code>.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> Cited = extendSignature(AnswerQuestion, {
+  appendOutputs: { citation: { description: <span class="s">'the source of the answer'</span> } },
+  instructions: <span class="s">'Answer and cite your source.'</span>,
+})</code></pre>
+  </section>
+
+  <section id="settings">
+    <p class="anchor">08</p>
+    <h2>Settings and composition</h2>
+
+    <h3>Scoped settings</h3>
+    <p>
+      <code>configure()</code> sets process-wide defaults.
+      <code>settings.context(overrides, fn)</code> (also exported as
+      <code>context</code> and <code>withSettings</code>) overrides them for one
+      async scope, backed by <code>AsyncLocalStorage</code> &mdash; so two
+      concurrent requests can use different models, caches, callbacks and adapters
+      without stepping on each other.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { configure, settings } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+configure({ lm: defaultLM })
+
+app.post(<span class="s">'/answer'</span>, (req, res) =&gt;
+  settings.context({ lm: lmFor(req.user), trackUsage: <span class="kw">true</span> }, <span class="kw">async</span> () =&gt; {
+    res.json(<span class="kw">await</span> program.forward(req.body))
+  })
+)</code></pre>
+    <p>
+      Overridable per scope: <code>lm</code>, <code>cache</code>,
+      <code>tracing</code>, <code>onTrace</code>, <code>callbacks</code>,
+      <code>adapter</code>, <code>trackUsage</code>, <code>pricing</code> and
+      <code>retriever</code>.
+    </p>
+
+    <h3>Composing modules</h3>
+    <p>
+      A program is a <code>Module</code> subclass that holds other modules as
+      fields and calls them from <code>forward</code>. Modules held directly, in
+      arrays or in plain-object records are discovered automatically.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { Module, Predict, ChainOfThought, type LLMCallOptions } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">class</span> <span class="ty">DraftAndPolish</span> <span class="kw">extends</span> <span class="ty">Module</span> {
+  draft = <span class="kw">new</span> ChainOfThought(<span class="s">'topic -&gt; draft'</span>)
+  polish = <span class="kw">new</span> Predict(<span class="s">'draft -&gt; text'</span>)
+
+  <span class="kw">async</span> forward(inputs: { topic: <span class="ty">string</span> }, options?: <span class="ty">LLMCallOptions</span>) {
+    <span class="kw">const</span> { draft } = <span class="kw">await</span> <span class="kw">this</span>.draft.forward(inputs, options)
+    <span class="kw">return</span> <span class="kw">this</span>.polish.forward({ draft }, options)
+  }
+}
+
+<span class="kw">const</span> program = <span class="kw">new</span> DraftAndPolish()
+program.namedPredictors()  <span class="c">// [['draft', ChainOfThought], ['polish', Predict]]</span></code></pre>
+    <p>
+      <code>namedSubModules()</code>, <code>namedPredictors()</code>,
+      <code>deepCopy()</code> and <code>resetCopy()</code> are what every optimizer
+      works through. A hand-written module that calls a model directly should use
+      <code>this.resolveLM(options)</code> rather than reading
+      <code>this.lm</code>, which is now <code>undefined</code> unless one was given.
+    </p>
+
+    <h3>Save and load</h3>
+    <p>
+      A program's learned state &mdash; every predictor's demos and instructions
+      &mdash; is plain JSON keyed by predictor path. Restore it into a freshly built
+      program of the same shape; a state that names a path the program lacks, or
+      misses one it has, is rejected rather than half-loaded.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> compiled = <span class="kw">await</span> optimizer.compile(<span class="kw">new</span> DraftAndPolish(), { trainset })
+<span class="kw">await</span> compiled.save(<span class="s">'program.json'</span>)          <span class="c">// Node only</span>
+
+<span class="kw">const</span> restored = <span class="kw">await</span> <span class="kw">new</span> DraftAndPolish().load(<span class="s">'program.json'</span>)
+
+<span class="c">// or without a filesystem</span>
+<span class="kw">const</span> state = compiled.dumpState()
+<span class="kw">new</span> DraftAndPolish().loadState(state)</code></pre>
+  </section>
+
+  <section id="callbacks">
+    <p class="anchor">09</p>
+    <h2>Callbacks, usage and middleware</h2>
+
+    <h3>Callbacks</h3>
+    <p>
+      A <code>Callback</code> observes module, LM, tool and adapter events. Every
+      event carries a <code>callId</code> and the <code>parentCallId</code> of the
+      invocation it ran inside, tracked per async scope, so the hierarchy is
+      correct under concurrency. A callback that throws is ignored.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { configure, type Callback } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> logger: <span class="ty">Callback</span> = {
+  onModuleStart: (e) =&gt; log(<span class="s">'start'</span>, e.moduleId, e.inputs),
+  onModuleEnd: (e) =&gt; log(<span class="s">'end'</span>, e.moduleId, e.durationMs, e.usage, e.error),
+  onLMEnd: (e) =&gt; log(<span class="s">'lm'</span>, e.model, e.method, e.usage),
+  onToolStart: (e) =&gt; log(<span class="s">'tool'</span>, e.toolName, e.args),
+}
+
+configure({ callbacks: [logger] })</code></pre>
+    <p>
+      Hooks: <code>onModuleStart</code>/<code>onModuleEnd</code>,
+      <code>onLMStart</code>/<code>onLMEnd</code>,
+      <code>onToolStart</code>/<code>onToolEnd</code>,
+      <code>onAdapterFormat</code>/<code>onAdapterParse</code>.
+      <code>@ts-dspy/otel</code> is built on exactly this interface.
+    </p>
+
+    <h3>Per-call usage and cost</h3>
+    <p>
+      With <code>trackUsage: true</code> (or tracing, or any callback) each
+      invocation collects the usage of every LM call it made, nested modules
+      included, in its own async-local scope &mdash; exact under concurrency.
+      Usage is keyed by <code>provider/model</code>, and carries
+      <code>cachedTokens</code> and <code>reasoningTokens</code> when the provider
+      reports them. ts-dspy ships no price table; supply one and
+      <code>totalCost</code> appears.
+    </p>
+    <pre class="code"><code>configure({
+  lm,
+  trackUsage: <span class="kw">true</span>,
+  pricing: { <span class="s">'openai/gpt-5.2'</span>: { input: <span class="s">1.25</span>, output: <span class="s">10</span>, cachedInput: <span class="s">0.125</span> } },  <span class="c">// per million tokens</span>
+})
+
+<span class="kw">const</span> out = <span class="kw">await</span> program.forward(inputs)
+out.getLMUsage()
+<span class="c">// { 'openai/gpt-5.2': { promptTokens, completionTokens, cachedTokens, totalCost, ... } }</span></code></pre>
+
+    <h3>LM middleware</h3>
+    <p>
+      <code>wrapLM(lm, ...middleware)</code> returns a model whose calls pass
+      through each middleware in turn. Four ship with core:
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { wrapLM, retry, fallback, defaults, rateLimit } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> lm = wrapLM(
+  primary,
+  rateLimit({ requestsPerMinute: <span class="s">60</span> }),
+  retry({ maxRetries: <span class="s">3</span> }),          <span class="c">// exponential backoff on retryable LMErrors</span>
+  fallback([backupLM]),             <span class="c">// same request against backupLM if a call fails</span>
+  defaults({ temperature: <span class="s">0</span> }),      <span class="c">// call options applied when unset</span>
+)
+configure({ lm })</code></pre>
+    <p>
+      A middleware is <code>(request, next) =&gt; Promise&lt;unknown&gt;</code>: inspect
+      or rewrite the request, call <code>next</code> any number of times, or
+      short-circuit.
+    </p>
+  </section>
+
+  <section id="more-modules">
+    <p class="anchor">10</p>
+    <h2>More modules</h2>
+
+    <h3>BestOfN and Refine</h3>
+    <p>
+      <code>BestOfN(module, { n, rewardFn, threshold })</code> runs a copy of the
+      module up to <code>n</code> times at <code>temperature</code> (default 1.0)
+      and returns the first prediction whose reward reaches
+      <code>threshold</code>, else the best. <code>Refine</code> takes the same
+      options and, after each failed attempt, asks a model for per-predictor advice
+      that reaches the next attempt as a hint.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { Refine, ChainOfThought } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> oneWord = <span class="kw">new</span> Refine(<span class="kw">new</span> ChainOfThought(<span class="s">'question -&gt; answer'</span>), {
+  n: <span class="s">3</span>,
+  rewardFn: (inputs, prediction) =&gt; (prediction.answer.trim().split(<span class="s">/\s+/</span>).length === <span class="s">1</span> ? <span class="s">1</span> : <span class="s">0</span>),
+  threshold: <span class="s">1</span>,
+})</code></pre>
+
+    <h3>Parallel</h3>
+    <p>
+      Runs many <code>[module, inputs, options?]</code> pairs with bounded
+      concurrency; results come back in input order.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> results = <span class="kw">await</span> <span class="kw">new</span> Parallel({ concurrency: <span class="s">8</span>, maxErrors: <span class="s">3</span> }).run([
+  [summarize, { article: a }],
+  [classify, { text: b }],
+])</code></pre>
+
+    <h3>MultiChainComparison</h3>
+    <p>
+      Compares <code>m</code> reasoning attempts (default 3), passed as
+      <code>completions</code>, and produces a <code>rationale</code> plus the
+      outputs.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> attempts = <span class="kw">await</span> Promise.all(
+  [<span class="s">0</span>, <span class="s">1</span>, <span class="s">2</span>].map(() =&gt; cot.forward({ question }, { temperature: <span class="s">1</span> }))
+)
+<span class="kw">const</span> final = <span class="kw">await</span> <span class="kw">new</span> MultiChainComparison(<span class="s">'question -&gt; answer'</span>).forward({ question, completions: attempts })</code></pre>
+
+    <h3>ProgramOfThought <em>(experimental)</em></h3>
+    <p>
+      The model writes JavaScript, run in a fresh <code>node:vm</code> context
+      under <code>timeoutMs</code>, with errors fed back for up to
+      <code>maxIters</code> regenerations (default 3). It is not a security
+      boundary.
+    </p>
+
+    <h3>Retrieve</h3>
+    <p>
+      <code>InMemoryVectorStore</code> indexes documents with any
+      <code>Embedder</code> &mdash; <code>OpenAIEmbedder</code>,
+      <code>GeminiEmbedder</code>, or your own &mdash; and <code>Retrieve</code>
+      returns the top <code>k</code> as <code>{ passages }</code>.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { InMemoryVectorStore, Retrieve, configure } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+<span class="kw">import</span> { OpenAIEmbedder } <span class="kw">from</span> <span class="s">'@ts-dspy/openai'</span>
+
+<span class="kw">const</span> store = <span class="kw">new</span> InMemoryVectorStore(<span class="kw">new</span> OpenAIEmbedder())
+<span class="kw">await</span> store.addAll(documents)
+configure({ lm, retriever: store })
+
+<span class="kw">const</span> { passages } = <span class="kw">await</span> <span class="kw">new</span> Retrieve({ k: <span class="s">3</span> }).forward({ query: <span class="s">'refund policy'</span> })</code></pre>
+
+    <h3>streamify</h3>
+    <p>
+      Runs any program as an async stream of <code>status</code>, per-predictor
+      <code>field</code> (with <code>delta</code>s) and a final
+      <code>prediction</code> event. Breaking out of the loop aborts the run and
+      closes the provider streams.
+    </p>
+    <pre class="code"><code><span class="kw">const</span> stream = streamify(program)
+
+<span class="kw">for</span> <span class="kw">await</span> (<span class="kw">const</span> event <span class="kw">of</span> stream({ topic })) {
+  <span class="kw">if</span> (event.type === <span class="s">'status'</span>) console.log(event.message)
+  <span class="kw">if</span> (event.type === <span class="s">'field'</span>) process.stdout.write(event.delta ?? <span class="s">''</span>)
+  <span class="kw">if</span> (event.type === <span class="s">'prediction'</span>) render(event.prediction)
+}</code></pre>
+  </section>
+
+  <section id="providers">
+    <p class="anchor">11</p>
     <h2>Providers</h2>
     <p>
       Each vendor provider wraps its vendor's official SDK and reports
-      <code>supportsStructuredOutput: true</code>, so <code>Predict</code> uses the
-      native JSON-schema mode rather than scraping labelled text.
+      <code>supportsStructuredOutput: true</code>, so modules default to
+      <code>JSONAdapter</code> and the provider's native JSON-schema mode.
       <code>OpenAICompatibleLM</code> is the exception &mdash; it declares its
       capabilities from config, because the endpoint behind it might be anything.
     </p>
@@ -517,12 +849,12 @@ console.log(out.answer, out.steps)</code></pre>
 })</code></pre>
     <p>
       <code>supportsStructuredOutput</code> is the flag that matters.
-      <code>Predict</code> branches on it: left at OpenAI's <code>true</code>, every
+      The default adapter branches on it: left at OpenAI's <code>true</code>, every
       call ships a <code>response_format: { type: 'json_schema', strict: true }</code>
       that most compatible servers reject outright, and the provider looks broken
-      rather than merely unsupported. At <code>false</code>, structured output goes
-      through the prompt-based fallback and the reply is validated against the
-      signature exactly as before.
+      rather than merely unsupported. At <code>false</code>, modules default to
+      <code>ChatAdapter</code> and the reply is validated against the signature
+      exactly as before.
     </p>
 
     <div class="tablewrap">
@@ -565,6 +897,44 @@ npm run example:ollama</code></pre>
   vertexai: <span class="kw">false</span>,
 })</code></pre>
 
+    <h3>Reasoning, caching and provider options</h3>
+    <p>
+      Each provider exposes its vendor's reasoning control at construction:
+      <code>reasoningEffort</code> on <code>OpenAILM</code>, <code>thinking</code>
+      (<code>{ budgetTokens, display }</code>) and <code>effort</code> on
+      <code>AnthropicLM</code>, and <code>thinking</code>
+      (<code>thinkingConfig</code>) on <code>GeminiLM</code>. Reasoning text comes
+      back as <code>ChatResult.reasoning</code> and as
+      <code>metadata.reasoningDelta</code> on stream chunks.
+      <code>AnthropicLM</code>'s <code>cachePrompt: true</code> marks the system
+      prompt and conversation prefix as cache breakpoints.
+    </p>
+    <pre class="code"><code><span class="kw">new</span> OpenAILM({ apiKey, reasoningEffort: <span class="s">'low'</span> })
+<span class="kw">new</span> AnthropicLM({ apiKey, thinking: { display: <span class="s">'summarized'</span> }, cachePrompt: <span class="kw">true</span> })
+
+<span class="c">// per call, keyed by provider; each provider reads only its own key</span>
+<span class="kw">await</span> program.forward(inputs, {
+  providerOptions: { openai: { reasoningEffort: <span class="s">'high'</span> }, anthropic: { cachePrompt: <span class="kw">true</span> } },
+})</code></pre>
+    <p>
+      Usage reports <code>cachedTokens</code> and <code>reasoningTokens</code> on all
+      three. Note that Anthropic's <code>promptTokens</code> now includes cache reads
+      and writes, and Gemini's <code>completionTokens</code> includes thought tokens.
+    </p>
+
+    <h3>Embedders</h3>
+    <p>
+      <code>OpenAIEmbedder</code> and <code>GeminiEmbedder</code> implement core's
+      <code>Embedder</code> interface &mdash; <code>embed(texts)</code> returning
+      one vector per text &mdash; for <code>InMemoryVectorStore</code> and
+      <code>KNNFewShot</code>.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { OpenAIEmbedder } <span class="kw">from</span> <span class="s">'@ts-dspy/openai'</span>
+<span class="kw">import</span> { GeminiEmbedder } <span class="kw">from</span> <span class="s">'@ts-dspy/gemini'</span>
+
+<span class="kw">new</span> OpenAIEmbedder({ dimensions: <span class="s">512</span> })
+<span class="kw">new</span> GeminiEmbedder({ taskType: <span class="s">'RETRIEVAL_DOCUMENT'</span> })</code></pre>
+
     <h3>Writing your own</h3>
     <p>
       Extend <code>BaseLM</code> and implement <code>chat()</code> and
@@ -589,7 +959,7 @@ npm run example:ollama</code></pre>
   </section>
 
   <section id="validation">
-    <p class="anchor">08</p>
+    <p class="anchor">12</p>
     <h2>Validation and errors</h2>
     <p>
       Every reply is checked before it reaches you. A field that cannot satisfy
@@ -708,7 +1078,7 @@ npm run example:ollama</code></pre>
   </section>
 
   <section id="streaming">
-    <p class="anchor">09</p>
+    <p class="anchor">13</p>
     <h2>Streaming</h2>
     <p>
       There are two levels. A module streams <em>fields</em>, so a value fills in
@@ -757,8 +1127,8 @@ step.value.confidence  <span class="c">// the validated Prediction</span></code>
       <table>
         <thead><tr><th scope="col">Situation</th><th scope="col">Behaviour</th></tr></thead>
         <tbody>
-          <tr><td class="sym">Native structured output</td><td class="note">Streams JSON, read by an incremental parser.</td></tr>
-          <tr><td class="sym">No structured output</td><td class="note">Streams labelled text, read by the usual heuristics.</td></tr>
+          <tr><td class="sym">JSONAdapter</td><td class="note">Streams JSON, read by an incremental parser.</td></tr>
+          <tr><td class="sym">ChatAdapter</td><td class="note">Streams <code>[[ ## field ## ]]</code> sections, read section by section.</td></tr>
           <tr><td class="sym">supportsStreaming: false<br>or no chatStream</td><td class="note">One ordinary call, yielded once. It does not throw.</td></tr>
           <tr><td class="sym">break</td><td class="note">Closes the provider's stream; nothing is left open.</td></tr>
           <tr><td class="sym">signal</td><td class="note">Cancels the stream, which rejects with the signal's reason.</td></tr>
@@ -766,10 +1136,10 @@ step.value.confidence  <span class="c">// the validated Prediction</span></code>
       </table>
     </div>
     <p>
-      <code>ChainOfThought</code> streams too. The reasoning step has to finish
-      before the answer step can start, so nothing is yielded until it has; from
-      then on every snapshot carries the finished <code>reasoning</code> alongside
-      the fields filling in.
+      <code>ChainOfThought</code> streams too, and since <code>reasoning</code> is
+      just its first output field, it fills in first and token by token like any
+      other. To stream a whole multi-module program, use
+      <a href="#more-modules"><code>streamify</code></a>.
     </p>
 
     <h3>Reading truncated JSON</h3>
@@ -804,7 +1174,7 @@ parsePartialJson(<span class="s">'{"score": 0.9'</span>)                <span cl
   </section>
 
   <section id="reliability">
-    <p class="anchor">10</p>
+    <p class="anchor">14</p>
     <h2>Timeouts and retries</h2>
     <p>
       <code>LLMCallOptions</code> flows from a module through to the provider SDK,
@@ -892,18 +1262,20 @@ parsePartialJson(<span class="s">'{"score": 0.9'</span>)                <span cl
     </div>
 
     <h3>Usage accounting</h3>
-    <p>Every provider tracks tokens across calls.</p>
-    <pre class="code"><code>lm.getUsage()   <span class="c">// { promptTokens, completionTokens, totalTokens, requestCount }</span>
+    <p>Every provider tracks lifetime tokens across calls.</p>
+    <pre class="code"><code>lm.getUsage()   <span class="c">// { promptTokens, completionTokens, totalTokens, requestCount, cachedTokens?, reasoningTokens? }</span>
 lm.resetUsage()</code></pre>
     <p>
-      There is no cost estimate. Prices change faster than a library can track
-      them, and a stale multiplier is worse than no number &mdash; earlier versions
-      reported figures roughly twenty times off.
+      For the usage of <em>one</em> invocation, exact under concurrency, use
+      <code>prediction.getLMUsage()</code> &mdash; see
+      <a href="#callbacks">per-call usage</a>. There is no built-in price table:
+      prices change faster than a library can track them, so cost appears only for
+      models you price yourself with <code>configure({ pricing })</code>.
     </p>
   </section>
 
   <section id="testing">
-    <p class="anchor">11</p>
+    <p class="anchor">15</p>
     <h2>Testing</h2>
     <p>
       Modules take a language model, so a test needs no network and no API key.
@@ -1015,7 +1387,7 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
   </section>
 
   <section id="api">
-    <p class="anchor">12</p>
+    <p class="anchor">16</p>
     <h2>API reference</h2>
 
     <h3>Exports from <code>@ts-dspy/core</code></h3>
@@ -1024,24 +1396,40 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
         <thead><tr><th scope="col">Export</th><th scope="col">Kind</th><th scope="col">Purpose</th></tr></thead>
         <tbody>
           <tr><td class="sym">Signature</td><td class="path">class</td><td class="note">Base class for declared signatures.</td></tr>
-          <tr><td class="sym">InputField</td><td class="path">decorator</td><td class="note">Marks an input field.</td></tr>
-          <tr><td class="sym">OutputField</td><td class="path">decorator</td><td class="note">Marks an output field and its type.</td></tr>
-          <tr><td class="sym">Module</td><td class="path">class</td><td class="note">Base class for modules.</td></tr>
-          <tr><td class="sym">Predict</td><td class="path">class</td><td class="note">One-shot prediction.</td></tr>
-          <tr><td class="sym">ChainOfThought</td><td class="path">class</td><td class="note">Reason, then answer.</td></tr>
-          <tr><td class="sym">RespAct</td><td class="path">class</td><td class="note">Tool loop.</td></tr>
+          <tr><td class="sym">InputField / OutputField / ImageField</td><td class="path">decorator</td><td class="note">Mark input, output and image fields.</td></tr>
+          <tr><td class="sym">signature</td><td class="path">function</td><td class="note">Build a signature from zod schemas, or a string plus instructions.</td></tr>
+          <tr><td class="sym">image / history</td><td class="path">function</td><td class="note">Zod helpers for image and <code>History</code> inputs.</td></tr>
+          <tr><td class="sym">History</td><td class="path">class</td><td class="note">Earlier conversation turns, rendered as real messages.</td></tr>
+          <tr><td class="sym">extendSignature / toSignatureClass</td><td class="path">function</td><td class="note">Derive a signature with fields added or removed.</td></tr>
+          <tr><td class="sym">Module</td><td class="path">class</td><td class="note">Base class for modules: composition, <code>dumpState</code>/<code>loadState</code>, <code>save</code>/<code>load</code>, <code>batch</code>.</td></tr>
+          <tr><td class="sym">Predict</td><td class="path">class</td><td class="note">One validated prediction.</td></tr>
+          <tr><td class="sym">ChainOfThought</td><td class="path">class</td><td class="note">Reasoning plus answer, in one call.</td></tr>
+          <tr><td class="sym">ReAct</td><td class="path">class</td><td class="note">Tool-using agent; <code>RespAct</code> is a deprecated alias.</td></tr>
+          <tr><td class="sym">BestOfN / Refine</td><td class="path">class</td><td class="note">Sample until a reward threshold; Refine adds feedback between attempts.</td></tr>
+          <tr><td class="sym">Parallel</td><td class="path">class</td><td class="note">Run module/input pairs concurrently, in order.</td></tr>
+          <tr><td class="sym">MultiChainComparison</td><td class="path">class</td><td class="note">Compare several reasoning attempts.</td></tr>
+          <tr><td class="sym">ProgramOfThought</td><td class="path">class</td><td class="note">Generate and run JavaScript (experimental).</td></tr>
+          <tr><td class="sym">Retrieve / InMemoryVectorStore</td><td class="path">class</td><td class="note">Retrieval module and an in-memory vector index.</td></tr>
+          <tr><td class="sym">streamify</td><td class="path">function</td><td class="note">Run any program as a stream of status, field and prediction events.</td></tr>
+          <tr><td class="sym">Adapter / ChatAdapter / JSONAdapter / XMLAdapter / TwoStepAdapter</td><td class="path">class</td><td class="note">Prompt formats.</td></tr>
+          <tr><td class="sym">Tool</td><td class="path">class</td><td class="note">A named, described, schema-typed tool for <code>ReAct</code>.</td></tr>
           <tr><td class="sym">BaseLM</td><td class="path">class</td><td class="note">Base for providers.</td></tr>
-          <tr><td class="sym">Prediction</td><td class="path">class</td><td class="note">Result wrapper with direct field access.</td></tr>
-          <tr><td class="sym">Example</td><td class="path">class</td><td class="note">Input/output pair for few-shot use.</td></tr>
-          <tr><td class="sym">configure</td><td class="path">function</td><td class="note">Set the default LM and flags.</td></tr>
-          <tr><td class="sym">getDefaultLM</td><td class="path">function</td><td class="note">Read the configured LM.</td></tr>
+          <tr><td class="sym">wrapLM / retry / fallback / defaults / rateLimit</td><td class="path">function</td><td class="note">LM middleware.</td></tr>
+          <tr><td class="sym">Prediction</td><td class="path">class</td><td class="note">Result wrapper; <code>getLMUsage()</code> for per-call usage.</td></tr>
+          <tr><td class="sym">Example</td><td class="path">class</td><td class="note">Labelled data point for demos, evaluation and optimizers.</td></tr>
+          <tr><td class="sym">configure</td><td class="path">function</td><td class="note">Set global defaults.</td></tr>
+          <tr><td class="sym">settings / context / withSettings</td><td class="path">object / function</td><td class="note">Read settings; override them for one async scope.</td></tr>
+          <tr><td class="sym">evaluate / formatReport</td><td class="path">function</td><td class="note">Score a program over a dataset.</td></tr>
+          <tr><td class="sym">metricScore / metricFeedback</td><td class="path">function</td><td class="note">Normalise a metric result.</td></tr>
+          <tr><td class="sym">LabeledFewShot / BootstrapFewShot / BootstrapFewShotWithRandomSearch</td><td class="path">class</td><td class="note">Few-shot optimizers.</td></tr>
+          <tr><td class="sym">KNNFewShot / Ensemble / COPRO / MIPROv2 / SIMBA / GEPA</td><td class="path">class</td><td class="note">Further optimizers.</td></tr>
+          <tr><td class="sym">inspectHistory / clearHistory</td><td class="path">function</td><td class="note">Read and clear recorded traces.</td></tr>
+          <tr><td class="sym">MockLM / CassetteLM</td><td class="path">class</td><td class="note">Test doubles, from <code>@ts-dspy/core/testing</code>.</td></tr>
           <tr><td class="sym">ValidationError</td><td class="path">class</td><td class="note">Reply did not match the signature.</td></tr>
-          <tr><td class="sym">LMError</td><td class="path">class</td><td class="note">Provider call failed.</td></tr>
-          <tr><td class="sym">TsDspyError</td><td class="path">class</td><td class="note">Base error.</td></tr>
-          <tr><td class="sym">buildPrompt</td><td class="path">function</td><td class="note">Render a prompt from a signature.</td></tr>
+          <tr><td class="sym">LMError and subclasses</td><td class="path">class</td><td class="note">Provider call failed: <code>RateLimitError</code>, <code>AuthError</code>, <code>ContextLengthError</code>, <code>ContentFilterError</code>, <code>TimeoutError</code>.</td></tr>
+          <tr><td class="sym">MaxStepsError / TsDspyError</td><td class="path">class</td><td class="note">Base and step-budget errors.</td></tr>
           <tr><td class="sym">parseOutput</td><td class="path">function</td><td class="note">Parse and validate a raw reply.</td></tr>
-          <tr><td class="sym">buildOutputSchema</td><td class="path">function</td><td class="note">Signature &#8594; zod schema.</td></tr>
-          <tr><td class="sym">buildOutputJsonSchema</td><td class="path">function</td><td class="note">Signature &#8594; JSON Schema.</td></tr>
+          <tr><td class="sym">buildOutputSchema / buildOutputJsonSchema</td><td class="path">function</td><td class="note">Signature &#8594; zod / JSON Schema.</td></tr>
           <tr><td class="sym">fieldConfigToZod</td><td class="path">function</td><td class="note">One field &#8594; zod schema.</td></tr>
         </tbody>
       </table>
@@ -1050,16 +1438,76 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
     <h3>configure()</h3>
     <pre class="code"><code>configure({
   lm: <span class="kw">new</span> AnthropicLM({ apiKey }),
-  cache: <span class="kw">false</span>,
+  cache: <span class="kw">false</span>,          <span class="c">// or true, or a Cache</span>
   tracing: <span class="kw">false</span>,
+  onTrace: undefined,
+  traceHistorySize: <span class="s">100</span>,
+  callbacks: [],          <span class="c">// Callback[]</span>
+  adapter: undefined,     <span class="c">// ChatAdapter | JSONAdapter | ...</span>
+  trackUsage: <span class="kw">false</span>,      <span class="c">// collect prediction.getLMUsage()</span>
+  pricing: undefined,     <span class="c">// { 'provider/model': { input, output, cachedInput? } }</span>
+  retriever: undefined,   <span class="c">// for Retrieve</span>
 })</code></pre>
+    <p>
+      Every option except <code>traceHistorySize</code> can also be overridden for
+      one async scope with <a href="#settings"><code>settings.context()</code></a>.
+    </p>
   </section>
 
   <section id="migration">
-    <p class="anchor">13</p>
-    <h2>Migrating to 0.5</h2>
+    <p class="anchor">17</p>
+    <h2>Migrating to 0.7</h2>
     <p>
-      0.5.0 makes the type guarantee real, which means code that relied on the
+      0.7 brings ts-dspy in line with DSPy 3: adapters, a rebuilt agent, and
+      optimizers that work on predictor paths. The full guide, with before/after
+      code, is
+      <a href="https://github.com/ardada2468/LLMTypeSafe/blob/main/MIGRATION.md">MIGRATION.md</a>.
+      The breaking changes in brief:
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Change</th><th scope="col">What to do</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="note"><strong><code>ChainOfThought</code> is one call</strong>, with a leading <code>reasoning</code> output.</td>
+            <td class="note">Nothing for most code; recorded cassettes and call-count assertions change.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong><code>RespAct</code> is now <code>ReAct</code></strong>: a <code>react</code> predictor plus an <code>extract</code> step, <code>finish</code> reserved as a tool name.</td>
+            <td class="note">Rename the import. Running out of <code>maxSteps</code> now extracts an answer instead of throwing &mdash; check <code>steps</code>.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong>Lazy LM resolution.</strong> <code>this.lm</code> is <code>undefined</code> unless a model was given.</td>
+            <td class="note">In custom modules, call <code>this.resolveLM(options)</code>.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong>Prompts belong to adapters.</strong> <code>buildPrompt</code>, <code>buildPromptContent</code>, <code>renderDemos</code> and <code>buildRepairObservation</code> are removed; <code>Predict</code> sends chat messages.</td>
+            <td class="note">Use <code>new ChatAdapter().format(...)</code> to inspect messages, and <code>buildRepairInstruction</code> for repair text.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong>One <code>Metric</code> type</strong>, which may return <code>{ score, feedback }</code>.</td>
+            <td class="note"><code>MetricScore</code> is a deprecated alias of <code>MetricResult</code>; use <code>metricScore()</code> to read any result.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong><code>Example</code>/<code>Prediction</code> are proxies</strong>; methods win over same-named fields.</td>
+            <td class="note">Read a field named <code>get</code> or <code>trace</code> with <code>get('…')</code>.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong>Usage accounting is exact</strong>; <code>evaluate</code>'s <code>lm</code> option is ignored.</td>
+            <td class="note">Drop the option. Anthropic <code>promptTokens</code> include cache tokens; Gemini <code>completionTokens</code> include thoughts.</td>
+          </tr>
+          <tr>
+            <td class="note"><strong>Malformed string signatures throw</strong> <code>TsDspyError</code>.</td>
+            <td class="note">Fix the signature the error names.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Migrating to 0.5</h3>
+    <p>
+      0.5.0 made the type guarantee real, which means code that relied on the
       old silent behaviour now throws.
     </p>
 
@@ -1102,15 +1550,15 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
     <div class="callout">
       <span class="label">Upgrade order</span>
       <p>
-        Upgrade core and every provider together. Providers declare
-        <code>@ts-dspy/core@^0.5.0</code>, and a mismatched pair is exactly the bug
-        0.5.0 fixed &mdash; 0.4.2 shipped providers that resolved a stale core.
+        Upgrade core and every provider together &mdash; the packages are
+        versioned in lockstep, and a mismatched pair is exactly the bug 0.5.0
+        fixed: 0.4.2 shipped providers that resolved a stale core.
       </p>
     </div>
   </section>
 
   <section id="tracing">
-    <p class="anchor">14</p>
+    <p class="anchor">18</p>
     <h2>Tracing and history</h2>
     <p>
       When a signature misbehaves the first question is always the same: what
@@ -1155,15 +1603,16 @@ out.trace?.usage         <span class="c">// tokens for this call, not the model'
           <tr><td class="sym">input<br>output</td><td class="note">Arguments in, parsed fields out. <code>output</code> is empty on failure.</td></tr>
           <tr><td class="sym">rawLMInput<br>rawLMOutput</td><td class="note">The last call &mdash; the one that produced <code>output</code>.</td></tr>
           <tr><td class="sym">calls</td><td class="note">Every round trip, in order, each with its own prompt, reply, duration, and usage.</td></tr>
-          <tr><td class="sym">usage</td><td class="note">Tokens for this invocation, differenced from the model's running totals. Exact for sequential calls; approximate when several run concurrently against one model.</td></tr>
+          <tr><td class="sym">usage</td><td class="note">Tokens for this invocation, collected from each call it made &mdash; exact, including under concurrency.</td></tr>
+          <tr><td class="sym">id<br>parentId</td><td class="note">This invocation and the one it ran inside, so nested modules can be reassembled into a tree.</td></tr>
           <tr><td class="sym">duration<br>timestamp</td><td class="note">Milliseconds elapsed, and when it started.</td></tr>
           <tr><td class="sym">error</td><td class="note">Set when the invocation threw instead of returning.</td></tr>
         </tbody>
       </table>
     </div>
     <p>
-      <code>ChainOfThought</code> makes two calls and <code>RespAct</code> makes
-      one per step, so <code>calls</code> is where a multi-step module becomes
+      A repair adds a call, and <code>ReAct</code> makes one per step plus the
+      extract, so <code>calls</code> is where a multi-step module becomes
       readable. Failures are recorded too &mdash; a <code>ValidationError</code> is
       precisely when the prompt is worth reading.
     </p>
@@ -1172,7 +1621,7 @@ out.trace?.usage         <span class="c">// tokens for this call, not the model'
     <p>
       <code>onTrace</code> receives each entry as it is recorded. Send them to
       Langfuse, an OpenTelemetry span, or your own logger; the library itself
-      never prints.
+      never prints. For full span trees, use <a href="#integrations"><code>@ts-dspy/otel</code></a>.
     </p>
     <pre class="code"><code>configure({
   lm,
@@ -1194,7 +1643,7 @@ out.trace?.usage         <span class="c">// tokens for this call, not the model'
   </section>
 
   <section id="caching">
-    <p class="anchor">15</p>
+    <p class="anchor">19</p>
     <h2>Caching</h2>
     <p>
       Repeated prompts are the common case &mdash; a test suite re-running the same
@@ -1320,7 +1769,7 @@ configure({ cache: redisCache })</code></pre>
   </section>
 
   <section id="repair">
-    <p class="anchor">16</p>
+    <p class="anchor">20</p>
     <h2>Self-repair</h2>
     <p>
       A model that fails validation has usually understood the task and merely
@@ -1344,48 +1793,31 @@ configure({ cache: redisCache })</code></pre>
 
     <h3>What the model is told</h3>
     <p>
-      The follow-up prompt names every failing field with its declared type and
-      the value that actually arrived, so the correction is specific rather than a
-      bare &ldquo;try again&rdquo;. For a <code>confidence</code> field declared
-      <code>number</code> that came back as prose, the model is sent:
+      The rejected reply goes back as an assistant turn, followed by a user turn
+      naming every failing field with its declared type and the value that
+      actually arrived, so the correction is specific rather than a bare
+      &ldquo;try again&rdquo;. For a <code>confidence</code> field declared
+      <code>number</code> that came back as prose, the corrective turn reads:
     </p>
     <pre class="code"><code><span class="c">// Your previous response failed validation for: confidence.</span>
 <span class="c">//   - confidence: expected number, received "very high"</span>
 <span class="c">//</span>
-<span class="c">// Previous response:</span>
-<span class="c">// answer: Paris</span>
-<span class="c">// confidence: very high</span>
-<span class="c">//</span>
-<span class="c">// Reply again with every required field on its own "field: value" line,</span>
-<span class="c">// using the declared type for each.</span></code></pre>
+<span class="c">// (then the adapter's own closing, asking for every required field again)</span></code></pre>
     <p>
-      Each repair is built from the <em>original</em> prompt rather than the
-      previous repair prompt, so a multi-attempt loop does not accumulate every
-      earlier correction and drift off task.
+      Each repair is appended to the <em>original</em> messages rather than to the
+      previous repair, so a multi-attempt loop does not accumulate every earlier
+      correction and drift off task.
     </p>
 
     <h3>Where it applies</h3>
     <p>
-      Both of <code>Predict</code>'s paths are covered: the provider's native
-      structured-output mode and the labelled-text fallback. The structured path
-      asks for a corrected object instead of labelled lines, but the field detail
-      is identical.
-    </p>
-    <p>
-      <code>ChainOfThought</code> inherits it. Repair applies to the answering step
-      only &mdash; the reasoning is already settled, so it is reused rather than
-      regenerated, and a repair costs one call rather than two.
+      Repair lives in the adapter, so it works with every adapter &mdash; native
+      structured output included &mdash; and every module built on
+      <code>Predict</code>: <code>ChainOfThought</code>, <code>ReAct</code>'s
+      steps and extract, and the rest.
     </p>
     <pre class="code"><code><span class="kw">const</span> cot = <span class="kw">new</span> ChainOfThought(Scored, lm)
-
-<span class="c">// Reason once, then answer - retrying only the answer.</span>
 <span class="kw">await</span> cot.forward({ question: q }, { repairAttempts: <span class="s">2</span> })</code></pre>
-    <p>
-      <code>RespAct</code> has always repaired a malformed <code>Final Answer</code>
-      inside its own reasoning loop, bounded by <code>maxSteps</code> rather than by
-      <code>repairAttempts</code>. All three modules now build that corrective
-      prompt from the same helper, so the wording never diverges.
-    </p>
 
     <div class="callout">
       <span class="label">Cost</span>
@@ -1402,11 +1834,11 @@ configure({ cache: redisCache })</code></pre>
   </section>
 
   <section id="batch">
-    <p class="anchor">17</p>
+    <p class="anchor">21</p>
     <h2>Batch &amp; concurrency</h2>
     <p>
       Every module inherits <code>batch()</code>, so <code>Predict</code>,
-      <code>ChainOfThought</code> and <code>RespAct</code> all take a list of inputs
+      <code>ChainOfThought</code> and <code>ReAct</code> all take a list of inputs
       and run them through a bounded worker pool. Eight calls in flight by default.
     </p>
     <pre class="code"><code><span class="kw">const</span> rows = tickets.map((ticket) =&gt; ({ ticket }))
@@ -1501,7 +1933,7 @@ setTimeout(() =&gt; controller.abort(), <span class="s">60_000</span>)
   </section>
 
   <section id="zod">
-    <p class="anchor">18</p>
+    <p class="anchor">22</p>
     <h2>Zod signatures</h2>
     <p>
       A third signature form, built from zod schemas. Decorators record their
@@ -1536,7 +1968,7 @@ r.followUp?.trim() <span class="c">// string | undefined</span></code></pre>
       Input keys are typed from the input schema too, so a misspelt input is a
       compile error rather than a field the model never sees. Everything else
       behaves as it always has: <code>Predict</code>,
-      <code>ChainOfThought</code> and <code>RespAct</code> all accept this form,
+      <code>ChainOfThought</code>, <code>ReAct</code> and the rest all accept this form,
       and decorated classes and string signatures keep working untouched.
     </p>
 
@@ -1640,7 +2072,7 @@ r.followUp?.trim() <span class="c">// string | undefined</span></code></pre>
   </section>
 
   <section id="vision">
-    <p class="anchor">19</p>
+    <p class="anchor">23</p>
     <h2>Images and multimodal</h2>
     <p>
       All three providers read images, and until now there was no way to send
@@ -1671,11 +2103,13 @@ r.followUp?.trim() <span class="c">// string | undefined</span></code></pre>
     <h3>Image input fields</h3>
     <p>
       A signature can declare an input as an image &mdash; with
-      <code>@ImageField</code>, or the <code>image</code> type in a string
-      signature. <code>buildPromptContent()</code> then renders the prompt as
-      content parts, with the image sitting where its label falls.
+      <code>@ImageField</code>, the <code>image</code> type in a string signature,
+      or <code>image()</code> in a zod signature. Every module then sends it as a
+      real image part: the adapter (<code>ChatAdapter</code>,
+      <code>JSONAdapter</code>, &hellip;) builds the user turn as content parts,
+      with the image sitting where its field falls.
     </p>
-    <pre class="code"><code><span class="kw">import</span> { Signature, ImageField, OutputField, buildPromptContent } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+    <pre class="code"><code><span class="kw">import</span> { Signature, ImageField, OutputField, Predict, image, signature } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
 
 <span class="kw">class</span> <span class="ty">ReadSign</span> <span class="kw">extends</span> <span class="ty">Signature</span> {
   <span class="kw">static</span> description = <span class="s">'Read the sign in the photo.'</span>
@@ -1687,20 +2121,17 @@ r.followUp?.trim() <span class="c">// string | undefined</span></code></pre>
   words!: <span class="ty">string</span>
 }
 
-<span class="kw">const</span> content = buildPromptContent(ReadSign, { photo: dataUri })
-<span class="kw">await</span> lm.chat([{ role: <span class="s">'user'</span>, content }])
+<span class="kw">const</span> { words } = <span class="kw">await</span> <span class="kw">new</span> Predict(ReadSign).forward({ photo: dataUri })
 
-<span class="c">// string signatures take a type too</span>
-buildPromptContent(<span class="s">'photo: image, question -&gt; answer'</span>, { photo, question })</code></pre>
+<span class="c">// string and zod signatures take a type too</span>
+<span class="kw">new</span> Predict(<span class="s">'photo: image, question -&gt; answer'</span>)
+signature({ input: z.object({ photo: image() }), output: z.object({ words: z.string() }) })</code></pre>
     <div class="callout">
       <span class="label">Strings stay strings</span>
       <p>
-        <code>buildPromptContent()</code> returns a plain <code>string</code>
-        when every input is text, byte for byte what <code>buildPrompt()</code>
-        produces; it returns content parts only once a field declared
-        <code>image</code> is supplied. <code>Predict</code> and
-        <code>ChainOfThought</code> follow the same rule, so a text-only program
-        sends exactly what it always did.
+        A user turn is a plain <code>string</code> when every input is text; it
+        becomes content parts only once a field declared <code>image</code> is
+        supplied, so a text-only program sends exactly what it always did.
       </p>
     </div>
 
@@ -1767,7 +2198,7 @@ buildPromptContent(<span class="s">'photo: image, question -&gt; answer'</span>,
   </section>
 
   <section id="evaluate">
-    <p class="anchor">20</p>
+    <p class="anchor">24</p>
     <h2>Evaluation</h2>
     <p>
       A prompt change either helped or it did not, and the only way to know is to
@@ -1804,9 +2235,15 @@ report.usage    <span class="c">// tokens and latency for this run only</span></
 
     <h3>Metrics</h3>
     <p>
-      A metric is <code>(example, prediction) =&gt; number | boolean</code>, awaited
-      if it returns a promise. That is the whole contract, and it is deliberately
-      small: the same function works unchanged as an optimiser's objective.
+      A metric is <code>(example, prediction) =&gt; number | boolean | { score, feedback }</code>,
+      awaited if it returns a promise. <code>evaluate</code> passes only the first
+      two arguments; optimizers may also pass <code>trace</code>,
+      <code>predName</code> and <code>predTrace</code>, so one function works
+      unchanged with <code>evaluate</code> and every optimizer. A
+      <code>feedback</code> string is kept on each result and is what
+      <a href="#optimizers"><code>GEPA</code></a> learns from.
+      <code>metricScore()</code> and <code>metricFeedback()</code> normalise any
+      result.
     </p>
     <div class="tablewrap">
       <table>
@@ -1827,9 +2264,10 @@ report.usage    <span class="c">// tokens and latency for this run only</span></
 
 <span class="kw">const</span> report = <span class="kw">await</span> evaluate(program, dataset, mentionsSource)</code></pre>
     <p>
-      Read the prediction through <code>get()</code> or <code>toObject()</code>.
-      <code>Prediction</code> defines its fields with
-      <code>Object.defineProperty</code>, so spreading it is not the same thing.
+      Fields read as properties (<code>prediction.answer</code>), but a field whose
+      name collides with a method &mdash; <code>get</code>, <code>toObject</code>,
+      <code>trace</code> &mdash; is always the method; read those through
+      <code>get()</code> or <code>toObject()</code>.
     </p>
 
     <h3>The report</h3>
@@ -1840,16 +2278,17 @@ report.usage    <span class="c">// tokens and latency for this run only</span></
           <tr><td class="sym">score</td><td class="note">Mean score across every example, failures included.</td></tr>
           <tr><td class="sym">totalScore<br>count</td><td class="note">The sum and the denominator behind that mean.</td></tr>
           <tr><td class="sym">errorCount</td><td class="note">How many examples threw.</td></tr>
-          <tr><td class="sym">results</td><td class="note">One entry per example, in dataset order.</td></tr>
-          <tr><td class="sym">usage</td><td class="note">Tokens, request count, mean latency, wall-clock duration.</td></tr>
+          <tr><td class="sym">results</td><td class="note">One entry per example, in dataset order, with <code>feedback</code> when the metric gave any.</td></tr>
+          <tr><td class="sym">usage</td><td class="note">Tokens, request count, mean latency, wall-clock duration, per-model <code>byModel</code>, and <code>totalCost</code> for priced models.</td></tr>
         </tbody>
       </table>
     </div>
     <p>
-      Usage comes from diffing the model's own counters around the run, so it
-      counts this evaluation and nothing that came before it. There is no cost
-      figure, for the reason given under
-      <a href="#reliability">usage accounting</a>.
+      Usage is collected exactly from every language-model call the run makes,
+      in an async-local scope around it, so concurrent work on a shared model is
+      never counted. The old <code>lm</code> option is deprecated and ignored.
+      Cost appears only for models you price with
+      <a href="#callbacks"><code>configure({ pricing })</code></a>.
     </p>
 
     <h3>Failures are results</h3>
@@ -1891,7 +2330,7 @@ console.log(formatReport(report, { maxRows: <span class="s">20</span>, includePa
   </section>
 
   <section id="optimizers">
-    <p class="anchor">21</p>
+    <p class="anchor">25</p>
     <h2>Few-shot and optimizers</h2>
     <p>
       Everything above writes prompts by hand. An optimizer writes them from data
@@ -1904,11 +2343,11 @@ console.log(formatReport(report, { maxRows: <span class="s">20</span>, includePa
     <h3>Demos</h3>
     <p>
       A demo is an <code>Example</code> rendered into the prompt before the real
-      input, showing the task performed correctly. Demos render in whichever
-      shape the reply is expected to take &mdash; labelled
-      <code>field: value</code> for a provider answering in text, JSON for one
-      whose decoding is constrained to a schema &mdash; so they teach the output
-      format as well as the task.
+      input, showing the task performed correctly. The adapter renders each demo
+      as a real user/assistant exchange in its own format &mdash;
+      <code>[[ ## field ## ]]</code> sections for <code>ChatAdapter</code>, a JSON
+      object for <code>JSONAdapter</code> &mdash; so demos teach the output format
+      as well as the task.
     </p>
     <pre class="code"><code><span class="kw">import</span> { Example, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
 
@@ -1956,6 +2395,10 @@ console.log(formatReport(report, { maxRows: <span class="s">20</span>, includePa
 
 <span class="kw">const</span> compiled = <span class="kw">await</span> optimizer.compile(<span class="kw">new</span> Predict(RouteTicket, cheapLM), { trainset })</code></pre>
     <p>
+      Given a composite <code>Module</code>, it traces each run and gives every
+      predictor demos of its own inputs and outputs, keyed by predictor path.
+    </p>
+    <p>
       With a <code>teacher</code>, a stronger model does the trainset runs and the
       cheaper student ends up imitating its work. You pay for the strong model
       once, when compiling &mdash; never at run time. Without one, the student
@@ -1971,9 +2414,12 @@ console.log(formatReport(report, { maxRows: <span class="s">20</span>, includePa
 
     <h3>Metrics</h3>
     <p>
-      A metric is <code>(example, prediction) =&gt; number | boolean</code>, and may
-      be async. Booleans are taken at face value; a number counts as a pass when
-      it reaches <code>threshold</code>, which defaults to <code>0.5</code>. The
+      The same <code>Metric</code> as <a href="#evaluate"><code>evaluate</code></a>:
+      it returns <code>number | boolean | { score, feedback }</code> and may be
+      async. Booleans are taken at face value; a score counts as a pass when it
+      reaches <code>threshold</code>, which defaults to <code>0.5</code>. While
+      bootstrapping, a metric also receives the run's <code>trace</code>, so it can
+      be stricter about intermediate steps. The
       metric is the entire definition of &ldquo;good&rdquo; &mdash; everything the
       optimizer does follows from it.
     </p>
@@ -2000,8 +2446,8 @@ console.log(formatReport(report, { maxRows: <span class="s">20</span>, includePa
     <div class="callout">
       <span class="label">Deterministic</span>
       <p>
-        Both optimizers are seeded, so the same seed and the same trainset
-        compile to the same demos &mdash; a result you can reproduce, diff, and
+        Every optimizer is seeded, so the same seed and the same data compile
+        to the same program &mdash; a result you can reproduce, diff, and
         write a stable test against. Progress events arrive in completion order,
         which with concurrency above 1 is not trainset order; the demos are
         deterministic regardless.
@@ -2023,6 +2469,143 @@ console.log(formatReport(report, { maxRows: <span class="s">20</span>, includePa
     </p>
     <pre class="code" data-lang="bash"><code>export OPENAI_API_KEY="sk-..."
 npm run example:optimizer</code></pre>
+
+    <h3>Beyond few-shot</h3>
+    <p>
+      Every optimizer below works on predictor paths
+      (<code>namedPredictors()</code>), returns a compiled copy without touching the
+      student, takes <code>{ seed, concurrency, onProgress }</code>, and accepts a
+      separate <code>valset</code> in <code>compile(student, { trainset, valset })</code>.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th scope="col">Optimizer</th><th scope="col">What it searches</th></tr></thead>
+        <tbody>
+          <tr><td class="sym">BootstrapFewShotWithRandomSearch</td><td class="note">Several bootstrapped demo sets (<code>numCandidatePrograms</code>), scored on the valset; the best wins.</td></tr>
+          <tr><td class="sym">KNNFewShot</td><td class="note"><code>{ k, embedder, trainset }</code>: demos chosen per call &mdash; the <code>k</code> training examples nearest the inputs. <code>compile</code> is synchronous and returns a <code>KNNProgram</code>.</td></tr>
+          <tr><td class="sym">Ensemble</td><td class="note">Runs several programs (or a seeded sample of <code>size</code>) and reduces their predictions, by default with <code>majority()</code>.</td></tr>
+          <tr><td class="sym">COPRO</td><td class="note">Per-predictor instructions: <code>breadth</code> proposals over <code>depth</code> rounds.</td></tr>
+          <tr><td class="sym">MIPROv2</td><td class="note">Instructions <em>and</em> demo sets per predictor, jointly, with a seeded TPE search over minibatches. <code>auto: 'light' | 'medium' | 'heavy'</code>.</td></tr>
+          <tr><td class="sym">SIMBA</td><td class="note">Stochastic mini-batch ascent: appends a successful demo or a self-reflective rule where outputs vary most.</td></tr>
+          <tr><td class="sym">GEPA</td><td class="note">Reflective instruction evolution from metric <code>feedback</code>, with Pareto-front candidate selection and merges.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>MIPROv2</h3>
+    <pre class="code"><code><span class="kw">import</span> { MIPROv2 } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> optimizer = <span class="kw">new</span> MIPROv2({
+  metric: exactMatch,
+  auto: <span class="s">'light'</span>,             <span class="c">// or null with numCandidates + numTrials</span>
+  promptModel: strongLM,      <span class="c">// writes the dataset summary and instruction candidates</span>
+  taskModel: cheapLM,         <span class="c">// runs the program during the search</span>
+  maxBootstrappedDemos: <span class="s">3</span>,
+  maxLabeledDemos: <span class="s">2</span>,
+  seed: <span class="s">7</span>,
+})
+
+<span class="kw">const</span> compiled = <span class="kw">await</span> optimizer.compile(program, { trainset, valset })
+compiled.miproResults.bestScore
+<span class="kw">await</span> compiled.save(<span class="s">'program.json'</span>)</code></pre>
+
+    <h3>GEPA</h3>
+    <p>
+      GEPA rewrites instructions by reflecting on runs and on what the metric
+      <em>said</em> about them, so return feedback, not just a number. It calls the
+      metric with <code>(example, prediction, trace, predName, predTrace)</code>
+      while reflecting, so the feedback can target the predictor being improved.
+      Exactly one budget is required: <code>auto</code>,
+      <code>maxMetricCalls</code> or <code>maxFullEvals</code>.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { GEPA, type Metric } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> metric: <span class="ty">Metric</span> = (example, prediction) =&gt; {
+  <span class="kw">const</span> ok = prediction.get(<span class="s">'team'</span>) === example.get(<span class="s">'team'</span>)
+  <span class="kw">return</span> {
+    score: ok ? <span class="s">1</span> : <span class="s">0</span>,
+    feedback: ok ? <span class="s">'Correct.'</span> : <span class="s">`Expected ${example.get('team')}, got ${prediction.get('team')}.`</span>,
+  }
+}
+
+<span class="kw">const</span> gepa = <span class="kw">new</span> GEPA({ metric, reflectionLM: strongLM, auto: <span class="s">'light'</span>, logDir: <span class="s">'.gepa'</span> })
+<span class="kw">const</span> compiled = <span class="kw">await</span> gepa.compile(program, { trainset, valset })
+
+compiled.detailedResults.paretoFront
+compiled.detailedResults.candidates[compiled.detailedResults.bestIndex].instructions</code></pre>
+    <p>
+      <code>logDir</code> checkpoints after every iteration, and a run started
+      against the same directory resumes. Runnable versions:
+      <code>npm run example:mipro</code> and <code>npm run example:gepa</code>.
+    </p>
+  </section>
+
+  <section id="integrations">
+    <p class="anchor">26</p>
+    <h2>Integrations</h2>
+    <p>
+      Three packages connect ts-dspy programs to the wider ecosystem. Each is
+      installed alongside core.
+    </p>
+
+    <h3>@ts-dspy/mcp</h3>
+    <p>
+      Model Context Protocol, both ways. <code>connectMcp()</code> opens a stdio or
+      Streamable HTTP client; <code>mcpTools(client)</code> turns the server's
+      tools into core <code>Tool</code>s for <code>ReAct</code>, with JSON Schema
+      passed through and an <code>isError</code> result surfaced to the model as an
+      observation.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { ReAct } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+<span class="kw">import</span> { connectMcp, mcpTools } <span class="kw">from</span> <span class="s">'@ts-dspy/mcp'</span>
+
+<span class="kw">const</span> client = <span class="kw">await</span> connectMcp({ command: <span class="s">'npx'</span>, args: [<span class="s">'-y'</span>, <span class="s">'@modelcontextprotocol/server-filesystem'</span>, <span class="s">'.'</span>] })
+<span class="c">// or: await connectMcp({ url: 'https://example.com/mcp', headers: { Authorization: `Bearer ${token}` } })</span>
+<span class="kw">try</span> {
+  <span class="kw">const</span> tools = <span class="kw">await</span> mcpTools(client, { exclude: [<span class="s">'write_file'</span>], prefix: <span class="s">'fs_'</span> })
+  <span class="kw">const</span> agent = <span class="kw">new</span> ReAct(<span class="s">'question -&gt; answer'</span>, { tools })
+  console.log((<span class="kw">await</span> agent.forward({ question: <span class="s">'What is in README.md?'</span> })).answer)
+} <span class="kw">finally</span> {
+  <span class="kw">await</span> client.close()
+}</code></pre>
+    <p>
+      In the other direction, <code>serveProgram(program, { name, description })</code>
+      returns an <code>McpServer</code> exposing the program as a tool whose input
+      schema comes from the signature.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { serveProgram } <span class="kw">from</span> <span class="s">'@ts-dspy/mcp'</span>
+<span class="kw">import</span> { StdioServerTransport } <span class="kw">from</span> <span class="s">'@modelcontextprotocol/sdk/server/stdio.js'</span>
+
+<span class="kw">const</span> server = serveProgram(<span class="kw">new</span> ChainOfThought(<span class="s">'question -&gt; answer'</span>), { name: <span class="s">'qa'</span> })
+<span class="kw">await</span> server.connect(<span class="kw">new</span> StdioServerTransport())</code></pre>
+
+    <h3>@ts-dspy/otel</h3>
+    <p>
+      OpenTelemetry spans for every module, LM call and tool call, with GenAI
+      semantic-convention attributes, parented from ts-dspy's own call tracking so
+      the tree is right under concurrency. Prompt and completion capture is opt-in.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { instrument, OpenTelemetryCallback } <span class="kw">from</span> <span class="s">'@ts-dspy/otel'</span>
+
+instrument()   <span class="c">// global, via the registered tracer provider; { captureContent: true } records prompts too</span>
+
+<span class="c">// or scoped</span>
+settings.context({ callbacks: [<span class="kw">new</span> OpenTelemetryCallback({ tracer })] }, () =&gt; program.forward(inputs))</code></pre>
+
+    <h3>@ts-dspy/ai-sdk</h3>
+    <p>
+      <code>AISDKLM</code> wraps any Vercel AI SDK <code>LanguageModel</code> as a
+      core language model &mdash; chat, streaming, tool calling, structured output,
+      usage and error mapping &mdash; so every AI SDK provider and the AI Gateway
+      work without a dedicated ts-dspy package.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { gateway } <span class="kw">from</span> <span class="s">'ai'</span>
+<span class="kw">import</span> { AISDKLM } <span class="kw">from</span> <span class="s">'@ts-dspy/ai-sdk'</span>
+
+configure({ lm: <span class="kw">new</span> AISDKLM({ model: gateway(<span class="s">'openai/gpt-5.2'</span>) }) })
+
+<span class="c">// capabilities default to a frontier chat model; turn off what yours lacks</span>
+<span class="kw">new</span> AISDKLM({ model, capabilities: { supportsFunctionCalling: <span class="kw">false</span> } })</code></pre>
   </section>
 
   </div>

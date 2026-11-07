@@ -42,11 +42,11 @@
       from that single source.
     </p>
     <p class="meta">
-      <span>@ts-dspy/core 0.5.0</span>
+      <span>@ts-dspy/core 0.7.0</span>
       <span>zod ^4.1.13</span>
       <span>node &gt;=22</span>
       <span>ESM + CJS</span>
-      <span>4 packages</span>
+      <span>7 packages</span>
     </p>
   </div>
 </section>
@@ -59,7 +59,7 @@
       <li><a href="#lifecycle">Request lifecycle</a></li>
       <li><a href="#packages">Packages</a></li>
       <li><a href="#modules">Modules</a></li>
-      <li><a href="#respact">The RespAct loop</a></li>
+      <li><a href="#react">The ReAct loop</a></li>
       <li><a href="#files">Where things live</a></li>
     </ol>
   </nav>
@@ -73,13 +73,15 @@
     <p>
       A signature class records its fields on the constructor at decoration
       time, so <code>getInputFields()</code> and <code>getOutputFields()</code>
-      work without ever instantiating it. <code>Predict.forward()</code> reads
-      those fields three separate times: once to write the prompt, once to build
-      a JSON Schema for providers that can constrain decoding, and once to build
-      the zod schema that every reply must pass.
+      work without ever instantiating it. <code>Predict.forward()</code> hands
+      the signature to an adapter, which reads those fields three separate times:
+      once to write the chat messages, once to build a JSON Schema for providers
+      that can constrain decoding, and once to build the zod schema that every
+      reply must pass.
     </p>
     <p>
-      The fork in the middle is the only place the two paths differ. They rejoin
+      The fork in the middle is where the default adapter is chosen &mdash;
+      <code>JSONAdapter</code> or <code>ChatAdapter</code>, unless you pass one. They rejoin
       at the same gate, so a model that answers in prose where you declared a
       number fails identically whichever route it took.
     </p>
@@ -87,7 +89,7 @@
     <figure class="fig" data-anim>
       <div class="fig-body">
         <svg viewBox="0 0 780 720" role="img"
-             aria-label="Flow from a decorated Signature class through prompt building, a capability fork into either native structured output or labelled-text parsing, converging on a single zod validation gate that yields either a Prediction or a ValidationError.">
+             aria-label="Flow from a decorated Signature class through the adapter's message formatting, a capability fork into either native structured output via JSONAdapter or field-marker parsing via ChatAdapter, converging on a single zod validation gate that yields either a Prediction or a ValidationError.">
           <defs>
             <marker id="mk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
@@ -109,12 +111,12 @@
 
           <g class="g-node">
             <rect class="n" x="240" y="140" width="300" height="60"/>
-            <text class="t t-ttl" x="390" y="166" text-anchor="middle">buildPrompt()</text>
-            <text class="t t-sub" x="390" y="186" text-anchor="middle">description + labelled inputs + field list</text>
+            <text class="t t-ttl" x="390" y="166" text-anchor="middle">adapter.format()</text>
+            <text class="t t-sub" x="390" y="186" text-anchor="middle">system + demo turns + user turn</text>
           </g>
 
           <line class="e g-edge" x1="390" y1="200" x2="390" y2="242" marker-end="url(#mk)" style="color:var(--ink)"/>
-          <text class="t t-edge g-lbl" x="400" y="226">prompt</text>
+          <text class="t t-edge g-lbl" x="400" y="226">messages</text>
 
           <g class="g-node">
             <polygon class="n" points="214,248 566,248 590,278 566,308 214,308 190,278"/>
@@ -173,12 +175,12 @@
       </div>
       <figcaption>
         <b>Fig. 1 &mdash; The request path.</b> The dashed rail is the point of the
-        library: one declaration feeds the prompt, the JSON Schema, and the
+        library: one declaration feeds the messages, the JSON Schema, and the
         validator. Both branches end at the same <code>safeParse</code>, so nothing
         reaches your code untyped. All three shipped providers report
-        <code>supportsStructuredOutput: true</code>, so the right-hand branch is what
-        a custom <code>ILanguageModel</code> gets &mdash; and what <code>RespAct</code>
-        always uses.
+        <code>supportsStructuredOutput: true</code>, so they default to the left-hand
+        branch; the right-hand branch is what
+        a custom <code>ILanguageModel</code> without structured output gets.
       </figcaption>
     </figure>
   </section>
@@ -196,8 +198,13 @@
       methods: <code>chat()</code> and <code>getCapabilities()</code>.
     </p>
     <p>
-      Modules never name a vendor. They hold an <code>ILanguageModel</code>,
-      handed in at construction or read from the <code>configure()</code> singleton.
+      Modules never name a vendor. They resolve an <code>ILanguageModel</code> at
+      call time &mdash; the call's <code>options.lm</code>, the module's own, the
+      active <code>settings.context</code> scope, then <code>configure()</code>.
+      <code>@ts-dspy/ai-sdk</code> is a fourth provider of the same kind, wrapping
+      any Vercel AI SDK model; <code>@ts-dspy/mcp</code> and
+      <code>@ts-dspy/otel</code> sit beside core rather than beneath it, as tools
+      and as a callback.
     </p>
 
     <figure class="fig" data-anim>
@@ -236,20 +243,20 @@
           <g class="g-node">
             <rect class="n" x="234" y="164" width="150" height="70"/>
             <text class="t t-ttl" x="309" y="192" text-anchor="middle">Modules</text>
-            <text class="t t-sub" x="309" y="211" text-anchor="middle">Predict &#183; ChainOf-</text>
-            <text class="t t-sub" x="309" y="225" text-anchor="middle">Thought &#183; RespAct</text>
+            <text class="t t-sub" x="309" y="211" text-anchor="middle">Predict &#183; ReAct &#183;</text>
+            <text class="t t-sub" x="309" y="225" text-anchor="middle">optimizers</text>
           </g>
           <g class="g-node">
             <rect class="n" x="404" y="164" width="150" height="70"/>
-            <text class="t t-ttl" x="479" y="192" text-anchor="middle">parsing</text>
+            <text class="t t-ttl" x="479" y="192" text-anchor="middle">adapters</text>
             <text class="t t-sub" x="479" y="211" text-anchor="middle">+ schema (zod,</text>
             <text class="t t-sub" x="479" y="225" text-anchor="middle">JSON Schema)</text>
           </g>
           <g class="g-node">
             <rect class="n" x="574" y="164" width="146" height="70"/>
-            <text class="t t-ttl" x="647" y="192" text-anchor="middle">config</text>
-            <text class="t t-sub" x="647" y="211" text-anchor="middle">singleton holding</text>
-            <text class="t t-sub" x="647" y="225" text-anchor="middle">the default LM</text>
+            <text class="t t-ttl" x="647" y="192" text-anchor="middle">settings</text>
+            <text class="t t-sub" x="647" y="211" text-anchor="middle">global + scoped</text>
+            <text class="t t-sub" x="647" y="225" text-anchor="middle">LM, adapter, callbacks</text>
           </g>
 
           <line class="e g-edge" x1="390" y1="260" x2="390" y2="290" marker-end="url(#mk2)" style="color:var(--ink)"/>
@@ -297,8 +304,10 @@
     <p class="anchor">03</p>
     <h2>What each module adds</h2>
     <p>
-      All three extend <code>Module</code>, which supplies the language model and
-      the <code>forward()</code> contract. <code>call()</code> and
+      Every module extends <code>Module</code>, which resolves the language model
+      at call time and supplies the <code>forward()</code> contract, composition
+      (<code>namedPredictors()</code>, <code>deepCopy()</code>) and persistence
+      (<code>dumpState()</code>, <code>save()</code>). <code>call()</code> and
       <code>__call__()</code> are aliases for it.
     </p>
 
@@ -310,42 +319,52 @@
         <tbody>
           <tr>
             <td class="sym">Predict</td><td class="path">1</td><td class="path">&mdash;</td>
-            <td class="note">The baseline. Prompt, one completion, validate.</td>
+            <td class="note">The baseline. Adapter formats, one completion, adapter parses and validates.</td>
           </tr>
           <tr>
-            <td class="sym">ChainOfThought</td><td class="path">2</td><td class="path">reasoning: string</td>
-            <td class="note">Extends <code>Predict</code>. Step one reasons in free text via plain <code>generate()</code>; step two re-asks with that reasoning in context and validates normally.</td>
+            <td class="sym">ChainOfThought</td><td class="path">1</td><td class="path">reasoning: string</td>
+            <td class="note">Extends <code>Predict</code> with a leading <code>reasoning</code> output field, so the model reasons and answers in the same reply.</td>
           </tr>
           <tr>
-            <td class="sym">RespAct</td><td class="path">1&#8230;maxSteps</td><td class="path">steps: number</td>
-            <td class="note">Extends <code>Module</code> directly. A reason&ndash;act&ndash;observe loop over tools you supply, with an <code>onEvent</code> hook for tracing.</td>
+            <td class="sym">ReAct</td><td class="path">2&#8230;maxSteps + 1</td><td class="path">reasoning, trajectory, steps</td>
+            <td class="note">Extends <code>Module</code>. A <code>react</code> predictor chooses tools over the growing trajectory; an <code>extract</code> <code>ChainOfThought</code> produces the outputs. <code>RespAct</code> is a deprecated alias.</td>
+          </tr>
+          <tr>
+            <td class="sym">BestOfN / Refine</td><td class="path">1&#8230;n</td><td class="path">&mdash;</td>
+            <td class="note">Re-run a wrapped program until a reward reaches a threshold; <code>Refine</code> feeds advice between attempts.</td>
           </tr>
         </tbody>
       </table>
     </div>
   </section>
 
-  <!-- ══════════ 4. RESPACT ══════════ -->
-  <section id="respact">
+  <!-- ══════════ 4. REACT ══════════ -->
+  <section id="react">
     <p class="anchor">04</p>
-    <h2>The RespAct loop</h2>
+    <h2>The ReAct loop</h2>
     <p>
-      <code>RespAct</code> is the only module whose control flow is a cycle rather
-      than a line. The transcript grows in place: each thought, each observation,
-      and each correction is appended to the same conversation string and re-sent.
+      <code>ReAct</code> is the module whose control flow is a cycle rather than a
+      line. Each step is a prediction by the <code>react</code> predictor over the
+      signature's inputs plus the <code>trajectory</code> so far, producing
+      <code>next_thought</code>, <code>next_tool_name</code> and
+      <code>next_tool_args</code>. The tool's observation is appended to the
+      trajectory &mdash; <code>thought_0</code>, <code>tool_name_0</code>,
+      <code>tool_args_0</code>, <code>observation_0</code>, &hellip; &mdash; and the
+      step repeats.
     </p>
     <p>
-      Two edges matter more than the happy path. A tool call identical to one
-      already made gets an observation telling the model to move on, instead of
-      being executed again. And a malformed final answer is not fatal &mdash; the
-      loop names the fields that failed and gives the model another step, provided
-      one is left.
+      The loop ends when the model chooses the reserved tool <code>finish</code>,
+      when <code>maxSteps</code> is spent, or when a step cannot be parsed. In every
+      case an <code>extract</code> <code>ChainOfThought</code> reads the inputs and
+      the whole trajectory and produces the signature's outputs. A tool call
+      identical to one already made gets an observation telling the model to move
+      on instead of being executed again.
     </p>
 
     <figure class="fig" data-anim>
       <div class="fig-body">
         <svg viewBox="0 0 660 386" role="img"
-             aria-label="RespAct control flow: the model thinks, optionally calls a tool and receives an observation back into the same loop, and on a final answer goes to validation which either returns a Prediction or feeds a correction back into the loop.">
+             aria-label="ReAct control flow: the react step predicts a thought and a tool call, the tool's observation is appended to the trajectory and the step repeats; on finish, or when the step budget is spent, the extract step produces the outputs as a Prediction.">
           <defs>
             <marker id="mk3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
@@ -359,54 +378,56 @@
           </g>
 
           <line class="e g-edge" x1="258" y1="176" x2="258" y2="114" marker-end="url(#mk3)" style="color:var(--ink)"/>
-          <text class="t t-edge g-lbl" x="250" y="146" text-anchor="end">Action:</text>
+          <text class="t t-edge g-lbl" x="250" y="146" text-anchor="end">next_tool_name</text>
 
           <line class="e g-edge" x1="332" y1="108" x2="332" y2="170" marker-end="url(#mk3)" style="color:var(--ink)"/>
-          <text class="t t-edge g-lbl" x="342" y="146">Observation:</text>
+          <text class="t t-edge g-lbl" x="342" y="146">observation_i</text>
 
           <text class="t t-edge g-lbl" x="396" y="86">loop &#8804; maxSteps (6)</text>
           <text class="t t-edge g-lbl" x="396" y="102">repeats are skipped</text>
 
           <g class="g-node">
             <rect class="n" x="16" y="176" width="130" height="56"/>
-            <text class="t t-ttl" x="81" y="202" text-anchor="middle">transcript</text>
-            <text class="t t-sub" x="81" y="221" text-anchor="middle">task + tool list</text>
+            <text class="t t-ttl" x="81" y="202" text-anchor="middle">trajectory</text>
+            <text class="t t-sub" x="81" y="221" text-anchor="middle">inputs + steps so far</text>
           </g>
 
           <line class="e g-edge" x1="146" y1="204" x2="204" y2="204" marker-end="url(#mk3)" style="color:var(--ink)"/>
 
           <g class="g-node">
             <rect class="n" x="210" y="176" width="170" height="56"/>
-            <text class="t t-ttl" x="295" y="202" text-anchor="middle">lm.generate()</text>
-            <text class="t t-sub" x="295" y="221" text-anchor="middle">&#8594; Thought</text>
+            <text class="t t-ttl" x="295" y="202" text-anchor="middle">react step</text>
+            <text class="t t-sub" x="295" y="221" text-anchor="middle">&#8594; next_thought</text>
           </g>
 
           <line class="e g-edge" x1="380" y1="204" x2="446" y2="204" marker-end="url(#mk3)" style="color:var(--ink)"/>
-          <text class="t t-edge g-lbl" x="413" y="194" text-anchor="middle">Final Answer:</text>
+          <text class="t t-edge g-lbl" x="413" y="194" text-anchor="middle">finish</text>
 
           <g class="g-node">
             <rect class="n" x="452" y="176" width="160" height="56"/>
-            <text class="t t-ttl" x="532" y="202" text-anchor="middle">parseOutput()</text>
-            <text class="t t-sub" x="532" y="221" text-anchor="middle">zod, per signature</text>
+            <text class="t t-ttl" x="532" y="202" text-anchor="middle">extract</text>
+            <text class="t t-sub" x="532" y="221" text-anchor="middle">ChainOfThought</text>
           </g>
 
           <line class="e g-edge" x1="532" y1="232" x2="532" y2="294" marker-end="url(#mk3)" style="color:var(--ink)"/>
           <text class="t t-edge g-lbl" x="542" y="266">ok</text>
 
-          <polyline class="e-fail g-edge" points="480,232 480,262 295,262 295,238" marker-end="url(#mk3)" style="color:var(--fail)"/>
-          <text class="t t-edge t-fail g-lbl" x="388" y="278" text-anchor="middle">ValidationError &#8594; "provide every required field"</text>
+          <polyline class="e-soft g-edge" points="295,232 295,262 480,262 480,238" marker-end="url(#mk3)" style="color:var(--muted)"/>
+          <text class="t t-edge g-lbl" x="388" y="278" text-anchor="middle">maxSteps spent, or step unparseable</text>
 
           <g class="g-node">
             <rect class="n" x="452" y="300" width="160" height="58"/>
             <text class="t t-ttl" x="532" y="326" text-anchor="middle">Prediction</text>
-            <text class="t t-sub" x="532" y="345" text-anchor="middle">fields + steps</text>
+            <text class="t t-sub" x="532" y="345" text-anchor="middle">fields + trajectory + steps</text>
           </g>
         </svg>
       </div>
       <figcaption>
-        <b>Fig. 3 &mdash; Reason, act, observe.</b> Tool use wins over a final answer
-        in the same reply, so a model that hedges still advances the loop. Running
-        out of steps throws rather than returning a half-formed answer.
+        <b>Fig. 3 &mdash; Reason, act, observe, extract.</b> Running out of steps is
+        not an error: as in DSPy, the agent extracts its answer from the trajectory
+        it has, and <code>steps</code> shows the budget was spent. On a model with
+        native tool calling, the step is a tool-call request instead, and several
+        tools may run per turn.
       </figcaption>
     </figure>
   </section>
@@ -421,13 +442,19 @@
         <thead><tr><th scope="col">Path</th><th scope="col">Holds</th></tr></thead>
         <tbody>
           <tr><td class="path">core/src/core/signature.ts</td><td class="note">Decorators and the static field maps.</td></tr>
-          <tr><td class="path">core/src/core/module.ts</td><td class="note">The <code>forward()</code> contract and LM resolution.</td></tr>
+          <tr><td class="path">core/src/core/module.ts</td><td class="note">The <code>forward()</code> contract, lazy LM resolution, composition, save/load.</td></tr>
+          <tr><td class="path">core/src/adapters/</td><td class="note"><code>ChatAdapter</code>, <code>JSONAdapter</code>, <code>XMLAdapter</code>, <code>TwoStepAdapter</code>: messages out, fields in, repair turns.</td></tr>
+          <tr><td class="path">core/src/modules/</td><td class="note"><code>Predict</code>, <code>ChainOfThought</code>, <code>ReAct</code>, <code>BestOfN</code>, <code>Refine</code>, <code>Parallel</code>, and the rest.</td></tr>
+          <tr><td class="path">core/src/optimizers/</td><td class="note">Few-shot, <code>COPRO</code>, <code>MIPROv2</code> (with a TPE sampler), <code>SIMBA</code>, <code>GEPA</code>.</td></tr>
+          <tr><td class="path">core/src/core/middleware.ts</td><td class="note"><code>wrapLM</code>, <code>retry</code>, <code>fallback</code>, <code>defaults</code>, <code>rateLimit</code>.</td></tr>
+          <tr><td class="path">core/src/core/callbacks.ts</td><td class="note">Callback events and the async-local call stack behind <code>parentCallId</code>.</td></tr>
           <tr><td class="path">core/src/core/base-lm.ts</td><td class="note">Usage accounting, the structured-output fallback, and fence-tolerant JSON extraction.</td></tr>
-          <tr><td class="path">core/src/core/config.ts</td><td class="note">The <code>configure()</code> singleton: default LM, cache flag, tracing flag.</td></tr>
+          <tr><td class="path">core/src/core/config.ts</td><td class="note"><code>configure()</code> globals and <code>settings.context()</code> scopes.</td></tr>
           <tr><td class="path">core/src/utils/schema.ts</td><td class="note">Type string &#8594; zod schema, and &#8594; JSON Schema. Lenient coercion lives here.</td></tr>
-          <tr><td class="path">core/src/utils/parsing.ts</td><td class="note">Prompt construction and the labelled-text extractor.</td></tr>
+          <tr><td class="path">core/src/utils/parsing.ts</td><td class="note">The labelled-text extractor adapters fall back to.</td></tr>
           <tr><td class="path">core/src/core/errors.ts</td><td class="note"><code>TsDspyError</code> &#8594; <code>ValidationError</code>, <code>LMError</code>.</td></tr>
-          <tr><td class="path">{openai,gemini,anthropic}/src</td><td class="note">One <code>BaseLM</code> subclass each, plus its native structured-output override.</td></tr>
+          <tr><td class="path">{openai,gemini,anthropic,ai-sdk}/src</td><td class="note">One <code>BaseLM</code> subclass each, plus its native structured-output override (and embedders for OpenAI and Gemini).</td></tr>
+          <tr><td class="path">{mcp,otel}/src</td><td class="note">MCP tools and server; the OpenTelemetry callback.</td></tr>
         </tbody>
       </table>
     </div>
@@ -456,7 +483,7 @@
   <div class="shell foot-in">
     <div>
       <p class="foot-mark"><span aria-hidden="true">&#8866;</span> TS-DSPy</p>
-      <p class="foot-note">Drawn from the source at <a href="https://github.com/ardada2468/LLMTypeSafe">ardada2468/LLMTypeSafe</a> &#183; core 0.5.0</p>
+      <p class="foot-note">Drawn from the source at <a href="https://github.com/ardada2468/LLMTypeSafe">ardada2468/LLMTypeSafe</a> &#183; core 0.7.0</p>
     </div>
     <nav class="foot-links" aria-label="Footer">
       <a href="docs.html">Docs</a>

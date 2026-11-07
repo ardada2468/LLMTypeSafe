@@ -151,9 +151,9 @@ async function main(): Promise<void> {
     // --- Using the compiled program -----------------------------------------
     section('Compiled program');
 
-    // Demos are not magic: they are text placed in front of the real input, in
-    // whichever shape the reply is expected to take — labelled `field: value`
-    // for a text provider, JSON for one with native structured output.
+    // Demos are not magic: the adapter renders them as user/assistant turns
+    // before the real input, in the shape the reply is expected to take —
+    // `[[ ## field ## ]]` sections under ChatAdapter, JSON under JSONAdapter.
     const routed = await compiled.forward({ ticket: 'Two invoices arrived this month.' });
     console.log(`team: ${routed.team}`);
 
