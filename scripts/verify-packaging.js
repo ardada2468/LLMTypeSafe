@@ -20,7 +20,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PACKAGES = ['@ts-dspy/core', '@ts-dspy/openai', '@ts-dspy/gemini', '@ts-dspy/anthropic'];
+const PACKAGES = [
+    '@ts-dspy/core',
+    '@ts-dspy/openai',
+    '@ts-dspy/gemini',
+    '@ts-dspy/anthropic',
+    '@ts-dspy/mcp',
+    '@ts-dspy/otel',
+    '@ts-dspy/ai-sdk',
+];
 
 function run(command, args, options = {}) {
     return execFileSync(command, args, {
@@ -56,6 +64,11 @@ import { MockLM, CassetteLM } from '@ts-dspy/core/testing';
 import { OpenAILM } from '@ts-dspy/openai';
 import { GeminiLM } from '@ts-dspy/gemini';
 import { AnthropicLM } from '@ts-dspy/anthropic';
+import { mcpTools, serveProgram } from '@ts-dspy/mcp';
+import { OpenTelemetryCallback, instrument, uninstrument } from '@ts-dspy/otel';
+import { AISDKLM } from '@ts-dspy/ai-sdk';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -67,7 +80,7 @@ assert.equal(typeof BaseLM, 'function', 'BaseLM missing from @ts-dspy/core');
 
 // Every provider must extend the *same* core class object. Two copies of core
 // on disk would make these fail while every other check still passed.
-for (const [name, Provider] of [['openai', OpenAILM], ['gemini', GeminiLM], ['anthropic', AnthropicLM]]) {
+for (const [name, Provider] of [['openai', OpenAILM], ['gemini', GeminiLM], ['anthropic', AnthropicLM], ['ai-sdk', AISDKLM]]) {
     assert.ok(Object.create(Provider.prototype) instanceof BaseLM, name + ' does not extend the installed core BaseLM');
 }
 
@@ -102,6 +115,41 @@ try {
     rmSync(cassetteDir, { recursive: true, force: true });
 }
 
+// The integrations, end to end against their real peer packages: a program
+// served over MCP and called back as a ts-dspy Tool, an AI SDK model driven
+// through generateText, and the OpenTelemetry callback registered globally.
+const served = serveProgram(new Predict('question -> answer', new MockLM({ responses: ['answer: Paris'] })), { name: 'qa' });
+const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+const client = new Client({ name: 'packaging-check', version: '1.0.0' });
+await Promise.all([served.connect(serverSide), client.connect(clientSide)]);
+const [qaTool] = await mcpTools(client);
+assert.deepEqual(JSON.parse(await qaTool.call({ question: 'Capital?' })), { answer: 'Paris' });
+await client.close();
+
+const aiModel = {
+    specificationVersion: 'v4',
+    provider: 'fake.chat',
+    modelId: 'fake-model',
+    supportedUrls: {},
+    doGenerate: async () => ({
+        content: [{ type: 'text', text: 'hi from ai' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+            inputTokens: { total: 3, noCache: 3, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 2, text: 2, reasoning: undefined },
+        },
+        warnings: [],
+    }),
+    doStream: async () => { throw new Error('not used'); },
+};
+const aiLm = new AISDKLM({ model: aiModel });
+assert.equal(await aiLm.generate('hello'), 'hi from ai');
+assert.equal(aiLm.getUsage().promptTokens, 3);
+
+const otel = instrument();
+assert.ok(otel instanceof OpenTelemetryCallback);
+uninstrument();
+
 console.log('  ESM  ok');
 `;
 
@@ -111,10 +159,17 @@ const { MockLM, CassetteLM } = require('@ts-dspy/core/testing');
 const { OpenAILM } = require('@ts-dspy/openai');
 const { GeminiLM } = require('@ts-dspy/gemini');
 const { AnthropicLM } = require('@ts-dspy/anthropic');
+const { mcpTools, serveProgram, connectMcp } = require('@ts-dspy/mcp');
+const { OpenTelemetryCallback, instrument } = require('@ts-dspy/otel');
+const { AISDKLM } = require('@ts-dspy/ai-sdk');
 const assert = require('node:assert/strict');
 
 assert.equal(typeof BaseLM, 'function', 'BaseLM missing from @ts-dspy/core');
-for (const [name, Provider] of [['openai', OpenAILM], ['gemini', GeminiLM], ['anthropic', AnthropicLM]]) {
+for (const fn of [mcpTools, serveProgram, connectMcp, instrument]) {
+    assert.equal(typeof fn, 'function');
+}
+assert.equal(typeof new OpenTelemetryCallback().onLMStart, 'function');
+for (const [name, Provider] of [['openai', OpenAILM], ['gemini', GeminiLM], ['anthropic', AnthropicLM], ['ai-sdk', AISDKLM]]) {
     assert.ok(Object.create(Provider.prototype) instanceof BaseLM, name + ' does not extend the installed core BaseLM');
 }
 

@@ -58,9 +58,15 @@ console.log(result.confidence); // 0.98 — a number, verified at runtime
 | [`@ts-dspy/openai`](packages/openai)       | OpenAI, plus any OpenAI-compatible endpoint, via the official `openai` SDK |
 | [`@ts-dspy/gemini`](packages/gemini)       | Google Gemini, via `@google/genai` (Gemini API or Vertex AI)               |
 | [`@ts-dspy/anthropic`](packages/anthropic) | Anthropic Claude, via `@anthropic-ai/sdk`                                  |
+| [`@ts-dspy/ai-sdk`](packages/ai-sdk)       | Any Vercel AI SDK language model, via `ai`                                 |
+| [`@ts-dspy/mcp`](packages/mcp)             | Model Context Protocol: MCP tools in `ReAct`, programs served as MCP tools |
+| [`@ts-dspy/otel`](packages/otel)           | OpenTelemetry spans for modules, LM calls and tools (GenAI conventions)    |
 
 Install core plus whichever providers you use. Each provider defaults to a current
-model for that vendor; pass `model` to pin one yourself.
+model for that vendor; pass `model` to pin one yourself. The last three are
+integrations rather than vendors: `@ts-dspy/ai-sdk` wraps any AI SDK model,
+`@ts-dspy/mcp` connects programs to MCP servers in both directions, and
+`@ts-dspy/otel` traces them.
 
 `@ts-dspy/openai` also exports `OpenAICompatibleLM` for the many servers that speak
 the OpenAI chat-completions API — Ollama, LM Studio, vLLM, Groq, Together, and

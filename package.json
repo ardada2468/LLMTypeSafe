@@ -12,7 +12,7 @@
   "scripts": {
     "build": "npm run build:core && npm run build:providers",
     "build:core": "npm run build -w @ts-dspy/core",
-    "build:providers": "npm run build -w @ts-dspy/openai -w @ts-dspy/gemini -w @ts-dspy/anthropic",
+    "build:providers": "npm run build -w @ts-dspy/openai -w @ts-dspy/gemini -w @ts-dspy/anthropic -w @ts-dspy/mcp -w @ts-dspy/otel -w @ts-dspy/ai-sdk",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "npm run build:core && npm run typecheck --workspaces && npm run typecheck:examples",
