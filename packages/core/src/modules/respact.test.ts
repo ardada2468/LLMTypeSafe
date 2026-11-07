@@ -67,7 +67,9 @@ class ToolCallingLM extends BaseLM {
 
 describe('RespAct', () => {
     describe('tool normalization', () => {
-        it('accepts bare functions and synthesizes a description', () => {
+        // Tools are normalised into `Tool` instances internally (stored as
+        // `{ tool, typed }`), so these reach through `.tool`.
+        it('accepts bare functions and synthesizes a description', async () => {
             const tool: ToolFunction = (input: string) => `Result: ${input}`;
             const agent = new RespAct('question -> answer', {
                 tools: { testTool: tool },
@@ -75,11 +77,11 @@ describe('RespAct', () => {
             });
 
             const tools = (agent as any).tools;
-            expect(tools.testTool.description).toBe('Tool: testTool');
-            expect(tools.testTool.function).toBe(tool);
+            expect(tools.testTool.tool.description).toBe('Tool: testTool');
+            expect(await tools.testTool.tool.call({ input: 'x' })).toBe('Result: x');
         });
 
-        it('accepts tools that carry their own description', () => {
+        it('accepts tools that carry their own description', async () => {
             const tool: ToolWithDescription = {
                 description: 'A test tool that processes input',
                 function: (input: string) => `Processed: ${input}`,
@@ -90,8 +92,10 @@ describe('RespAct', () => {
             });
 
             const tools = (agent as any).tools;
-            expect(tools.advancedTool.description).toBe('A test tool that processes input');
-            expect(tools.advancedTool.function).toBe(tool.function);
+            expect(tools.advancedTool.tool.description).toBe(
+                'A test tool that processes input'
+            );
+            expect(await tools.advancedTool.tool.call({ input: 'x' })).toBe('Processed: x');
         });
 
         it('handles both shapes side by side', () => {
@@ -107,8 +111,8 @@ describe('RespAct', () => {
             });
 
             const tools = (agent as any).tools;
-            expect(tools.legacy.description).toBe('Tool: legacy');
-            expect(tools.modern.description).toBe('Modern tool with description');
+            expect(tools.legacy.tool.description).toBe('Tool: legacy');
+            expect(tools.modern.tool.description).toBe('Modern tool with description');
         });
     });
 
@@ -399,7 +403,7 @@ describe('RespAct', () => {
                 },
             });
 
-            const schema = (agent as any).tools.add.parameters;
+            const schema = (agent as any).tools.add.tool.parameters;
             expect(schema.type).toBe('object');
             expect(Object.keys(schema.properties)).toEqual(['a', 'b']);
             expect(schema.required).toEqual(['a', 'b']);
@@ -411,7 +415,7 @@ describe('RespAct', () => {
                 tools: { echo: (input: string) => input },
             });
 
-            const schema = (agent as any).tools.echo.parameters;
+            const schema = (agent as any).tools.echo.tool.parameters;
             expect(Object.keys(schema.properties)).toEqual(['input']);
             expect((agent as any).tools.echo.typed).toBe(false);
         });
@@ -429,8 +433,8 @@ describe('RespAct', () => {
                 },
             });
 
-            expect((agent as any).tools.weather.parameters).toBe(parameters);
-            expect((agent as any).tools.weather.validator).toBeUndefined();
+            expect((agent as any).tools.weather.tool.parameters).toBe(parameters);
+            expect((agent as any).tools.weather.tool.validator).toBeUndefined();
         });
 
         it('parses a JSON Action Input into named arguments in text mode', async () => {

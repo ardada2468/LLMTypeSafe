@@ -2,6 +2,7 @@ import { type Example } from '../core/example';
 import { type Prediction } from '../core/prediction';
 import { type Module } from '../core/module';
 import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
+import type { LMUsage } from '../core/usage';
 
 /**
  * What a metric returns for one example: a numeric score, or a straight
@@ -62,12 +63,12 @@ export interface EvaluationResult {
 }
 
 /**
- * Token and latency totals for the run, obtained by diffing the language
- * model's own counters around it.
+ * Token and latency totals for the run: exactly the language-model calls the
+ * evaluation made, collected in an async-local scope around it, so concurrent
+ * work on a shared model is never counted.
  *
- * There is deliberately no cost field. ts-dspy carries no price table — the one
- * it used to carry went stale and reported figures wrong by more than an order
- * of magnitude. Multiply these token counts by prices you control instead.
+ * Models implementing `ILanguageModel` by hand report usage only if they call
+ * `recordLMUsage`; `BaseLM` subclasses do so automatically.
  */
 export interface EvaluationUsage {
     promptTokens: number;
@@ -75,12 +76,16 @@ export interface EvaluationUsage {
     totalTokens: number;
     /** Language-model calls made during the run. */
     requestCount: number;
-    /** Provider-level failures recorded by the model during the run. */
+    /** Provider-level failures recorded during the run. */
     errorCount: number;
     /** Mean latency per language-model request, in milliseconds. */
     averageLatency: number;
     /** Wall-clock duration of the whole run, in milliseconds. */
     durationMs: number;
+    /** The same usage, per `provider/model`. */
+    byModel: LMUsage;
+    /** Spend across priced models, when `configure({ pricing })` covers any. */
+    totalCost?: number;
 }
 
 /** Aggregate result of an evaluation run. */
@@ -110,13 +115,9 @@ export interface EvaluateOptions {
     /** Per-call provider options, forwarded to the program. */
     callOptions?: LLMCallOptions;
     /**
-     * Model whose counters are diffed for {@link EvaluationUsage}. Defaults to
-     * the module's own model, then to the configured default. Usage comes back
-     * zeroed when neither exists.
-     *
-     * A function program has no model to find, so it falls straight through to
-     * the configured default — set this explicitly when the function calls a
-     * model other than that one, or the token counts describe an idle model.
+     * @deprecated Ignored. Usage used to be measured by differencing this
+     * model's counters; it is now collected exactly from every call the run
+     * makes, whichever model serves it.
      */
     lm?: ILanguageModel;
     /**

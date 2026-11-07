@@ -3,6 +3,7 @@ import { type Prediction } from '../core/prediction';
 import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
 import { createRng, shuffled } from './random';
 import { mapWithConcurrency } from '../utils/pool';
+import { context } from '../core/config';
 import { type DemoModule, type Metric, type MetricResult, resolveExampleInputs } from './types';
 
 /** One trainset example's outcome, reported as the run proceeds. */
@@ -52,6 +53,11 @@ export interface BootstrapFewShotOptions {
      * the student, on the student's own model — it just imitates work the
      * teacher did. This is the technique that makes bootstrapping worth the
      * trouble: you pay for the strong model once, at compile time.
+     *
+     * A module with `withLM` (every `Predict`) is copied onto the teacher. One
+     * without — a hand-written composite — is run inside
+     * `settings.context({ lm: teacher })`, which reaches every sub-module that
+     * has no model of its own.
      */
     teacher?: ILanguageModel;
     /** Input field names, when the trainset examples do not declare their own. */
@@ -164,7 +170,9 @@ export class BootstrapFewShot {
                     const index = start + offset;
                     try {
                         const inputs = inputsByIndex[index];
-                        const prediction = await runner.forward(inputs, this.callOptions);
+                        const prediction = await runner.run(() =>
+                            runner.module.forward(inputs, this.callOptions)
+                        );
                         const score = await this.metric(example, prediction);
 
                         if (!this.passes(score)) {
@@ -211,18 +219,24 @@ export class BootstrapFewShot {
         return ordered.filter((_, index) => !used.has(index)).slice(0, this.maxLabeledDemos);
     }
 
-    /** The module that generates the demos: the teacher's, when one was given. */
-    private teacherModule<M extends DemoModule>(student: M): M {
-        if (!this.teacher) {
-            return student;
+    /**
+     * The module that generates the demos, and the scope to run it in: the
+     * student copied onto the teacher when it supports `withLM`, otherwise the
+     * student itself inside a settings scope whose default model is the
+     * teacher. Models are resolved at call time, so the scope reaches every
+     * sub-module without a model of its own.
+     */
+    private teacherModule<M extends DemoModule>(
+        student: M
+    ): { module: M; run: <T>(fn: () => Promise<T>) => Promise<T> } {
+        const teacher = this.teacher;
+        if (!teacher) {
+            return { module: student, run: (fn) => fn() };
         }
-        if (typeof student.withLM !== 'function') {
-            throw new Error(
-                'A teacher model was supplied, but this module has no withLM() method. ' +
-                    'Implement withLM(lm) on the module, or drop the teacher option.'
-            );
+        if (typeof student.withLM === 'function') {
+            return { module: student.withLM(teacher), run: (fn) => fn() };
         }
-        return student.withLM(this.teacher);
+        return { module: student, run: (fn) => context({ lm: teacher }, fn) };
     }
 
     private passes(score: MetricResult): boolean {

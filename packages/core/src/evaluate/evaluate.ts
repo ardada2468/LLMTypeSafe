@@ -1,9 +1,9 @@
 import { type Example } from '../core/example';
 import { mapWithConcurrency } from '../utils/pool';
 import { type Prediction } from '../core/prediction';
-import { getDefaultLM } from '../core/config';
 import { TsDspyError } from '../core/errors';
-import type { ILanguageModel, LLMCallOptions, UsageStats } from '../types/language-model';
+import { collectUsage, sumUsage, type UsageCollector } from '../core/usage';
+import type { LLMCallOptions } from '../types/language-model';
 import type {
     EvaluateOptions,
     EvaluationProgram,
@@ -57,84 +57,22 @@ function toScore(value: MetricResult): number {
     return Number.isFinite(value) ? value : 0;
 }
 
-function hasUsageCounters(value: unknown): value is ILanguageModel {
-    return typeof (value as ILanguageModel | undefined)?.getUsage === 'function';
-}
-
-/**
- * The model whose counters bracket the run: the caller's choice, else the
- * program's own, else the configured default, else none.
- */
-function resolveLM(
-    program: EvaluationProgram,
-    override?: ILanguageModel
-): ILanguageModel | undefined {
-    if (override) return override;
-
-    // `Module.lm` is protected in the type system but a plain runtime property.
-    const own = (program as unknown as { lm?: unknown }).lm;
-    if (hasUsageCounters(own)) return own;
-
-    try {
-        return getDefaultLM();
-    } catch {
-        return undefined;
-    }
-}
-
-function counter(value: number | undefined): number {
-    return Number.isFinite(value) ? (value as number) : 0;
-}
-
-/**
- * Difference two usage snapshots. `averageLatency` is a mean, so it is
- * re-weighted by request count before subtracting. Negative deltas — a
- * `resetUsage()` mid-run — are floored at zero rather than reported.
- */
-function diffUsage(
-    before: UsageStats | undefined,
-    after: UsageStats | undefined,
-    durationMs: number
-): EvaluationUsage {
-    if (!before || !after) {
-        return {
-            promptTokens: 0,
-            completionTokens: 0,
-            totalTokens: 0,
-            requestCount: 0,
-            errorCount: 0,
-            averageLatency: 0,
-            durationMs,
-        };
-    }
-
-    const promptTokens = Math.max(
-        0,
-        counter(after.promptTokens) - counter(before.promptTokens)
-    );
-    const completionTokens = Math.max(
-        0,
-        counter(after.completionTokens) - counter(before.completionTokens)
-    );
-    const requestCount = Math.max(
-        0,
-        counter(after.requestCount) - counter(before.requestCount)
-    );
-    const latencySum = Math.max(
-        0,
-        counter(after.averageLatency) * counter(after.requestCount) -
-            counter(before.averageLatency) * counter(before.requestCount)
-    );
-
-    return {
-        promptTokens,
-        completionTokens,
-        totalTokens: promptTokens + completionTokens,
-        requestCount,
-        errorCount: Math.max(0, counter(after.errorCount) - counter(before.errorCount)),
-        averageLatency: requestCount > 0 ? latencySum / requestCount : 0,
+/** Fold a run's collected usage into the report's shape. */
+function toEvaluationUsage(usage: UsageCollector, durationMs: number): EvaluationUsage {
+    const byModel = usage.snapshot();
+    const total = sumUsage(Object.values(byModel));
+    const report: EvaluationUsage = {
+        promptTokens: total.promptTokens,
+        completionTokens: total.completionTokens,
+        totalTokens: total.totalTokens,
+        requestCount: total.requestCount ?? 0,
+        errorCount: total.errorCount ?? 0,
+        averageLatency: total.averageLatency ?? 0,
         durationMs,
+        byModel,
     };
+    if (total.totalCost !== undefined) report.totalCost = total.totalCost;
+    return report;
 }
 
 async function runProgram(
@@ -203,55 +141,58 @@ export async function evaluate(
     );
     assertInputKeysDesignated(prepared);
 
-    const lm = resolveLM(program, options.lm);
-    const before = lm?.getUsage();
     const startedAt = Date.now();
 
-    const results = await runPooled(prepared, concurrency, async (example, index) => {
-        const exampleStartedAt = Date.now();
-        let inputs: Record<string, any> = {};
-        // Held outside the try so a metric that throws still reports what the
-        // model produced — otherwise debugging your own metric is guesswork.
-        let prediction: Prediction | undefined;
-        let result: EvaluationResult;
+    // Usage is collected in an async-local scope around the run, so it counts
+    // exactly the calls this evaluation made — whichever models they went to —
+    // and nothing a concurrent job did on a shared model.
+    const { result: results, usage } = await collectUsage(() =>
+        runPooled(prepared, concurrency, async (example, index) => {
+            const exampleStartedAt = Date.now();
+            let inputs: Record<string, any> = {};
+            // Held outside the try so a metric that throws still reports what the
+            // model produced — otherwise debugging your own metric is guesswork.
+            let prediction: Prediction | undefined;
+            let result: EvaluationResult;
 
-        try {
-            inputs = example.getInputs();
-            prediction = await runProgram(program, inputs, callOptions);
-            const score = toScore(await metric(example, prediction));
+            try {
+                inputs = example.getInputs();
+                prediction = await runProgram(program, inputs, callOptions);
+                const score = toScore(await metric(example, prediction));
 
-            result = {
-                index,
-                example,
-                inputs,
-                expected: safeOutputs(example),
-                prediction,
-                score,
-                durationMs: Date.now() - exampleStartedAt,
-            };
-        } catch (error) {
-            result = {
-                index,
-                example,
-                inputs,
-                expected: safeOutputs(example),
-                prediction,
-                score: 0,
-                error: toError(error),
-                durationMs: Date.now() - exampleStartedAt,
-            };
-        }
+                result = {
+                    index,
+                    example,
+                    inputs,
+                    expected: safeOutputs(example),
+                    prediction,
+                    score,
+                    durationMs: Date.now() - exampleStartedAt,
+                };
+            } catch (error) {
+                result = {
+                    index,
+                    example,
+                    inputs,
+                    expected: safeOutputs(example),
+                    prediction,
+                    score: 0,
+                    error: toError(error),
+                    durationMs: Date.now() - exampleStartedAt,
+                };
+            }
 
-        try {
-            onResult?.(result);
-        } catch {
-            // A reporting hook must not be able to change a score.
-        }
+            try {
+                onResult?.(result);
+            } catch {
+                // A reporting hook must not be able to change a score.
+            }
 
-        return result;
-    });
+            return result;
+        })
+    );
 
-    const usage = diffUsage(before, lm?.getUsage(), Date.now() - startedAt);
+    const report = toEvaluationUsage(usage, Date.now() - startedAt);
     const totalScore = results.reduce((sum, result) => sum + result.score, 0);
 
     return {
@@ -260,6 +201,6 @@ export async function evaluate(
         count: results.length,
         errorCount: results.filter((result) => result.error !== undefined).length,
         results,
-        usage,
+        usage: report,
     };
 }

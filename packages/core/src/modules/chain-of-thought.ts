@@ -31,15 +31,13 @@ export class ChainOfThought<
     ): Promise<Prediction<WithReasoning<TOutput>> & WithReasoning<TOutput>> {
         const prediction = await this.traced<WithReasoning<TOutput>>(inputs, async (span) => {
             // Step 1: reason in the open, as free text.
-            const reasoningPrompt = this.buildReasoningPrompt(inputs);
-            span?.startCall(reasoningPrompt);
-            const reasoning = await this.lm.generate(reasoningPrompt, options);
-            span?.endCall(reasoning);
+            const reasoningPrompt = this.buildReasoningPrompt(inputs, options);
+            const reasoning = await this.generateText(reasoningPrompt, options, span);
 
             // Step 2: answer with that reasoning in context, validated against
             // the signature. `complete` owns the repair loop, so a failed answer
             // is retried against this same prompt without reasoning again.
-            const finalPrompt = this.buildFinalPrompt(inputs, reasoning);
+            const finalPrompt = this.buildFinalPrompt(inputs, reasoning, options);
             const parsed = (await this.complete(finalPrompt, options, span)) as TOutput;
 
             return { ...parsed, reasoning } as WithReasoning<TOutput>;
@@ -62,8 +60,11 @@ export class ChainOfThought<
     ): PredictionStream<WithReasoning<TOutput>> {
         throwIfAborted(options?.signal);
 
-        const reasoning = await this.lm.generate(this.buildReasoningPrompt(inputs), options);
-        const finalPrompt = this.buildFinalPrompt(inputs, reasoning);
+        const reasoning = await this.generateText(
+            this.buildReasoningPrompt(inputs, options),
+            options
+        );
+        const finalPrompt = this.buildFinalPrompt(inputs, reasoning, options);
 
         const inner = this.streamComplete(finalPrompt, options);
         let step = await inner.next();
@@ -83,13 +84,20 @@ export class ChainOfThought<
             WithReasoning<TOutput>;
     }
 
-    private buildReasoningPrompt(inputs: Record<string, any>): string {
-        const basePrompt = this.buildPrompt(inputs);
+    private buildReasoningPrompt(
+        inputs: Record<string, any>,
+        options?: LLMCallOptions
+    ): string {
+        const basePrompt = this.buildPrompt(inputs, options);
         return `${basePrompt}\n\nLet's think step by step. Please provide your reasoning:`;
     }
 
-    private buildFinalPrompt(inputs: Record<string, any>, reasoning: string): string {
-        const basePrompt = this.buildPrompt(inputs);
+    private buildFinalPrompt(
+        inputs: Record<string, any>,
+        reasoning: string,
+        options?: LLMCallOptions
+    ): string {
+        const basePrompt = this.buildPrompt(inputs, options);
         return `${basePrompt}\n\nReasoning: ${reasoning}\n\nBased on this reasoning, provide your final answer:`;
     }
 }
