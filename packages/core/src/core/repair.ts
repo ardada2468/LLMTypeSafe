@@ -5,8 +5,8 @@ import { type ValidationError, type FieldValidationIssue } from './errors';
  *
  * A model that gets a field's type wrong has usually understood the task and
  * merely fumbled the shape, so one more round-trip that names the offending
- * fields tends to recover it. `Predict`, `ChainOfThought` and `RespAct` all
- * build their corrective prompt here so there is a single wording to tune.
+ * fields tends to recover it. Every adapter builds its corrective turn here so
+ * there is a single wording to tune.
  */
 
 /** Which output shape the model is being asked to correct. */
@@ -67,14 +67,17 @@ export function buildRepairPrompt(
 }
 
 /**
- * Build the corrective `Observation:` body RespAct appends to its transcript
- * when a Final Answer fails validation.
+ * The corrective user turn an adapter appends after a reply that failed
+ * validation. The reply itself goes back as the preceding assistant turn, so
+ * this only has to say what was wrong and how to answer instead — `closing`
+ * is the adapter's own wording for its format.
  */
-export function buildRepairObservation(error: ValidationError): string {
+export function buildRepairInstruction(error: ValidationError, closing: string): string {
     return [
-        `Your Final Answer was missing or malformed for: ${listFailingFields(error.issues)}.`,
+        `Your previous response failed validation for: ${listFailingFields(error.issues)}.`,
         describeValidationIssues(error.issues),
-        'Provide a Final Answer with every required field on its own "field: value" line.',
+        '',
+        closing,
     ].join('\n');
 }
 

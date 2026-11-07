@@ -2,10 +2,11 @@ import { z } from 'zod';
 import {
     isZodSignature,
     Signature,
+    zodSpecialFieldType,
     type AnyZodSignature,
     type SignatureLike,
 } from '../core/signature';
-import { TsDspyError } from '../core/errors';
+import { TsDspyError, ValidationError, type FieldValidationIssue } from '../core/errors';
 import type { FieldConfig } from '../types/signature';
 
 /** JSON Schema fragment describing one field. */
@@ -23,20 +24,38 @@ const TRUTHY = new Set(['true', '1', 'yes', 'y', 'on']);
 const FALSY = new Set(['false', '0', 'no', 'n', 'off']);
 
 /**
- * Resolve the output fields of a signature, whether it is a `Signature` subclass
- * or a string signature like `"question -> answer: float"`.
+ * Resolve the output fields of a signature, whether it is a `Signature`
+ * subclass, a zod signature, or a string signature like
+ * `"question -> answer: float"`.
  */
 export function getOutputFieldConfigs(signature: SignatureLike): Record<string, FieldConfig> {
     if (isZodSignature(signature)) {
-        return zodOutputFieldConfigs(signature);
+        return zodFieldConfigs(signature.output.shape as Record<string, z.ZodType>, 'output');
     }
     if (typeof signature !== 'string') {
         return signature.getOutputFields();
     }
+    return stringFieldConfigs(signature, 'output');
+}
 
+/** Resolve the input fields of a signature, in any of its three forms. */
+export function getInputFieldConfigs(signature: SignatureLike): Record<string, FieldConfig> {
+    if (isZodSignature(signature)) {
+        return zodFieldConfigs(signature.input.shape as Record<string, z.ZodType>, 'input');
+    }
+    if (typeof signature !== 'string') {
+        return signature.getInputFields();
+    }
+    return stringFieldConfigs(signature, 'input');
+}
+
+function stringFieldConfigs(
+    signature: string,
+    side: 'input' | 'output'
+): Record<string, FieldConfig> {
     const parsed = Signature.parseStringSignature(signature);
     const configs: Record<string, FieldConfig> = {};
-    for (const name of parsed.outputs) {
+    for (const name of side === 'input' ? parsed.inputs : parsed.outputs) {
         // Normalise here so callers see the same shape whichever way the field
         // was declared: `enum(a|b)` in a string signature and
         // `{ type: 'enum', values: ['a', 'b'] }` on a decorator both arrive as
@@ -46,13 +65,31 @@ export function getOutputFieldConfigs(signature: SignatureLike): Record<string, 
             type: parsed.types[name] ?? 'string',
         });
         configs[name] = {
-            description: `Output field: ${name}`,
+            description:
+                parsed.descriptions[name] ??
+                `${side === 'input' ? 'Input' : 'Output'} field: ${name}`,
             type: resolved.type,
-            required: true,
+            required: !parsed.optional.includes(name),
             ...(resolved.values ? { values: resolved.values } : {}),
         };
     }
     return configs;
+}
+
+/**
+ * Whether a field's description is the placeholder the decorators fill in
+ * (`Input field: question`) rather than something the author wrote. Prompts
+ * leave placeholders out: they only restate the field name.
+ */
+export function isPlaceholderDescription(
+    name: string,
+    description: string | undefined
+): boolean {
+    return (
+        !description ||
+        description === `Input field: ${name}` ||
+        description === `Output field: ${name}`
+    );
 }
 
 /** A field's declared type after enum members have been resolved. */
@@ -369,19 +406,47 @@ function coercerForField(field: z.ZodType): Coercer | null {
     return coercerForJsonSchema(node);
 }
 
-/** Field configs for a zod signature's outputs, for prompts and error messages. */
-function zodOutputFieldConfigs(signature: AnyZodSignature): Record<string, FieldConfig> {
-    const shape = signature.output.shape as Record<string, z.ZodType>;
+/** Field configs for one side of a zod signature, for prompts and error messages. */
+function zodFieldConfigs(
+    shape: Record<string, z.ZodType>,
+    side: 'input' | 'output'
+): Record<string, FieldConfig> {
     const configs: Record<string, FieldConfig> = {};
 
     for (const [name, field] of Object.entries(shape)) {
+        const description =
+            field.description || `${side === 'input' ? 'Input' : 'Output'} field: ${name}`;
+        const special = zodSpecialFieldType(field);
+        if (special) {
+            configs[name] = { description, type: special, required: !acceptsUndefined(field) };
+            continue;
+        }
+        const node = describeAsJsonSchema(field);
         configs[name] = {
-            description: field.description || `Output field: ${name}`,
-            type: jsonSchemaLabel(describeAsJsonSchema(field)),
+            description,
+            type: jsonSchemaLabel(node),
             required: !acceptsUndefined(field),
+            ...(Array.isArray(node.enum) ? { values: node.enum.map(String) } : {}),
         };
     }
     return configs;
+}
+
+/**
+ * The prompt hint for one zod field — enum members, bounds, optionality — or
+ * `undefined` when the field is not part of a zod signature.
+ */
+export function zodFieldHintFor(
+    signature: SignatureLike,
+    side: 'input' | 'output',
+    name: string
+): string | undefined {
+    if (!isZodSignature(signature)) return undefined;
+    const shape = (side === 'input' ? signature.input.shape : signature.output.shape) as Record<
+        string,
+        z.ZodType
+    >;
+    return shape[name] ? zodFieldHint(shape[name]) : undefined;
 }
 
 /**
@@ -835,4 +900,46 @@ export function buildOutputJsonSchema(signature: SignatureLike): OutputJsonSchem
         required: Object.keys(properties),
         additionalProperties: false,
     };
+}
+
+/**
+ * Validate raw output field values — as an adapter parsed them out of a reply —
+ * against the signature, coercing text towards each declared type.
+ *
+ * Nulls standing in for absent optional fields are dropped first, so an
+ * optional output the model left out resolves to `undefined` (or its zod
+ * default) rather than failing.
+ *
+ * @throws {ValidationError} naming every field that is missing or cannot be
+ * coerced, with `rawText` as the offending reply.
+ */
+export function validateOutputs(
+    signature: SignatureLike,
+    raw: Record<string, unknown>,
+    rawText: string
+): Record<string, any> {
+    const cleaned = stripAbsentNulls(signature, raw);
+
+    const result = buildOutputSchema(signature).safeParse(cleaned);
+    if (result.success) {
+        return result.data as Record<string, any>;
+    }
+
+    const fields = getOutputFieldConfigs(signature);
+    const issues: FieldValidationIssue[] = result.error.issues.map((issue) => {
+        const field = String(issue.path[0] ?? '(root)');
+        const declared = fields[field];
+        // Report an enum's members, not the bare word `enum` — the set is the
+        // part that tells the reader why the value was refused.
+        const expected = declared?.values?.length
+            ? `enum(${declared.values.join('|')})`
+            : (declared?.type ?? 'string');
+        const received = cleaned[field];
+        const message =
+            received === undefined
+                ? 'field not found in model output'
+                : `${issue.message} (received ${JSON.stringify(received)})`;
+        return { field, expected, received, message };
+    });
+    throw new ValidationError(issues, rawText);
 }

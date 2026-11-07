@@ -17,6 +17,14 @@ export interface ParsedSignature {
     inputs: string[];
     outputs: string[];
     types: Record<string, string>;
+    /**
+     * Field descriptions written inline as a quoted string after the type:
+     * `'question: string "the user question" -> answer'`. Only fields that
+     * declared one appear.
+     */
+    descriptions: Record<string, string>;
+    /** Fields declared optional with a trailing `?` on the name: `note?: string`. */
+    optional: string[];
 }
 
 // New Utility Types Start

@@ -10,6 +10,13 @@ import type {
 export interface MockLMOptions {
     /** Text replies returned by successive `generate`/`chat` calls. */
     responses?: string[];
+    /**
+     * Computes a reply from the request, for calls made once `responses` has
+     * run out (or when none were scripted). Handy when a reply depends on the
+     * prompt — echoing an input, say — or when a test should not care how
+     * many calls a module makes.
+     */
+    respond?: (messages: ChatMessage[], options?: LLMCallOptions) => string;
     /** Objects returned by successive `generateStructured` calls. */
     structuredResponses?: unknown[];
     capabilities?: Partial<ModelCapabilities>;
@@ -23,6 +30,7 @@ export interface MockLMOptions {
 /** Scripted language model for tests: replies in order, records every call. */
 export class MockLM extends BaseLM {
     private responses: string[];
+    private respond?: (messages: ChatMessage[], options?: LLMCallOptions) => string;
     private structuredResponses: unknown[];
     private capabilities: ModelCapabilities;
     private chunkSize?: number;
@@ -39,6 +47,7 @@ export class MockLM extends BaseLM {
     constructor(options: MockLMOptions = {}) {
         super('mock', 'mock-model');
         this.responses = [...(options.responses ?? [])];
+        this.respond = options.respond;
         this.structuredResponses = [...(options.structuredResponses ?? [])];
         this.chunkSize = options.chunkSize;
         this.capabilities = {
@@ -61,11 +70,15 @@ export class MockLM extends BaseLM {
         // Copy: a caller that grows one `messages` array across a loop would
         // otherwise rewrite every call already recorded here.
         this.calls.push({ messages: messages.map((message) => ({ ...message })), options });
-        if (this.responses.length === 0) {
+        if (this.responses.length === 0 && !this.respond) {
             throw new Error('MockLM: no more scripted responses');
         }
+        const reply =
+            this.responses.length > 0
+                ? this.responses.shift()!
+                : this.respond!(messages, options);
         this.recordUsage({ promptTokens: 10, completionTokens: 5, latencyMs: 1 });
-        return this.responses.shift()!;
+        return reply;
     }
 
     async generateStructured<T>(

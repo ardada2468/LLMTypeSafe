@@ -411,8 +411,8 @@ describe('BootstrapFewShot', () => {
         });
         await compiled.forward({ question: 'Capital of Peru?' });
 
-        expect(lm.lastPrompt()).toContain('question: Capital of France?');
-        expect(lm.lastPrompt()).toContain('answer: Paris');
+        expect(lm.lastPrompt()).toContain('[[ ## question ## ]]\nCapital of France?');
+        expect(lm.lastPrompt()).toContain('[[ ## answer ## ]]\nParis');
     });
 
     it('leaves the compiled module unchanged when nothing passed', async () => {

@@ -11,7 +11,7 @@ import {
 import { AuthError, LMError, RateLimitError, TimeoutError } from './errors';
 import { BaseLM } from './base-lm';
 import { Predict } from '../modules/predict';
-import { RespAct } from '../modules/respact';
+import { ReAct } from '../modules/react';
 import { MockLM } from '../test-utils';
 
 /** Advance fake time until `promise` settles, returning its outcome. */
@@ -299,15 +299,18 @@ describe('wrapLM', () => {
         expect(wrapped.listModels).toBeUndefined();
     });
 
-    it('keeps a model without native tool calling on the RespAct text loop', async () => {
+    it('keeps a model without native tool calling on the ReAct text loop', async () => {
         const lm = new MockLM({
-            responses: ['Final Answer: answer: done'],
+            responses: [
+                'next_thought: nothing to do\nnext_tool_name: finish\nnext_tool_args: {}',
+                'reasoning: trivially\nanswer: done',
+            ],
             capabilities: { supportsFunctionCalling: true },
         });
         const wrapped = wrapLM(lm);
 
         expect(wrapped.chatWithTools).toBe(BaseLM.prototype.chatWithTools);
-        const result = await new RespAct('question -> answer', {
+        const result = await new ReAct('question -> answer', {
             lm: wrapped,
             tools: { noop: () => 'x' },
         }).forward({ question: 'Q' });

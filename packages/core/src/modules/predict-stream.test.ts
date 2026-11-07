@@ -194,8 +194,8 @@ describe('Predict.stream', () => {
 
             await collect(new Predict(QA, lm).stream({ question: 'Capital of France?' }));
 
-            const prompt = lm.lastMessages?.[0].content ?? '';
-            expect(prompt).toContain('question: Capital of France?');
+            const prompt = (lm.lastMessages ?? []).map((message) => message.content).join('\n');
+            expect(prompt).toContain('[[ ## question ## ]]\nCapital of France?');
             expect(prompt).toContain('Respond with JSON matching this schema');
             expect(prompt).toContain('"confidence"');
         });
@@ -390,26 +390,56 @@ describe('Predict.stream', () => {
     });
 });
 
+// Rewritten for 0.7: ChainOfThought is one call, so `reasoning` streams in
+// with the other fields rather than arriving whole before them.
 describe('ChainOfThought.stream', () => {
-    it('reasons first, then streams the answer with the reasoning attached', async () => {
-        const lm = new StreamingLM(JSON_CHUNKS);
+    const COT_CHUNKS = [
+        '{"reasoning": "France',
+        '\'s capital.", ',
+        '"answer": "Paris", "confidence": 0.95}',
+    ];
+
+    it('streams reasoning and answer from a single call', async () => {
+        const lm = new StreamingLM(COT_CHUNKS);
 
         const snapshots = await collect(
             new ChainOfThought(QA, lm).stream({ question: 'Capital of France?' })
         );
 
-        // One non-streaming call for the reasoning step, one stream for the answer.
-        expect(lm.chatCalls).toBe(1);
+        expect(lm.chatCalls).toBe(0);
         expect(lm.streamCalls).toBe(1);
-        expect(snapshots.every((snapshot) => snapshot.reasoning === JSON_CHUNKS.join(''))).toBe(
-            true
+        expect(snapshots[0]).toEqual({ reasoning: 'France' });
+        expect(snapshots.at(-1)).toEqual({
+            reasoning: "France's capital.",
+            answer: 'Paris',
+            confidence: 0.95,
+        });
+    });
+
+    it('streams marker sections on the ChatAdapter path', async () => {
+        const lm = new StreamingLM(
+            [
+                '[[ ## reasoning ## ]]\nBecause',
+                ' it is.\n\n[[ ## ans',
+                'wer ## ]]\nParis\n\n[[ ## confidence ## ]]\n0.9\n\n[[ ## completed ## ]]',
+            ],
+            { supportsStructuredOutput: false }
         );
-        expect(snapshots.at(-1)?.answer).toBe('Paris');
-        expect(snapshots.at(-1)?.confidence).toBe(0.95);
+
+        const snapshots = await collect(new ChainOfThought(QA, lm).stream({ question: 'Q' }));
+
+        expect(snapshots[0]).toEqual({ reasoning: 'Because' });
+        // The half-written marker is not shown as part of the reasoning.
+        expect(snapshots[1]).toEqual({ reasoning: 'Because it is.' });
+        expect(snapshots.at(-1)).toEqual({
+            reasoning: 'Because it is.',
+            answer: 'Paris',
+            confidence: 0.9,
+        });
     });
 
     it('returns a Prediction carrying both the reasoning and the validated fields', async () => {
-        const lm = new StreamingLM(JSON_CHUNKS);
+        const lm = new StreamingLM(COT_CHUNKS);
 
         const stream = new ChainOfThought(QA, lm).stream({ question: 'Q' });
         let step = await stream.next();
@@ -419,17 +449,17 @@ describe('ChainOfThought.stream', () => {
 
         expect(step.value).toBeInstanceOf(Prediction);
         expect(step.value.confidence).toBe(0.95);
-        expect(step.value.reasoning).toBe(JSON_CHUNKS.join(''));
+        expect(step.value.reasoning).toBe("France's capital.");
     });
 
     it('closes the provider stream when the consumer breaks out early', async () => {
-        const lm = new StreamingLM(JSON_CHUNKS);
+        const lm = new StreamingLM(COT_CHUNKS);
 
         for await (const _snapshot of new ChainOfThought(QA, lm).stream({ question: 'Q' })) {
             break;
         }
 
         expect(lm.closed).toBe(true);
-        expect(lm.emitted).toBeLessThan(JSON_CHUNKS.length);
+        expect(lm.emitted).toBeLessThan(COT_CHUNKS.length);
     });
 });

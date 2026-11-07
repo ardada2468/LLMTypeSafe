@@ -73,10 +73,19 @@ describe('LabeledFewShot', () => {
 
         await compiled.forward({ question: 'live question' });
 
+        // Demos travel as user/assistant pairs before the real turn.
+        const { messages } = lm.calls[0];
+        expect(messages.map((message) => message.role)).toEqual([
+            'system',
+            'user',
+            'assistant',
+            'user',
+            'assistant',
+            'user',
+        ]);
         const prompt = lm.lastPrompt();
-        expect(prompt).toContain('Here are 2 worked examples of this task:');
         for (const demo of compiled.getDemos()) {
-            expect(prompt).toContain(`answer: ${demo.get('answer')}`);
+            expect(prompt).toContain(`[[ ## answer ## ]]\n${demo.get('answer')}`);
         }
     });
 

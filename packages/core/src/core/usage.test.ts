@@ -38,11 +38,18 @@ describe('per-call usage', () => {
 
     it('reports the invocation’s usage keyed by provider/model', async () => {
         configure({ trackUsage: true });
-        const lm = new MockLM({ responses: ['reasoning', 'answer: A'] });
-
-        const result = await new ChainOfThought('question -> answer', lm).forward({
-            question: 'Q',
+        // Two calls in one invocation: the reply and its repair round trip.
+        const lm = new MockLM({
+            responses: [
+                'reasoning: r\nanswer: A\nscore: high',
+                'reasoning: r\nanswer: A\nscore: 1',
+            ],
         });
+
+        const result = await new ChainOfThought(
+            'question -> answer, score: number',
+            lm
+        ).forward({ question: 'Q' }, { repairAttempts: 1 });
 
         expect(result.getLMUsage()).toEqual({
             'mock/mock-model': {

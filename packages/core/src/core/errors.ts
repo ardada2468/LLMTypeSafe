@@ -7,8 +7,9 @@ export class TsDspyError extends Error {
 }
 
 /**
- * Thrown when an iterative module (such as `RespAct`) runs out of steps without
- * producing a valid final answer.
+ * Thrown when an iterative module runs out of steps without producing a valid
+ * final answer. `ReAct` no longer throws it — like DSPy, it extracts an answer
+ * from the trajectory it has — but custom loops may.
  */
 export class MaxStepsError extends TsDspyError {
     /** The step budget that was exhausted. */

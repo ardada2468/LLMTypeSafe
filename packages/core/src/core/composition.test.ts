@@ -8,7 +8,7 @@ import { TsDspyError } from './errors';
 import { Signature, InputField, OutputField } from './signature';
 import { Predict } from '../modules/predict';
 import { ChainOfThought } from '../modules/chain-of-thought';
-import { RespAct } from '../modules/respact';
+import { ReAct } from '../modules/react';
 import { MockLM } from '../test-utils';
 
 class QA extends Signature {
@@ -27,7 +27,7 @@ class Program extends Module {
     steps = [new ChainOfThought('question -> answer'), new Predict('question -> answer')];
     experts: Record<string, Module> = {
         math: new Predict('question -> answer'),
-        agent: new RespAct('question -> answer', { tools: {} }),
+        agent: new ReAct('question -> answer', { tools: {} }),
     };
     self: Module = this;
     note = { label: 'not a module' };
@@ -59,6 +59,9 @@ describe('composition', () => {
             'steps[1]',
             'experts.math',
             'experts.agent',
+            // Changed in 0.7: ReAct holds its step and extract predictors.
+            'experts.agent.react',
+            'experts.agent.extract',
         ]);
     });
 
@@ -74,14 +77,17 @@ describe('composition', () => {
         expect(predict.predictors()).toEqual([predict]);
     });
 
-    it('lists the Predict instances of a composite, skipping RespAct', () => {
+    it('lists the Predict instances of a composite, including ReAct’s', () => {
         const program = new Program();
 
+        // Changed in 0.7: ReAct is built from predictors an optimizer can tune.
         expect(program.namedPredictors().map(([path]) => path)).toEqual([
             'retrieve',
             'steps[0]',
             'steps[1]',
             'experts.math',
+            'experts.agent.react',
+            'experts.agent.extract',
         ]);
         expect(program.predictors()[1]).toBeInstanceOf(ChainOfThought);
     });
@@ -100,7 +106,7 @@ describe('composition', () => {
         expect(copy.steps[0]).toBeInstanceOf(ChainOfThought);
         expect(copy.steps).not.toBe(program.steps);
         expect(copy.experts).not.toBe(program.experts);
-        expect(copy.experts.agent).toBeInstanceOf(RespAct);
+        expect(copy.experts.agent).toBeInstanceOf(ReAct);
         // The cycle is reproduced inside the copy rather than pointing back out.
         expect(copy.self).toBe(copy);
         expect(copied).not.toBe(original);
@@ -157,7 +163,7 @@ describe('instructions', () => {
     });
 
     it('open the prompt for a string signature, and reach ChainOfThought', async () => {
-        const lm = new MockLM({ responses: ['because', 'answer: A'] });
+        const lm = new MockLM({ responses: ['reasoning: because\nanswer: A'] });
         const cot = new ChainOfThought('question -> answer', {
             lm,
             instructions: 'Think carefully.',
@@ -165,9 +171,11 @@ describe('instructions', () => {
 
         await cot.forward({ question: 'Q' });
 
-        for (const call of lm.calls) {
-            expect(String(call.messages[0].content).startsWith('Think carefully.')).toBe(true);
-        }
+        // The adapter states the objective at the end of the system message.
+        expect(lm.calls).toHaveLength(1);
+        expect(String(lm.calls[0].messages[0].content)).toContain(
+            'your objective is:\nThink carefully.'
+        );
     });
 });
 
@@ -192,6 +200,8 @@ describe('save and load', () => {
                 'inner.steps[0]',
                 'inner.steps[1]',
                 'inner.experts.math',
+                'inner.experts.agent.react',
+                'inner.experts.agent.extract',
                 'metadata',
             ].sort()
         );

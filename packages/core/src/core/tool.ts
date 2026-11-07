@@ -47,7 +47,7 @@ const NO_ARGUMENTS: Record<string, unknown> = { type: 'object', properties: {} }
  * });
  * ```
  *
- * The provider-neutral currency for tools: `RespAct` accepts these directly,
+ * The provider-neutral currency for tools: `ReAct` accepts these directly,
  * {@link Tool.toSpec} produces what `LLMCallOptions.tools` takes, and
  * {@link Tool.call} validates arguments and reports `onToolStart`/`onToolEnd`
  * to callbacks however the tool is invoked.

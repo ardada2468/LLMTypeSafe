@@ -1,10 +1,10 @@
 /**
- * RespAct: reason-and-act loops with tools.
+ * ReAct: reason-and-act loops with tools.
  *
  *   export OPENAI_API_KEY="sk-..."
  *   npx tsx examples/tool-demo.ts
  */
-import { Signature, InputField, OutputField, RespAct, configure } from '@ts-dspy/core';
+import { Signature, InputField, OutputField, ReAct, configure } from '@ts-dspy/core';
 import { OpenAILM } from '@ts-dspy/openai';
 import { evaluateArithmetic, requireEnv, section } from './utils';
 
@@ -56,9 +56,9 @@ async function main(): Promise<void> {
         },
     };
 
-    section('RespAct with tools');
+    section('ReAct with tools');
 
-    const agent = new RespAct(ResearchQuestion, {
+    const agent = new ReAct(ResearchQuestion, {
         tools,
         maxSteps: 8,
         // Replaces the console logging the loop used to do internally.
@@ -89,11 +89,12 @@ async function main(): Promise<void> {
     console.log(`\nanswer:     ${result.answer}`);
     console.log(`confidence: ${result.confidence}`);
     console.log(`steps:      ${result.steps}`);
+    console.log(`reasoning:  ${result.reasoning}`);
 
     // Bare functions still work; they just get a generated description.
     section('Tools as plain functions');
 
-    const simple = new RespAct('question -> answer', {
+    const simple = new ReAct('question -> answer', {
         tools: { calculator: (expression: string) => evaluateArithmetic(expression) },
         maxSteps: 5,
     });

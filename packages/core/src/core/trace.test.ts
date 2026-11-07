@@ -2,7 +2,8 @@ import { clearHistory, inspectHistory } from './trace';
 import { configure } from './config';
 import { ChainOfThought } from '../modules/chain-of-thought';
 import { Predict } from '../modules/predict';
-import { RespAct } from '../modules/respact';
+import { ReAct } from '../modules/react';
+import { renderTranscript } from '../adapters/base';
 import { MockLM } from '../test-utils';
 import { ValidationError } from './errors';
 import { type LMCall, type TraceEntry } from '../types/module';
@@ -47,7 +48,8 @@ describe('tracing', () => {
 
         await new Predict('question -> answer', lm).forward({ question: 'Capital of France?' });
 
-        expect(inspectHistory(1)[0].rawLMInput).toBe(lm.lastPrompt());
+        // The adapter's messages, as `role: content` blocks.
+        expect(inspectHistory(1)[0].rawLMInput).toBe(renderTranscript(lm.calls[0].messages));
     });
 
     it('measures the usage delta for the call rather than lifetime totals', async () => {
@@ -64,39 +66,47 @@ describe('tracing', () => {
         expect(lm.getUsage().totalTokens).toBe(30);
     });
 
-    it('records one entry per language-model call in a multi-step module', async () => {
+    it('records a single call for ChainOfThought, which reasons in the same reply', async () => {
+        // Changed in 0.7: ChainOfThought used to make a reasoning call and an
+        // answer call; it now makes one, with `reasoning` as an output field.
         configure({ tracing: true });
-        const lm = new MockLM({
-            responses: ['Paris is the capital.', 'answer: Paris'],
-        });
+        const reply =
+            '[[ ## reasoning ## ]]\nParis is the capital.\n\n[[ ## answer ## ]]\nParis';
+        const lm = new MockLM({ responses: [reply] });
 
         const result = await new ChainOfThought('question -> answer', lm).forward({
             question: 'Capital of France?',
         });
 
-        expect(result.trace?.calls).toHaveLength(2);
-        expect(result.trace?.calls[0].rawOutput).toBe('Paris is the capital.');
-        expect(result.trace?.rawLMOutput).toBe('answer: Paris');
+        expect(result.trace?.calls).toHaveLength(1);
+        expect(result.trace?.rawLMOutput).toBe(reply);
+        expect(result.trace?.output).toEqual({
+            reasoning: 'Paris is the capital.',
+            answer: 'Paris',
+        });
     });
 
     it('traces every step of a tool loop', async () => {
         configure({ tracing: true });
         const lm = new MockLM({
             responses: [
-                'I need the weather.\nAction: weather\nAction Input: Paris',
-                'Final Answer: answer: sunny',
+                'next_thought: I need the weather.\nnext_tool_name: weather\nnext_tool_args: {"input": "Paris"}',
+                'next_thought: Done.\nnext_tool_name: finish\nnext_tool_args: {}',
+                'reasoning: The tool said so.\nanswer: sunny',
             ],
         });
 
-        await new RespAct('question -> answer', {
+        await new ReAct('question -> answer', {
             lm,
             tools: { weather: async () => 'sunny' },
         }).forward({ question: 'Weather in Paris?' });
 
-        const [entry] = inspectHistory(1);
-        expect(entry.moduleId).toMatch(/^RespAct#\d+$/);
-        expect(entry.calls).toHaveLength(2);
-        expect(entry.output).toEqual({ answer: 'sunny', steps: 2 });
+        // The step and extract predictors trace themselves; the agent's own
+        // entry is the last one recorded.
+        const entry = inspectHistory().at(-1)!;
+        expect(entry.moduleId).toMatch(/^ReAct#\d+$/);
+        expect(inspectHistory().flatMap((e) => e.calls)).toHaveLength(3);
+        expect(entry.output).toMatchObject({ answer: 'sunny', steps: 2 });
     });
 
     it('records the prompt behind a failed call and rethrows', async () => {
@@ -123,17 +133,18 @@ describe('tracing', () => {
 
         const [entry] = inspectHistory(1);
         expect(entry.calls).toHaveLength(1);
-        expect(entry.rawLMInput).toContain('question: Q');
+        expect(entry.rawLMInput).toContain('[[ ## question ## ]]\nQ');
         expect(entry.rawLMOutput).toBe('');
     });
 
     it('sums per-call usage into the entry total', async () => {
         configure({ tracing: true });
-        const lm = new MockLM({ responses: ['reasoning', 'answer: Paris'] });
-
-        const result = await new ChainOfThought('question -> answer', lm).forward({
-            question: 'Q',
-        });
+        // Two calls in one invocation: the reply and its repair round trip.
+        const lm = new MockLM({ responses: ['answer: a\nscore: high', 'answer: a\nscore: 3'] });
+        const result = await new Predict('question -> answer, score: number', lm).forward(
+            { question: 'Q' },
+            { repairAttempts: 1 }
+        );
 
         // A string signature widens TOutput to Record<string, any>, and the
         // Prediction<T> & T intersection then types every access as any --

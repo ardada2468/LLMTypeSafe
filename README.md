@@ -151,8 +151,8 @@ Or zod schemas, which need no decorators and infer their own types — see
 ### Modules
 
 - **`Predict`** — one call, validated against the signature.
-- **`ChainOfThought`** — reasons in free text first, then answers; the result adds a `reasoning` field.
-- **`RespAct`** — a reason-and-act loop that calls the tools you provide until it can answer.
+- **`ChainOfThought`** — adds a leading `reasoning` output, so the model thinks before it answers, in the same call; the result carries `reasoning`.
+- **`ReAct`** — a reason-and-act agent over any signature: it calls the tools you provide, then extracts the outputs from what it gathered. (`RespAct` remains as a deprecated alias.)
 
 All three accept per-call options that are passed through to the provider SDK:
 
@@ -171,9 +171,27 @@ const controller = new AbortController();
 await predict.forward({ question: '...' }, { signal: controller.signal, timeout: 30_000 });
 ```
 
-When a provider supports native structured output, `Predict` and `ChainOfThought`
-use it — the model is constrained to your schema rather than merely asked for it —
-and fall back to parsing labelled text otherwise.
+### Adapters
+
+How a signature becomes a prompt, and a reply becomes fields, is an adapter's
+job, as in DSPy. `ChatAdapter` writes every field under a `[[ ## field ## ]]`
+marker; `JSONAdapter` asks for one JSON object and, when a provider supports
+native structured output, constrains decoding to your schema; `XMLAdapter` uses
+`<field>` tags; `TwoStepAdapter({ extractionLM })` lets a reasoning model answer
+freely and a second model extract the fields. Demos and `History` inputs travel
+as real user/assistant turns.
+
+With nothing chosen, modules use `JSONAdapter` on a structured-output model and
+`ChatAdapter` (which retries in JSON when a reply ignores its format) otherwise.
+Choose one per call, per module, per scope, or globally — in that order of
+precedence:
+
+```ts
+await predict.forward(inputs, { adapter: new XMLAdapter() });
+new Predict(QA, { adapter: new JSONAdapter() });
+await settings.context({ adapter: new ChatAdapter() }, () => program.forward(inputs));
+configure({ adapter: new TwoStepAdapter({ extractionLM: cheapLM }) });
+```
 
 ### Streaming
 
@@ -206,10 +224,12 @@ while (!step.done) step = await stream.next();
 step.value.confidence; // the validated Prediction
 ```
 
-Providers with native structured output stream JSON, read by an incremental
-parser — exported as `parsePartialJson` — that recovers the fields present in a
-document truncated mid-string or mid-key. Everything else streams labelled text.
-A model that cannot stream falls back to a single call, yielded once, rather than
+The adapter reads each partial reply: `JSONAdapter` (the default for providers
+with native structured output) through an incremental parser — exported as
+`parsePartialJson` — that recovers the fields present in a document truncated
+mid-string or mid-key, `ChatAdapter` section by `[[ ## field ## ]]` section.
+`ChainOfThought` streams its `reasoning` like any other field. A model or adapter
+that cannot stream falls back to a single call, yielded once, rather than
 failing. Pass an `AbortSignal` to cancel; `break`ing out of the loop closes the
 provider's stream.
 
@@ -305,10 +325,10 @@ exactly what went wrong before giving up:
 const result = await predict.forward({ question: '...' }, { repairAttempts: 1 });
 ```
 
-The follow-up prompt names each failing field with its declared type and the
-value that actually arrived. It works on both of `Predict`'s paths — native
-structured output and labelled text — and `ChainOfThought` inherits it, retrying
-only the answering step rather than reasoning again. The default is `0`, so
+The rejected reply goes back as an assistant turn, followed by a user turn naming
+each failing field with its declared type and the value that actually arrived.
+It works with every adapter, native structured output included, and every
+module built on `Predict`. The default is `0`, so
 validation failures throw immediately unless you opt in; once the attempts are
 spent the last `ValidationError` is rethrown. Attempts are capped at 10, and the
 loop stops early if an attempt reproduces the previous failure exactly.
@@ -418,7 +438,7 @@ Runtime validation comes from the signature either way.
 ### Tools
 
 ```ts
-const agent = new RespAct(AnswerQuestion, {
+const agent = new ReAct(AnswerQuestion, {
   tools: {
     search: {
       description: 'Search the web. Input: a query string. Returns snippets.',
@@ -434,7 +454,7 @@ Give a tool a `parameters` schema — JSON Schema or Zod — and it takes named,
 validated arguments instead of one string:
 
 ```ts
-const agent = new RespAct(AnswerQuestion, {
+const agent = new ReAct(AnswerQuestion, {
   tools: {
     flights: {
       description: 'Find flights between two airports on a date.',
@@ -445,13 +465,20 @@ const agent = new RespAct(AnswerQuestion, {
 });
 ```
 
-`RespAct` picks its execution path from the model's capabilities. Against a
-provider reporting `supportsFunctionCalling: true` — all three of ours do — tools
-are declared in the request and the model's calls come back as structured data,
-so several tools can run in one turn. Against anything else, the loop falls back
-to prompting for `Action:` / `Action Input:` and parsing the reply, which works on
-any completion model. Both paths run the same tools and emit the same events; pass
-`forceTextMode: true` to pin a tool-capable model to the text loop.
+Each step is a `Predict` over the signature's inputs plus the `trajectory` so
+far, choosing `next_thought`, `next_tool_name` (one of the tools, or `finish`)
+and `next_tool_args`; then a `ChainOfThought` extracts the signature's outputs
+from the whole trajectory. The prompt comes from the signature through the
+adapter, so any inputs work — not just `question`. Running out of `maxSteps` is
+not an error: as in DSPy, the agent extracts its answer from what it has, and
+the result's `steps` and `trajectory` show what happened. `agent.react` and
+`agent.extract` are ordinary predictors that optimizers can tune.
+
+Against a provider reporting `supportsFunctionCalling: true` — all three of ours
+do — tools are declared in the request instead and the model's calls come back
+as structured data, so several tools can run in one turn. Both paths run the
+same tools and emit the same events; pass `forceTextMode: true` to keep a
+tool-capable model on the adapter loop.
 
 Tool descriptions are what the model uses to decide when to call each tool, so
 they earn the detail. Never pass model output to `eval()` — see
@@ -460,11 +487,12 @@ they earn the detail. Never pass model output to `eval()` — see
 ### Images
 
 `ChatMessage.content` is `string | ContentPart[]`, so one message can carry text
-and images together. Declare an image input with `@ImageField` — or the `image`
-type in a string signature — and render the message with `buildPromptContent`:
+and images together. Declare an image input with `@ImageField`, the `image` type
+in a string signature, or `image()` in a zod signature, and every module sends it
+as a real image part:
 
 ```ts
-import { Signature, ImageField, OutputField, buildPromptContent } from '@ts-dspy/core';
+import { Signature, ImageField, OutputField, Predict, image, signature } from '@ts-dspy/core';
 
 class ReadSign extends Signature {
   static description = 'Read the sign in the photo.';
@@ -476,19 +504,22 @@ class ReadSign extends Signature {
   words!: string;
 }
 
-const content = buildPromptContent(ReadSign, { photo: 'data:image/png;base64,...' });
-await lm.chat([{ role: 'user', content }]);
+const { words } = await new Predict(ReadSign).forward({ photo: 'data:image/png;base64,...' });
+
+// The same input in a zod signature:
+const ReadSignZ = signature({
+  input: z.object({ photo: image().describe('photo of the sign') }),
+  output: z.object({ words: z.string() }),
+});
 ```
 
 `imagePart()` accepts an `https://` URL, a `data:` URI, or an explicit
 `{ kind: 'base64', data, mediaType }` source. OpenAI receives `image_url` parts,
 Anthropic `image` blocks, and Gemini `inlineData` (Gemini fetches no arbitrary
 web URLs, so pass bytes or a Files API URI). Only user turns can carry an image,
-so system and assistant content is flattened to text. Modules still build string
-prompts, where an image input renders as an `[image: image/png]` placeholder —
-send images through `lm.chat()` for now. A plain string content behaves exactly
-as it did, and `supportsVision` is reported per model instead of being hardcoded
-to `true`.
+so system and assistant content is flattened to text. A plain string content
+behaves exactly as it did, and `supportsVision` is reported per model instead of
+being hardcoded to `true`.
 
 ### Testing
 
@@ -540,8 +571,8 @@ try {
 }
 ```
 
-Multi-step modules record each call under `calls`, so a `ChainOfThought` trace
-holds both the reasoning prompt and the final one. The buffer keeps 100 entries
+Modules that make several calls — a repair round trip, a `ReAct` loop — record
+each one under `calls`. The buffer keeps 100 entries
 by default (`traceHistorySize`), and `clearHistory()` empties it.
 
 Pass `onTrace` to forward entries to Langfuse, OpenTelemetry, or your own

@@ -1,103 +1,55 @@
+import { Predict } from './predict';
 import {
-    Predict,
-    throwIfAborted,
-    type PartialOutput,
-    type PredictionStream,
-    type StreamOptions,
-} from './predict';
-import { Prediction } from '../core/prediction';
-import { type Signature, type SignatureSource } from '../core/signature';
-import type { LLMCallOptions } from '../types/language-model';
-import type { SignatureInput, SignatureOutput } from '../types/signature';
+    extendSignature,
+    type Signature,
+    type SignatureLike,
+    type SignatureSource,
+} from '../core/signature';
+import type { SignatureOutput } from '../types/signature';
 
-type WithReasoning<TOutput> = TOutput & { reasoning: string };
+/** The output of a {@link ChainOfThought}: the signature's fields plus `reasoning`. */
+export type WithReasoning<TOutput> = TOutput & { reasoning: string };
+
+/** Description of the `reasoning` field ChainOfThought prepends, as in DSPy. */
+export const REASONING_DESCRIPTION = 'Think step by step in order to produce the outputs';
 
 /**
- * Two-step prediction: reason in free text, then answer with that reasoning in
- * context. The result carries the signature's output fields plus `reasoning`.
+ * Prediction with a reasoning step: the signature gains a leading `reasoning`
+ * output, so the model writes out its thinking before — and in the same reply
+ * as — the answer. One language-model call, exactly as in DSPy.
  *
- * Like {@link Predict}, `TOutput` can be supplied for precise output types, and
- * `options.repairAttempts` buys extra round-trips when the answer fails
- * validation. Repair applies to the answering step only — the reasoning is
- * already settled by then, so it is reused rather than regenerated.
+ * The result carries `reasoning` alongside the signature's own outputs. It is
+ * a `Predict` in every other respect: demos (with or without a `reasoning`
+ * field), instructions, adapters, images, self-repair and streaming all work
+ * the same, and `namedPredictors()` reports it like any other predictor.
+ *
+ * Like {@link Predict}, `TOutput` can be supplied for precise output types;
+ * `reasoning` is added to it.
  */
 export class ChainOfThought<
     TSignature extends SignatureSource = typeof Signature,
     TOutput extends Record<string, any> = SignatureOutput<TSignature>,
-> extends Predict<TSignature, TOutput> {
-    async forward(
-        inputs: SignatureInput<TSignature>,
-        options?: LLMCallOptions
-    ): Promise<Prediction<WithReasoning<TOutput>> & WithReasoning<TOutput>> {
-        const prediction = await this.traced<WithReasoning<TOutput>>(inputs, async (span) => {
-            // Step 1: reason in the open, as free text.
-            const reasoningPrompt = this.buildReasoningPrompt(inputs, options);
-            const reasoning = await this.generateText(reasoningPrompt, options, span);
-
-            // Step 2: answer with that reasoning in context, validated against
-            // the signature. `complete` owns the repair loop, so a failed answer
-            // is retried against this same prompt without reasoning again.
-            const finalPrompt = this.buildFinalPrompt(inputs, reasoning, options);
-            const parsed = (await this.complete(finalPrompt, options, span)) as TOutput;
-
-            return { ...parsed, reasoning } as WithReasoning<TOutput>;
-        });
-
-        return prediction as Prediction<WithReasoning<TOutput>> & WithReasoning<TOutput>;
+> extends Predict<TSignature, WithReasoning<TOutput>> {
+    protected predictionSignature(): SignatureLike {
+        return withReasoning(this.requireSignature());
     }
+}
 
-    /**
-     * Stream the answer step.
-     *
-     * The reasoning step runs first and in full — its text is what the answer
-     * step is conditioned on, so there is nothing to show progressively until it
-     * has finished. Every snapshot from then on carries the finished `reasoning`
-     * alongside the output fields filled in so far.
-     */
-    async *stream(
-        inputs: Record<string, any>,
-        options?: StreamOptions
-    ): PredictionStream<WithReasoning<TOutput>> {
-        throwIfAborted(options?.signal);
+// Extended signatures, built once per base signature. Kept off the instance so
+// the composition walk and deep copies never see them.
+const objectCache = new WeakMap<object, SignatureLike>();
+const stringCache = new Map<string, SignatureLike>();
 
-        const reasoning = await this.generateText(
-            this.buildReasoningPrompt(inputs, options),
-            options
-        );
-        const finalPrompt = this.buildFinalPrompt(inputs, reasoning, options);
+/** `signature` with a leading `reasoning` output, as {@link ChainOfThought} sends it. */
+export function withReasoning(signature: SignatureLike): SignatureLike {
+    const cached =
+        typeof signature === 'string' ? stringCache.get(signature) : objectCache.get(signature);
+    if (cached) return cached;
 
-        const inner = this.streamComplete(finalPrompt, options);
-        let step = await inner.next();
-        try {
-            while (!step.done) {
-                yield { ...step.value, reasoning } as PartialOutput<WithReasoning<TOutput>>;
-                step = await inner.next();
-            }
-        } finally {
-            // Abandoning this generator must close the one underneath it.
-            await inner.return({});
-        }
-
-        const combined = { ...step.value, reasoning } as WithReasoning<TOutput>;
-
-        return new Prediction(combined) as Prediction<WithReasoning<TOutput>> &
-            WithReasoning<TOutput>;
-    }
-
-    private buildReasoningPrompt(
-        inputs: Record<string, any>,
-        options?: LLMCallOptions
-    ): string {
-        const basePrompt = this.buildPrompt(inputs, options);
-        return `${basePrompt}\n\nLet's think step by step. Please provide your reasoning:`;
-    }
-
-    private buildFinalPrompt(
-        inputs: Record<string, any>,
-        reasoning: string,
-        options?: LLMCallOptions
-    ): string {
-        const basePrompt = this.buildPrompt(inputs, options);
-        return `${basePrompt}\n\nReasoning: ${reasoning}\n\nBased on this reasoning, provide your final answer:`;
-    }
+    const extended = extendSignature(signature, {
+        prependOutputs: { reasoning: { description: REASONING_DESCRIPTION, type: 'string' } },
+    });
+    if (typeof signature === 'string') stringCache.set(signature, extended);
+    else objectCache.set(signature, extended);
+    return extended;
 }
