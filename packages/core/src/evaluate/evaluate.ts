@@ -11,8 +11,8 @@ import type {
     EvaluationResult,
     EvaluationUsage,
     Metric,
-    MetricResult,
 } from './types';
+import { metricFeedback, metricScore } from './types';
 
 const DEFAULT_CONCURRENCY = 4;
 
@@ -49,12 +49,6 @@ async function runPooled<T, R>(
 
 function toError(cause: unknown): Error {
     return cause instanceof Error ? cause : new Error(String(cause));
-}
-
-/** Booleans become 1/0; anything non-finite becomes 0. */
-function toScore(value: MetricResult): number {
-    if (typeof value === 'boolean') return value ? 1 : 0;
-    return Number.isFinite(value) ? value : 0;
 }
 
 /** Fold a run's collected usage into the report's shape. */
@@ -158,7 +152,9 @@ export async function evaluate(
             try {
                 inputs = example.getInputs();
                 prediction = await runProgram(program, inputs, callOptions);
-                const score = toScore(await metric(example, prediction));
+                const verdict = await metric(example, prediction);
+                const score = metricScore(verdict);
+                const feedback = metricFeedback(verdict);
 
                 result = {
                     index,
@@ -167,6 +163,7 @@ export async function evaluate(
                     expected: safeOutputs(example),
                     prediction,
                     score,
+                    ...(feedback !== undefined ? { feedback } : {}),
                     durationMs: Date.now() - exampleStartedAt,
                 };
             } catch (error) {

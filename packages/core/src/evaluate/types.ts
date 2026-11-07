@@ -5,11 +5,23 @@ import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
 import type { LMUsage } from '../core/usage';
 
 /**
- * What a metric returns for one example: a numeric score, or a straight
- * pass/fail. `evaluate` reads `true`/`false` as `1`/`0`; an optimizer counts a
- * numeric score as a pass when it meets its `threshold`.
+ * A score with an explanation: what a metric returns when it can say *why* an
+ * output fell short. `evaluate` and most optimizers read only `score`;
+ * reflective optimizers (`GEPA`) hand `feedback` to a model that rewrites the
+ * program's instructions, which teaches it far more than a bare number does.
  */
-export type MetricResult = number | boolean;
+export interface ScoreWithFeedback {
+    score: number;
+    feedback?: string;
+}
+
+/**
+ * What a metric returns for one example: a numeric score, a straight
+ * pass/fail, or a score with feedback. `evaluate` reads `true`/`false` as
+ * `1`/`0` and `{ score }` as `score`; an optimizer counts a score as a pass
+ * when it meets its `threshold`.
+ */
+export type MetricResult = number | boolean | ScoreWithFeedback;
 
 /**
  * @deprecated Use {@link MetricResult}; this is the same type under its old name.
@@ -17,16 +29,57 @@ export type MetricResult = number | boolean;
 export type MetricScore = MetricResult;
 
 /**
+ * One predictor call recorded while a program ran: the predictor's path in the
+ * program (see `Module.namedPredictors`), and that call's inputs and outputs.
+ */
+export interface MetricTraceStep {
+    path: string;
+    inputs: Record<string, any>;
+    outputs: Record<string, any>;
+}
+
+/**
  * Grades one prediction against the example it came from.
  *
- * The shape is deliberately tiny and is treated as stable: `evaluate` and the
- * optimizers consume exactly this signature, so a metric written for one works
- * unchanged when handed to the other.
+ * Most metrics need only the first two arguments, and `evaluate` passes only
+ * those. Optimizers may pass more, as DSPy does:
+ *
+ * - `trace` — every predictor call the run made. Present while an optimizer
+ *   bootstraps demos, so a metric can be stricter there (DSPy's
+ *   `trace is not None` idiom) or check intermediate steps.
+ * - `predName` / `predTrace` — set by `GEPA` when it asks for feedback on one
+ *   predictor: that predictor's path, and just its calls. A metric can then
+ *   return feedback aimed at that step.
+ *
+ * The extra parameters are optional, so a two-argument metric is still a
+ * `Metric`, and one metric works with `evaluate` and every optimizer.
  */
 export type Metric = (
     example: Example,
-    prediction: Prediction
+    prediction: Prediction,
+    trace?: MetricTraceStep[],
+    predName?: string,
+    predTrace?: MetricTraceStep[]
 ) => MetricResult | Promise<MetricResult>;
+
+/**
+ * The number in a metric result: booleans become `1`/`0`, `{ score }` becomes
+ * `score`, and anything non-finite becomes `0` — a metric that could not
+ * produce a number must not poison an average.
+ */
+export function metricScore(result: MetricResult): number {
+    if (typeof result === 'boolean') return result ? 1 : 0;
+    const value = typeof result === 'number' ? result : Number(result?.score);
+    return Number.isFinite(value) ? value : 0;
+}
+
+/** The feedback in a metric result, when it carries any. */
+export function metricFeedback(result: MetricResult): string | undefined {
+    if (typeof result === 'object' && result !== null && typeof result.feedback === 'string') {
+        return result.feedback;
+    }
+    return undefined;
+}
 
 /**
  * Anything `evaluate` can run against one example's inputs — a module, or a
@@ -56,6 +109,8 @@ export interface EvaluationResult {
     prediction?: Prediction;
     /** Metric score, or `0` when this example failed. */
     score: number;
+    /** The metric's feedback, when it returned `{ score, feedback }`. */
+    feedback?: string;
     /** Set when the program or the metric threw for this example. */
     error?: Error;
     /** Wall-clock time for this example, in milliseconds. */

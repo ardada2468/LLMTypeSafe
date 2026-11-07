@@ -372,3 +372,27 @@ describe('formatReport', () => {
         expect(text).not.toContain('alpha');
     });
 });
+
+describe('evaluate with score-and-feedback metrics', () => {
+    it('reads the score and keeps the feedback on each result', async () => {
+        const data = dataset([
+            ['alpha', 'alpha'],
+            ['beta', 'gamma'],
+        ]);
+        const report = await evaluate(echoProgram, data, (example, prediction) => {
+            const right = example.get('answer') === prediction.get('answer');
+            return { score: right ? 1 : 0.25, feedback: right ? 'good' : 'expected gamma' };
+        });
+
+        expect(report.score).toBeCloseTo(0.625);
+        expect(report.results.map((r) => r.feedback)).toEqual(['good', 'expected gamma']);
+    });
+
+    it('treats a non-finite score as zero and omits absent feedback', async () => {
+        const report = await evaluate(echoProgram, dataset([['alpha', 'alpha']]), () => ({
+            score: NaN,
+        }));
+        expect(report.score).toBe(0);
+        expect(report.results[0]).not.toHaveProperty('feedback');
+    });
+});
