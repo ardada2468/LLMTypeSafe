@@ -159,6 +159,9 @@ export function buildCacheKey(input: CacheKeyInput): string {
         sampling: Object.fromEntries(
             SAMPLING_PARAMS.map((param) => [param, options[param] ?? null])
         ),
+        // Only present when set, so keys for calls without provider options
+        // are unchanged.
+        ...(options.providerOptions ? { providerOptions: options.providerOptions } : {}),
     };
     if (rolloutId !== undefined && rolloutId !== null) {
         payload.rolloutId = rolloutId;

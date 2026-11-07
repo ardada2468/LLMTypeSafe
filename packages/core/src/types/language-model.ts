@@ -56,6 +56,19 @@ export interface LLMCallOptions {
      * first wins.
      */
     signal?: AbortSignal;
+    /**
+     * Provider-specific options for this call, keyed by provider name — e.g.
+     * `{ openai: { reasoningEffort: 'low' } }` or
+     * `{ anthropic: { thinking: { budgetTokens: 4096 }, cachePrompt: true } }`.
+     *
+     * Each provider reads only its own key and ignores the rest, so one options
+     * object can be shared across models (say, behind a `fallback()`). The
+     * options a provider documents are translated into its request shape;
+     * any other key is merged into the raw request body as-is, which is the
+     * escape hatch for a parameter ts-dspy does not model yet. Part of the
+     * response-cache key.
+     */
+    providerOptions?: Record<string, unknown>;
     metadata?: Record<string, any>;
 }
 
@@ -176,6 +189,13 @@ export interface ChatResult {
     content: string;
     toolCalls?: ToolCall[];
     finishReason?: FinishReason;
+    /**
+     * The model's visible reasoning, when the provider returns it: Anthropic
+     * thinking blocks, Gemini thought summaries (`includeThoughts`), or the
+     * `reasoning_content` some OpenAI-compatible servers send. Never part of
+     * `content`.
+     */
+    reasoning?: string;
 }
 
 export interface UsageStats {
