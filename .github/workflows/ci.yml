@@ -79,7 +79,7 @@ jobs:
 
       - name: Validate publish metadata
         run: |
-          for pkg in core openai gemini anthropic; do
+          for pkg in core openai gemini anthropic mcp otel ai-sdk; do
             echo "::group::publint @ts-dspy/$pkg"
             npx --yes publint@latest "packages/$pkg"
             echo "::endgroup::"
@@ -87,7 +87,7 @@ jobs:
 
       - name: Validate type resolution
         run: |
-          for pkg in core openai gemini anthropic; do
+          for pkg in core openai gemini anthropic mcp otel ai-sdk; do
             echo "::group::attw @ts-dspy/$pkg"
             (cd "packages/$pkg" && npx --yes @arethetypeswrong/cli@latest --pack . --profile node16)
             echo "::endgroup::"
