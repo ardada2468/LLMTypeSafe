@@ -30,7 +30,17 @@
     "example:anthropic": "tsx examples/basic-anthropic-example.ts",
     "example:zod": "tsx examples/zod-signature.ts",
     "example:ollama": "tsx examples/ollama-local.ts",
-    "example:optimizer": "tsx examples/optimizer.ts"
+    "example:optimizer": "tsx examples/optimizer.ts",
+    "example:tools": "tsx examples/tool-demo.ts",
+    "example:save-load": "tsx examples/composition-save-load.ts",
+    "example:rag": "tsx examples/rag-knn.ts",
+    "example:mipro": "tsx examples/mipro.ts",
+    "example:gepa": "tsx examples/gepa.ts",
+    "example:mcp": "tsx examples/mcp-react.ts",
+    "example:otel": "tsx examples/otel-tracing.ts",
+    "example:ai-sdk": "tsx examples/ai-sdk.ts",
+    "example:refine": "tsx examples/refine.ts",
+    "example:streamify": "tsx examples/streamify.ts"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",

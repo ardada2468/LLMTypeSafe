@@ -8,7 +8,10 @@
       "@ts-dspy/core/testing": ["./packages/core/src/testing"],
       "@ts-dspy/openai": ["./packages/openai/src"],
       "@ts-dspy/gemini": ["./packages/gemini/src"],
-      "@ts-dspy/anthropic": ["./packages/anthropic/src"]
+      "@ts-dspy/anthropic": ["./packages/anthropic/src"],
+      "@ts-dspy/mcp": ["./packages/mcp/src"],
+      "@ts-dspy/otel": ["./packages/otel/src"],
+      "@ts-dspy/ai-sdk": ["./packages/ai-sdk/src"]
     }
   },
   "include": ["./**/*.ts"]

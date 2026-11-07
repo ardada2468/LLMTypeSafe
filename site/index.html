@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TS-DSPy — type-safe LLM output for TypeScript</title>
-<meta name="description" content="TS-DSPy validates model output against the signature you declared and throws when it does not match. Providers for OpenAI, Anthropic, and Gemini behind one interface.">
+<meta name="description" content="TS-DSPy validates model output against the signature you declared and throws when it does not match. Adapters, ReAct agents, DSPy optimizers like MIPROv2 and GEPA, and providers for OpenAI, Anthropic, Gemini and the AI SDK behind one interface.">
 <meta property="og:title" content="TS-DSPy">
 <meta property="og:description" content="You declared a number. The model said &quot;high&quot;. TS-DSPy catches that.">
 <meta property="og:type" content="website">
@@ -38,7 +38,7 @@
 <!-- ───────────────────────── hero ───────────────────────── -->
 <section class="hero" id="top">
   <div class="shell">
-    <p class="eyebrow">v0.5.0 &nbsp;/&nbsp; TypeScript &nbsp;/&nbsp; MIT</p>
+    <p class="eyebrow">v0.7.0 &nbsp;/&nbsp; TypeScript &nbsp;/&nbsp; MIT</p>
     <h1 class="display">
       You declared a number.<br>
       The model said <span class="quoted">&ldquo;high&rdquo;</span>.
@@ -200,6 +200,28 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
         <code class="card-cmd">npm i @ts-dspy/gemini</code>
       </li>
     </ul>
+
+    <p class="eyebrow" style="margin-top:48px">Integrations</p>
+    <ul class="cards">
+      <li class="card">
+        <p class="card-name">@ts-dspy/ai-sdk</p>
+        <p class="card-model">AISDKLM</p>
+        <p class="card-body">Run programs on any Vercel AI SDK language model &mdash; every AI SDK provider and the AI Gateway.</p>
+        <code class="card-cmd">npm i @ts-dspy/ai-sdk ai</code>
+      </li>
+      <li class="card">
+        <p class="card-name">@ts-dspy/mcp</p>
+        <p class="card-model">connectMcp / mcpTools</p>
+        <p class="card-body">MCP server tools in <code>ReAct</code>, and programs served as MCP tools with <code>serveProgram</code>.</p>
+        <code class="card-cmd">npm i @ts-dspy/mcp</code>
+      </li>
+      <li class="card">
+        <p class="card-name">@ts-dspy/otel</p>
+        <p class="card-model">instrument()</p>
+        <p class="card-body">OpenTelemetry spans for modules, LM calls and tools, with GenAI semantic conventions.</p>
+        <code class="card-cmd">npm i @ts-dspy/otel</code>
+      </li>
+    </ul>
   </div>
 </section>
 
@@ -207,7 +229,7 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
 <section class="band band-alt" id="concepts">
   <div class="shell">
     <p class="eyebrow">Concepts</p>
-    <h2 class="h2">Three pieces</h2>
+    <h2 class="h2">Five pieces</h2>
     <dl class="defs">
       <div class="def">
         <dt>Signature</dt>
@@ -222,8 +244,31 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
         <dt>Module</dt>
         <dd>
           The strategy that fills the contract. <code>Predict</code> asks once.
-          <code>ChainOfThought</code> reasons first, then answers.
-          <code>RespAct</code> runs a tool loop until it can.
+          <code>ChainOfThought</code> reasons, then answers, in the same call.
+          <code>ReAct</code> calls your tools, then extracts the answer from what
+          it gathered. <code>BestOfN</code>, <code>Refine</code> and
+          <code>Parallel</code> compose them; any <code>Module</code> holding others
+          is a program you can save and load.
+        </dd>
+      </div>
+      <div class="def">
+        <dt>Adapter</dt>
+        <dd>
+          How a signature becomes chat messages and a reply becomes fields.
+          <code>ChatAdapter</code> uses DSPy&rsquo;s <code>[[ ## field ## ]]</code>
+          format, <code>JSONAdapter</code> the provider&rsquo;s native structured
+          output; <code>XMLAdapter</code> and <code>TwoStepAdapter</code> cover the
+          rest. Chosen per call, module, scope, or globally.
+        </dd>
+      </div>
+      <div class="def">
+        <dt>Optimizer</dt>
+        <dd>
+          Programs improve from data. Give an optimizer a trainset and a metric and
+          it writes the demos and instructions: <code>BootstrapFewShot</code>,
+          <code>KNNFewShot</code>, <code>COPRO</code>, <code>MIPROv2</code>,
+          <code>SIMBA</code>, and <code>GEPA</code>, which learns from your
+          metric&rsquo;s written feedback.
         </dd>
       </div>
       <div class="def">
@@ -245,7 +290,7 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
     <p class="eyebrow">How it works</p>
     <h2 class="h2">One declaration, three consumers</h2>
     <p class="body body-wide">
-      The signature you write drives the prompt, the JSON Schema sent to the
+      The signature you write drives the messages, the JSON Schema sent to the
       provider, and the schema your reply is validated against. Both routes
       through the middle end at the same gate, so nothing reaches your code
       unchecked.
@@ -254,7 +299,7 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
 <figure class="fig" data-anim>
       <div class="fig-body">
         <svg viewBox="0 0 780 720" role="img"
-             aria-label="Flow from a decorated Signature class through prompt building, a capability fork into either native structured output or labelled-text parsing, converging on a single zod validation gate that yields either a Prediction or a ValidationError.">
+             aria-label="Flow from a decorated Signature class through the adapter's message formatting, a capability fork into either native structured output via JSONAdapter or field-marker parsing via ChatAdapter, converging on a single zod validation gate that yields either a Prediction or a ValidationError.">
           <defs>
             <marker id="mk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
@@ -276,12 +321,12 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
 
           <g class="g-node">
             <rect class="n" x="240" y="140" width="300" height="60"/>
-            <text class="t t-ttl" x="390" y="166" text-anchor="middle">buildPrompt()</text>
-            <text class="t t-sub" x="390" y="186" text-anchor="middle">description + labelled inputs + field list</text>
+            <text class="t t-ttl" x="390" y="166" text-anchor="middle">adapter.format()</text>
+            <text class="t t-sub" x="390" y="186" text-anchor="middle">system + demo turns + user turn</text>
           </g>
 
           <line class="e g-edge" x1="390" y1="200" x2="390" y2="242" marker-end="url(#mk)" style="color:var(--ink)"/>
-          <text class="t t-edge g-lbl" x="400" y="226">prompt</text>
+          <text class="t t-edge g-lbl" x="400" y="226">messages</text>
 
           <g class="g-node">
             <polygon class="n" points="214,248 566,248 590,278 566,308 214,308 190,278"/>
@@ -297,16 +342,16 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
 
           <g class="g-node">
             <rect class="n" x="66" y="372" width="292" height="92" stroke-width="2"/>
-            <text class="t t-ttl" x="212" y="398" text-anchor="middle">generateStructured()</text>
-            <text class="t t-sub" x="212" y="420" text-anchor="middle">buildOutputJsonSchema(signature)</text>
+            <text class="t t-ttl" x="212" y="398" text-anchor="middle">JSONAdapter</text>
+            <text class="t t-sub" x="212" y="420" text-anchor="middle">generateStructured(schema)</text>
             <text class="t t-sub" x="212" y="440" text-anchor="middle">provider constrains decoding</text>
           </g>
 
           <g class="g-node">
             <rect class="n" x="422" y="372" width="292" height="92"/>
-            <text class="t t-ttl" x="568" y="398" text-anchor="middle">generate()</text>
-            <text class="t t-sub" x="568" y="420" text-anchor="middle">parseOutput() scrapes "field: value"</text>
-            <text class="t t-sub" x="568" y="440" text-anchor="middle">BaseLM fallback asks for JSON in prose</text>
+            <text class="t t-ttl" x="568" y="398" text-anchor="middle">ChatAdapter</text>
+            <text class="t t-sub" x="568" y="420" text-anchor="middle">chat() &#8594; [[ ## field ## ]] sections</text>
+            <text class="t t-sub" x="568" y="440" text-anchor="middle">JSON retry if the format is ignored</text>
           </g>
 
           <polyline class="e g-edge" points="212,464 212,496 300,496 300,514" marker-end="url(#mk)" style="color:var(--ink)"/>
@@ -343,9 +388,9 @@ configure({ lm: <span class="kw">new</span> AnthropicLM({ apiKey: process.env.AN
         library: one declaration feeds the prompt, the JSON Schema, and the
         validator. Both branches end at the same <code>safeParse</code>, so nothing
         reaches your code untyped. All three shipped providers report
-        <code>supportsStructuredOutput: true</code>, so the right-hand branch is what
-        a custom <code>ILanguageModel</code> gets &mdash; and what <code>RespAct</code>
-        always uses.
+        <code>supportsStructuredOutput: true</code>, so they default to the left-hand
+        branch; the right-hand branch is what a custom <code>ILanguageModel</code>
+        without structured output gets. Pass any adapter explicitly to choose.
       </figcaption>
     </figure>
 

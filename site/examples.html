@@ -35,14 +35,15 @@
 <section class="pagehead">
   <div class="shell">
     <p class="eyebrow">Examples</p>
-    <h1 class="display">Nine things<br>you might build.</h1>
+    <h1 class="display">Eighteen things<br>you might build.</h1>
     <p class="lede">
       Each one runs as written, given an API key in the environment. They start
-      simple and end at the parts most libraries leave out: failure handling,
-      provider swapping, and tests.
+      simple, reach the parts most libraries leave out &mdash; failure handling,
+      provider swapping, and tests &mdash; and finish with composed programs,
+      optimizers, and integrations.
     </p>
     <p class="meta">
-      <span>0.5.0</span><span>tsx examples/&hellip;</span><span>node &gt;=22</span>
+      <span>0.7.0</span><span>tsx examples/&hellip;</span><span>node &gt;=22</span>
     </p>
   </div>
 </section>
@@ -56,11 +57,20 @@
       <li><a href="#classify">2 &nbsp;Classification</a></li>
       <li><a href="#extract">3 &nbsp;Structured extraction</a></li>
       <li><a href="#cot">4 &nbsp;Chain of thought</a></li>
-      <li><a href="#agent">5 &nbsp;Tool loop</a></li>
+      <li><a href="#agent">5 &nbsp;ReAct agent</a></li>
       <li><a href="#stream">6 &nbsp;Streaming</a></li>
       <li><a href="#swap">7 &nbsp;Swapping providers</a></li>
       <li><a href="#errors">8 &nbsp;Handling failure</a></li>
       <li><a href="#test">9 &nbsp;Testing</a></li>
+      <li><a href="#save-load">10 &nbsp;Compose &amp; save</a></li>
+      <li><a href="#rag">11 &nbsp;RAG + KNN demos</a></li>
+      <li><a href="#mipro">12 &nbsp;MIPROv2</a></li>
+      <li><a href="#gepa">13 &nbsp;GEPA</a></li>
+      <li><a href="#mcp">14 &nbsp;MCP agent</a></li>
+      <li><a href="#otel">15 &nbsp;OpenTelemetry</a></li>
+      <li><a href="#ai-sdk">16 &nbsp;AI SDK</a></li>
+      <li><a href="#refine">17 &nbsp;Refine</a></li>
+      <li><a href="#streamify">18 &nbsp;streamify</a></li>
     </ol>
   </nav>
 
@@ -197,44 +207,60 @@ console.log(out.answer)  <span class="c">// 215, as a number</span></code></pre>
   <section id="agent">
     <div class="ex-head">
       <p class="anchor">Example 5</p>
-      <span class="ex-tags"><span class="ex-tag">RespAct</span><span class="ex-tag">tools</span><span class="ex-tag">tracing</span></span>
+      <span class="ex-tags"><span class="ex-tag">ReAct</span><span class="ex-tag">tools</span><span class="ex-tag">trajectory</span></span>
     </div>
-    <h2>A tool loop</h2>
+    <h2>A ReAct agent</h2>
     <p>
-      The model decides which tool to call and when it has enough to answer.
-      Tool descriptions are the whole interface &mdash; write them as instructions,
-      and say what the input should be.
+      The model decides which tool to call and when it has enough &mdash; then an
+      extract step writes the answer from everything it gathered. Tool
+      descriptions are the whole interface: write them as instructions, and say
+      what the input should be.
     </p>
-    <pre class="code"><code><span class="kw">import</span> { RespAct } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+    <pre class="code"><code><span class="kw">import</span> { ReAct } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
 
-<span class="kw">const</span> support = <span class="kw">new</span> RespAct(<span class="s">'question -&gt; answer'</span>, {
+<span class="kw">const</span> support = <span class="kw">new</span> ReAct(<span class="s">'question -&gt; answer'</span>, {
   tools: {
     orderStatus: {
       description: <span class="s">'Look up an order. Input: the order ID, e.g. A-4182.'</span>,
-      fn: <span class="kw">async</span> (id) =&gt; JSON.stringify(<span class="kw">await</span> orders.find(id.trim())),
+      function: <span class="kw">async</span> (id) =&gt; JSON.stringify(<span class="kw">await</span> orders.find(id.trim())),
     },
     shippingPolicy: {
       description: <span class="s">'Return the shipping policy. Input: ignored.'</span>,
-      fn: () =&gt; policies.shipping,
+      function: () =&gt; policies.shipping,
     },
   },
   maxSteps: <span class="s">8</span>,
-  onEvent: (e) =&gt; logger.debug({ respact: e }),
+  onEvent: (e) =&gt; logger.debug({ react: e }),
 })
 
 <span class="kw">const</span> out = <span class="kw">await</span> support.forward({
   question: <span class="s">'Order A-4182 has not arrived. Is it late?'</span>,
 })
 
-console.log(out.answer, <span class="s">'in'</span>, out.steps, <span class="s">'steps'</span>)</code></pre>
-    <p class="out-label">Trace</p>
-    <pre class="out">Thought:      Need the order's ship date before judging lateness.
-Action:       orderStatus(A-4182)
-Observation:  {"shipped":"2026-08-14","carrier":"DHL","eta":"2026-08-18"}
-Thought:      ETA has passed. Check the policy for what counts as late.
-Action:       shippingPolicy()
-Observation:  Orders are late 2 business days past ETA.
-Final Answer: Yes - it is three days past the 18 Aug ETA.</pre>
+console.log(out.answer, <span class="s">'in'</span>, out.steps, <span class="s">'steps'</span>)
+console.log(out.trajectory)</code></pre>
+    <p class="out-label">out.trajectory, then the extract step</p>
+    <pre class="out">thought_0:      Need the order's ship date before judging lateness.
+tool_name_0:    orderStatus
+tool_args_0:    {"input":"A-4182"}
+observation_0:  {"shipped":"2026-08-14","carrier":"DHL","eta":"2026-08-18"}
+thought_1:      ETA has passed. Check the policy for what counts as late.
+tool_name_1:    shippingPolicy
+tool_args_1:    {"input":""}
+observation_1:  Orders are late 2 business days past ETA.
+thought_2:      I have what I need.
+tool_name_2:    finish
+
+extract  reasoning: ETA was 18 Aug; it is now 3 business days past it.
+         answer:    Yes - it is three days past the 18 Aug ETA.</pre>
+    <div class="callout">
+      <span class="label">Out of steps</span>
+      <p>
+        If <code>maxSteps</code> runs out before the agent calls
+        <code>finish</code>, it does not throw: the extract step answers from the
+        trajectory it has, and <code>steps</code> equals <code>maxSteps</code>.
+      </p>
+    </div>
   </section>
 
   <section id="stream">
@@ -244,9 +270,10 @@ Final Answer: Yes - it is three days past the 18 Aug ETA.</pre>
     </div>
     <h2>Streaming to a UI</h2>
     <p>
-      Streaming skips signature validation by design: there is no complete reply
-      to check yet. Stream for display, then use a module when you need the
-      parsed object.
+      A provider stream is raw tokens and skips signature validation: there is no
+      complete reply to check yet. For fields that fill in and are validated at the
+      end, use <code>predict.stream()</code> or
+      <a href="#streamify"><code>streamify</code></a> instead.
     </p>
     <pre class="code"><code><span class="kw">const</span> lm = <span class="kw">new</span> AnthropicLM({ apiKey: process.env.ANTHROPIC_API_KEY! })
 
@@ -371,6 +398,218 @@ describe(<span class="s">'TriageTicket'</span>, () =&gt; {
 })</code></pre>
   </section>
 
+  <section id="save-load">
+    <div class="ex-head">
+      <p class="anchor">Example 10</p>
+      <span class="ex-tags"><span class="ex-tag">Module</span><span class="ex-tag">save / load</span></span>
+    </div>
+    <h2>Composing a program and saving it</h2>
+    <p>
+      A program is a <code>Module</code> holding other modules. Its learned state
+      &mdash; every predictor's demos and instructions &mdash; saves to JSON and
+      loads into a fresh instance of the same shape.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { Module, Predict, ChainOfThought, type LLMCallOptions } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">class</span> <span class="ty">Pipeline</span> <span class="kw">extends</span> <span class="ty">Module</span> {
+  classify = <span class="kw">new</span> Predict(<span class="s">'ticket -&gt; team'</span>)
+  reply = <span class="kw">new</span> ChainOfThought(<span class="s">'ticket, team -&gt; reply'</span>)
+
+  <span class="kw">async</span> forward(inputs: { ticket: <span class="ty">string</span> }, options?: <span class="ty">LLMCallOptions</span>) {
+    <span class="kw">const</span> { team } = <span class="kw">await</span> <span class="kw">this</span>.classify.forward(inputs, options)
+    <span class="kw">return</span> <span class="kw">this</span>.reply.forward({ ...inputs, team }, options)
+  }
+}
+
+<span class="kw">const</span> program = <span class="kw">new</span> Pipeline()
+program.namedPredictors().map(([path]) =&gt; path)  <span class="c">// ['classify', 'reply']</span>
+<span class="kw">await</span> program.save(<span class="s">'pipeline.json'</span>)
+<span class="kw">const</span> restored = <span class="kw">await</span> <span class="kw">new</span> Pipeline().load(<span class="s">'pipeline.json'</span>)</code></pre>
+    <pre class="code" data-lang="bash"><code>npm run example:save-load   <span class="c"># examples/composition-save-load.ts</span></code></pre>
+  </section>
+
+  <section id="rag">
+    <div class="ex-head">
+      <p class="anchor">Example 11</p>
+      <span class="ex-tags"><span class="ex-tag">Retrieve</span><span class="ex-tag">KNNFewShot</span><span class="ex-tag">embeddings</span></span>
+    </div>
+    <h2>Retrieval with nearest-neighbour demos</h2>
+    <p>
+      <code>InMemoryVectorStore</code> indexes passages with an embedder; the
+      same embedder lets <code>KNNFewShot</code> pick, per call, the training
+      examples most like the question as demos.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { InMemoryVectorStore, Retrieve, KNNFewShot, ChainOfThought } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+<span class="kw">import</span> { OpenAIEmbedder } <span class="kw">from</span> <span class="s">'@ts-dspy/openai'</span>
+
+<span class="kw">const</span> embedder = <span class="kw">new</span> OpenAIEmbedder()
+<span class="kw">const</span> store = <span class="kw">new</span> InMemoryVectorStore(embedder)
+<span class="kw">await</span> store.addAll(handbook)
+
+<span class="kw">const</span> { passages } = <span class="kw">await</span> <span class="kw">new</span> Retrieve({ k: <span class="s">3</span>, retriever: store }).forward({ query: question })
+
+<span class="kw">const</span> answer = <span class="kw">new</span> KNNFewShot({ k: <span class="s">2</span>, embedder, trainset })
+  .compile(<span class="kw">new</span> ChainOfThought(<span class="s">'context, question -&gt; answer'</span>))
+
+<span class="kw">await</span> answer.forward({ context: passages.map((p) =&gt; p.text).join(<span class="s">'\n'</span>), question })</code></pre>
+    <pre class="code" data-lang="bash"><code>npm run example:rag   <span class="c"># examples/rag-knn.ts</span></code></pre>
+  </section>
+
+  <section id="mipro">
+    <div class="ex-head">
+      <p class="anchor">Example 12</p>
+      <span class="ex-tags"><span class="ex-tag">MIPROv2</span><span class="ex-tag">optimizer</span></span>
+    </div>
+    <h2>Optimizing instructions and demos with MIPROv2</h2>
+    <p>
+      MIPROv2 proposes instructions grounded in your data, bootstraps demo sets,
+      and searches the combinations with a seeded TPE sampler. The student is left
+      untouched; the compiled copy saves like any program.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { MIPROv2, exactMatch } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> compiled = <span class="kw">await</span> <span class="kw">new</span> MIPROv2({ metric: exactMatch, auto: <span class="s">'light'</span>, seed: <span class="s">7</span> })
+  .compile(<span class="kw">new</span> Predict(RouteTicket), { trainset, valset })
+
+console.log(compiled.miproResults.bestScore)</code></pre>
+    <pre class="code" data-lang="bash"><code>npm run example:mipro   <span class="c"># examples/mipro.ts</span></code></pre>
+  </section>
+
+  <section id="gepa">
+    <div class="ex-head">
+      <p class="anchor">Example 13</p>
+      <span class="ex-tags"><span class="ex-tag">GEPA</span><span class="ex-tag">metric feedback</span></span>
+    </div>
+    <h2>Reflective optimization with GEPA</h2>
+    <p>
+      GEPA reads what your metric <em>says</em> about a run, not just its score,
+      and has a reflection model rewrite the instructions. Return
+      <code>{ score, feedback }</code>.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { GEPA, type Metric } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> metric: <span class="ty">Metric</span> = (example, prediction) =&gt;
+  prediction.get(<span class="s">'team'</span>) === example.get(<span class="s">'team'</span>)
+    ? { score: <span class="s">1</span>, feedback: <span class="s">'Correct.'</span> }
+    : { score: <span class="s">0</span>, feedback: <span class="s">`Should be ${example.get('team')}: billing covers charges and invoices.`</span> }
+
+<span class="kw">const</span> compiled = <span class="kw">await</span> <span class="kw">new</span> GEPA({ metric, reflectionLM: strongLM, maxMetricCalls: <span class="s">150</span> })
+  .compile(<span class="kw">new</span> Predict(RouteTicket), { trainset, valset })
+
+compiled.detailedResults.bestIndex</code></pre>
+    <pre class="code" data-lang="bash"><code>npm run example:gepa   <span class="c"># examples/gepa.ts</span></code></pre>
+  </section>
+
+  <section id="mcp">
+    <div class="ex-head">
+      <p class="anchor">Example 14</p>
+      <span class="ex-tags"><span class="ex-tag">@ts-dspy/mcp</span><span class="ex-tag">ReAct</span></span>
+    </div>
+    <h2>An agent over MCP tools</h2>
+    <p>
+      Connect to any Model Context Protocol server and hand its tools to
+      <code>ReAct</code>. Tool errors reach the model as observations it can act
+      on.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { ReAct } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+<span class="kw">import</span> { connectMcp, mcpTools } <span class="kw">from</span> <span class="s">'@ts-dspy/mcp'</span>
+
+<span class="kw">const</span> client = <span class="kw">await</span> connectMcp({ command: <span class="s">'npx'</span>, args: [<span class="s">'-y'</span>, <span class="s">'@modelcontextprotocol/server-filesystem'</span>, <span class="s">'.'</span>] })
+<span class="kw">try</span> {
+  <span class="kw">const</span> agent = <span class="kw">new</span> ReAct(<span class="s">'question -&gt; answer'</span>, { tools: <span class="kw">await</span> mcpTools(client) })
+  console.log((<span class="kw">await</span> agent.forward({ question: <span class="s">'Which example files exist?'</span> })).answer)
+} <span class="kw">finally</span> {
+  <span class="kw">await</span> client.close()
+}</code></pre>
+    <pre class="code" data-lang="bash"><code>npm run example:mcp   <span class="c"># examples/mcp-react.ts</span></code></pre>
+  </section>
+
+  <section id="otel">
+    <div class="ex-head">
+      <p class="anchor">Example 15</p>
+      <span class="ex-tags"><span class="ex-tag">@ts-dspy/otel</span><span class="ex-tag">tracing</span></span>
+    </div>
+    <h2>OpenTelemetry spans</h2>
+    <p>
+      Register a tracer provider, call <code>instrument()</code>, and every module,
+      LM call and tool call becomes a span, nested as the calls were.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { trace } <span class="kw">from</span> <span class="s">'@opentelemetry/api'</span>
+<span class="kw">import</span> { BasicTracerProvider, ConsoleSpanExporter, SimpleSpanProcessor } <span class="kw">from</span> <span class="s">'@opentelemetry/sdk-trace-base'</span>
+<span class="kw">import</span> { instrument } <span class="kw">from</span> <span class="s">'@ts-dspy/otel'</span>
+
+trace.setGlobalTracerProvider(
+  <span class="kw">new</span> BasicTracerProvider({ spanProcessors: [<span class="kw">new</span> SimpleSpanProcessor(<span class="kw">new</span> ConsoleSpanExporter())] })
+)
+instrument()
+
+<span class="kw">await</span> <span class="kw">new</span> ChainOfThought(<span class="s">'question -&gt; answer'</span>).forward({ question })
+<span class="c">// ts-dspy.module ChainOfThought  &#8594;  chat gpt-5.2</span></code></pre>
+    <pre class="code" data-lang="bash"><code>npm run example:otel   <span class="c"># examples/otel-tracing.ts</span></code></pre>
+  </section>
+
+  <section id="ai-sdk">
+    <div class="ex-head">
+      <p class="anchor">Example 16</p>
+      <span class="ex-tags"><span class="ex-tag">@ts-dspy/ai-sdk</span><span class="ex-tag">any provider</span></span>
+    </div>
+    <h2>Any Vercel AI SDK model</h2>
+    <p>
+      <code>AISDKLM</code> wraps an AI SDK <code>LanguageModel</code>, so every AI SDK
+      provider &mdash; and the AI Gateway &mdash; runs ts-dspy programs unchanged.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { gateway } <span class="kw">from</span> <span class="s">'ai'</span>
+<span class="kw">import</span> { configure, Predict } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+<span class="kw">import</span> { AISDKLM } <span class="kw">from</span> <span class="s">'@ts-dspy/ai-sdk'</span>
+
+configure({ lm: <span class="kw">new</span> AISDKLM({ model: gateway(<span class="s">'openai/gpt-5.2'</span>) }) })
+<span class="kw">const</span> out = <span class="kw">await</span> <span class="kw">new</span> Predict(<span class="s">'question -&gt; answer, confidence: float'</span>).forward({ question })</code></pre>
+    <pre class="code" data-lang="bash"><code>npm run example:ai-sdk   <span class="c"># examples/ai-sdk.ts</span></code></pre>
+  </section>
+
+  <section id="refine">
+    <div class="ex-head">
+      <p class="anchor">Example 17</p>
+      <span class="ex-tags"><span class="ex-tag">Refine</span><span class="ex-tag">BestOfN</span></span>
+    </div>
+    <h2>Retrying until a reward is met</h2>
+    <p>
+      <code>Refine</code> re-runs a program until a reward function is satisfied,
+      and between attempts asks a model what went wrong &mdash; advice the next
+      attempt receives as a hint.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { Refine, ChainOfThought } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">const</span> tweet = <span class="kw">new</span> Refine(<span class="kw">new</span> ChainOfThought(<span class="s">'topic -&gt; tweet'</span>), {
+  n: <span class="s">3</span>,
+  rewardFn: (inputs, prediction) =&gt; (prediction.tweet.length &lt;= <span class="s">280</span> ? <span class="s">1</span> : <span class="s">0</span>),
+  threshold: <span class="s">1</span>,
+})
+
+<span class="kw">const</span> { tweet: text } = <span class="kw">await</span> tweet.forward({ topic: <span class="s">'write-ahead logging'</span> })</code></pre>
+    <pre class="code" data-lang="bash"><code>npm run example:refine   <span class="c"># examples/refine.ts</span></code></pre>
+  </section>
+
+  <section id="streamify">
+    <div class="ex-head">
+      <p class="anchor">Example 18</p>
+      <span class="ex-tags"><span class="ex-tag">streamify</span><span class="ex-tag">streaming</span></span>
+    </div>
+    <h2>Streaming a whole program</h2>
+    <p>
+      <code>streamify</code> turns any program into an async stream of status
+      messages, field deltas from every predictor, and the final prediction.
+    </p>
+    <pre class="code"><code><span class="kw">import</span> { streamify } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
+
+<span class="kw">for</span> <span class="kw">await</span> (<span class="kw">const</span> event <span class="kw">of</span> streamify(program)({ ticket })) {
+  <span class="kw">if</span> (event.type === <span class="s">'status'</span>) console.log(<span class="s">`[${event.message}]`</span>)
+  <span class="kw">else</span> <span class="kw">if</span> (event.type === <span class="s">'field'</span>) process.stdout.write(event.delta ?? <span class="s">''</span>)
+  <span class="kw">else</span> console.log(<span class="s">'\n'</span>, event.prediction.toObject())
+}</code></pre>
+    <pre class="code" data-lang="bash"><code>npm run example:streamify   <span class="c"># examples/streamify.ts</span></code></pre>
+  </section>
+
   <section>
     <h2>Running these</h2>
     <p>
@@ -383,7 +622,18 @@ cd LLMTypeSafe &amp;&amp; npm ci &amp;&amp; npm run build
 
 ANTHROPIC_API_KEY=... npm run example:anthropic
 OPENAI_API_KEY=...    npm run example:openai
-GEMINI_API_KEY=...    npm run example:gemini</code></pre>
+GEMINI_API_KEY=...    npm run example:gemini
+
+<span class="c"># composition, retrieval, optimizers, integrations</span>
+OPENAI_API_KEY=...    npm run example:save-load
+OPENAI_API_KEY=...    npm run example:rag
+OPENAI_API_KEY=...    npm run example:mipro
+OPENAI_API_KEY=...    npm run example:gepa
+OPENAI_API_KEY=...    npm run example:mcp
+OPENAI_API_KEY=...    npm run example:otel
+OPENAI_API_KEY=...    npm run example:refine
+OPENAI_API_KEY=...    npm run example:streamify
+AI_GATEWAY_API_KEY=... npm run example:ai-sdk</code></pre>
   </section>
 
   </div>
