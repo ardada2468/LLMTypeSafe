@@ -1,6 +1,9 @@
-import { type ILanguageModel, type UsageStats } from '../types/language-model';
+import { randomUUID } from 'node:crypto';
+import { type UsageStats } from '../types/language-model';
 import { type LMCall, type TraceEntry } from '../types/module';
 import { getTraceHandler, getTraceHistorySize, isTracingEnabled } from './config';
+import { type CallFrame } from './callbacks';
+import { sumUsage } from './usage';
 
 /**
  * Recorded traces, oldest first. Bounded by `configure({ traceHistorySize })`;
@@ -17,53 +20,15 @@ export function nextModuleId(name: string): string {
     return `${name}#${moduleSequence}`;
 }
 
-/**
- * Difference two cumulative usage snapshots. `getUsage()` counts from the
- * lifetime of the language model, so a per-call figure is the delta between a
- * snapshot taken before the call and one taken after. Values are clamped at
- * zero in case `resetUsage()` ran mid-flight.
- */
-function diffUsage(before: UsageStats, after: UsageStats): UsageStats {
-    const delta = (later: number | undefined, earlier: number | undefined): number =>
-        Math.max(0, (later ?? 0) - (earlier ?? 0));
-
-    const usage: UsageStats = {
-        promptTokens: delta(after.promptTokens, before.promptTokens),
-        completionTokens: delta(after.completionTokens, before.completionTokens),
-        totalTokens: delta(after.totalTokens, before.totalTokens),
-        requestCount: delta(after.requestCount, before.requestCount),
-        errorCount: delta(after.errorCount, before.errorCount),
-    };
-
-    if (after.totalCost !== undefined) {
-        usage.totalCost = delta(after.totalCost, before.totalCost);
-    }
-
-    return usage;
-}
-
-/** Total the per-call figures, so an entry agrees with its own `calls`. */
-function sumUsage(calls: LMCall[]): UsageStats {
-    const total: UsageStats = {
+/** Usage of a call that reported none: zero, but shaped like the real thing. */
+function emptyUsage(): UsageStats {
+    return {
         promptTokens: 0,
         completionTokens: 0,
         totalTokens: 0,
         requestCount: 0,
         errorCount: 0,
     };
-
-    for (const call of calls) {
-        total.promptTokens += call.usage.promptTokens;
-        total.completionTokens += call.usage.completionTokens;
-        total.totalTokens += call.usage.totalTokens;
-        total.requestCount = (total.requestCount ?? 0) + (call.usage.requestCount ?? 0);
-        total.errorCount = (total.errorCount ?? 0) + (call.usage.errorCount ?? 0);
-        if (call.usage.totalCost !== undefined) {
-            total.totalCost = (total.totalCost ?? 0) + call.usage.totalCost;
-        }
-    }
-
-    return total;
 }
 
 /**
@@ -71,22 +36,24 @@ function sumUsage(calls: LMCall[]): UsageStats {
  * nothing here runs — and nothing is allocated — on the default path.
  *
  * Callers bracket each language-model call with {@link startCall} and
- * {@link endCall}. A call left open — because the provider threw — is still
- * recorded, with an empty reply: the prompt behind a failure is the whole point.
+ * {@link endCall}; the built-in modules do so through one shared helper that
+ * also supplies the call's exact usage. A call left open — because the
+ * provider threw — is still recorded, with an empty reply: the prompt behind a
+ * failure is the whole point.
  */
 export class TraceSpan {
     private readonly moduleId: string;
-    private readonly lm: ILanguageModel;
     private readonly input: Record<string, any>;
+    private readonly frame?: CallFrame;
     private readonly timestamp = new Date();
     private readonly startedAt = Date.now();
     private readonly calls: LMCall[] = [];
 
-    private pending?: { prompt: string; startedAt: number; usageBefore: UsageStats };
+    private pending?: { prompt: string; startedAt: number };
 
-    constructor(moduleId: string, lm: ILanguageModel, input: Record<string, any>) {
+    constructor(moduleId: string, input: Record<string, any>, frame?: CallFrame) {
         this.moduleId = moduleId;
-        this.lm = lm;
+        this.frame = frame;
         // Shallow copy: enough to survive the caller reassigning a field, not a
         // defence against mutation deeper inside a nested input object.
         this.input = { ...input };
@@ -95,17 +62,15 @@ export class TraceSpan {
     /** Note the prompt about to be sent. Pairs with {@link endCall}. */
     startCall(prompt: string): void {
         this.closePending('');
-        this.pending = {
-            prompt,
-            startedAt: Date.now(),
-            // Copy: a provider is free to hand back its own mutable counters.
-            usageBefore: { ...this.lm.getUsage() },
-        };
+        this.pending = { prompt, startedAt: Date.now() };
     }
 
-    /** Close the open call with the provider's reply, verbatim. */
-    endCall(rawOutput: string): void {
-        this.closePending(rawOutput);
+    /**
+     * Close the open call with the provider's reply, verbatim, and the usage
+     * attributable to exactly that call.
+     */
+    endCall(rawOutput: string, usage?: UsageStats): void {
+        this.closePending(rawOutput, usage);
     }
 
     /** Close the span for a successful invocation and record it. */
@@ -120,7 +85,7 @@ export class TraceSpan {
         return record(entry);
     }
 
-    private closePending(rawOutput: string): void {
+    private closePending(rawOutput: string, usage?: UsageStats): void {
         const pending = this.pending;
         if (!pending) {
             return;
@@ -131,7 +96,7 @@ export class TraceSpan {
             prompt: pending.prompt,
             rawOutput,
             duration: Date.now() - pending.startedAt,
-            usage: diffUsage(pending.usageBefore, { ...this.lm.getUsage() }),
+            usage: usage ?? emptyUsage(),
         });
     }
 
@@ -140,7 +105,8 @@ export class TraceSpan {
         this.closePending('');
         const last = this.calls.at(-1);
 
-        return {
+        const entry: TraceEntry = {
+            id: this.frame?.callId ?? randomUUID(),
             moduleId: this.moduleId,
             timestamp: this.timestamp,
             duration: Date.now() - this.startedAt,
@@ -148,9 +114,13 @@ export class TraceSpan {
             output: { ...output },
             rawLMInput: last?.prompt ?? '',
             rawLMOutput: last?.rawOutput ?? '',
-            usage: sumUsage(this.calls),
+            usage: sumUsage(this.calls.map((call) => call.usage)),
             calls: [...this.calls],
         };
+        if (this.frame?.parentCallId !== undefined) {
+            entry.parentId = this.frame.parentCallId;
+        }
+        return entry;
     }
 }
 
@@ -161,13 +131,13 @@ export class TraceSpan {
  */
 export function beginTrace(
     moduleId: string,
-    lm: ILanguageModel,
-    input: Record<string, any>
+    input: Record<string, any>,
+    frame?: CallFrame
 ): TraceSpan | undefined {
     if (!isTracingEnabled()) {
         return undefined;
     }
-    return new TraceSpan(moduleId, lm, input);
+    return new TraceSpan(moduleId, input, frame);
 }
 
 /**

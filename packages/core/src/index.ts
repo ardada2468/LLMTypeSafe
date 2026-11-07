@@ -20,19 +20,87 @@ export type {
     ZodSignatureDefinition,
 } from './core/signature';
 export { Module } from './core/module';
-export type { BatchOptions, BatchResult } from './core/module';
+export type {
+    BatchOptions,
+    BatchResult,
+    PredictorState,
+    ProgramState,
+    ProgramStateMetadata,
+    SerializedDemo,
+} from './core/module';
 export { BaseLM } from './core/base-lm';
 export { Prediction } from './core/prediction';
 export { Example } from './core/example';
 export {
     configure,
+    settings,
+    context,
+    withSettings,
     getDefaultLM,
     getCache,
     clearCache,
     isCacheEnabled,
     isTracingEnabled,
+    getCallbacks,
+    isUsageTrackingEnabled,
 } from './core/config';
-export type { ConfigureOptions, TraceHandler } from './core/config';
+export type {
+    ConfigureOptions,
+    SettingsOverrides,
+    TraceHandler,
+    ModelPricing,
+    PricingTable,
+} from './core/config';
+export { VERSION } from './core/version';
+
+// Callbacks
+export type {
+    Callback,
+    CallbackEventBase,
+    CallbackEndBase,
+    ModuleLike,
+    ModuleStartEvent,
+    ModuleEndEvent,
+    LMMethod,
+    LMStartEvent,
+    LMEndEvent,
+    ToolStartEvent,
+    ToolEndEvent,
+    AdapterFormatEvent,
+    AdapterParseEvent,
+} from './core/callbacks';
+
+// Usage
+export { recordLMUsage, sumUsage } from './core/usage';
+export type { LMUsage, UsageDelta } from './core/usage';
+
+// LM middleware
+export {
+    wrapLM,
+    retry,
+    fallback,
+    defaults,
+    rateLimit,
+    retryWithBackoff,
+    isRetryableLMError,
+    dispatchLM,
+} from './core/middleware';
+export type {
+    LMRequest,
+    LMNext,
+    LMMiddleware,
+    BackoffOptions,
+    RetryOptions,
+    FallbackOptions,
+    RateLimitOptions,
+} from './core/middleware';
+
+// Contracts
+export { Tool } from './core/tool';
+export type { ToolOptions, ToolInit, ToolParameters } from './core/tool';
+export { cosineSimilarity } from './core/embedder';
+export type { Embedder } from './core/embedder';
+export type { Adapter } from './core/adapter';
 
 // Caching
 export { MemoryCache } from './core/cache';
@@ -100,6 +168,7 @@ export * from './evaluate';
 
 // Utilities
 export { buildPrompt, buildPromptContent, parseOutput, renderDemos } from './utils/parsing';
+export type { PromptOptions, RenderDemosOptions, DemoFormat } from './utils/parsing';
 export {
     textPart,
     imagePart,

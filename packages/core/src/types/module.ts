@@ -12,10 +12,9 @@ export interface LMCall {
     /** Wall-clock milliseconds spent on this call. */
     duration: number;
     /**
-     * Tokens attributable to this call, not the model's lifetime totals.
-     * Derived by differencing the model's counters either side of the call, so
-     * it is exact for sequential calls and approximate when several run
-     * concurrently against one shared model.
+     * Tokens attributable to exactly this call, not the model's lifetime
+     * totals — collected in an async-local scope around the call, so it stays
+     * exact when many calls run concurrently against one shared model.
      */
     usage: UsageStats;
 }
@@ -26,6 +25,18 @@ export interface LMCall {
  * the history read by `inspectHistory()`.
  */
 export interface TraceEntry {
+    /**
+     * Unique per invocation; the same value as the `callId` callbacks see for
+     * this module call.
+     */
+    id: string;
+    /**
+     * The `id` of the enclosing module invocation, when this one ran inside
+     * another — so traces of a composite program nest. The parent has an entry
+     * of its own only if it records traces itself (the built-in modules do; a
+     * hand-written composite's `forward` usually does not).
+     */
+    parentId?: string;
     /** Identifies the module instance, e.g. `ChainOfThought#2`. */
     moduleId: string;
     /** When the invocation started. */

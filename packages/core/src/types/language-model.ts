@@ -12,10 +12,17 @@ export interface LLMCallOptions {
     timeout?: number;
     /**
      * Maximum retries for this request, passed through to the provider SDK.
-     * Retries are owned by the official SDKs, which honour `retry-after` headers;
-     * ts-dspy does not add a second retry layer on top.
+     * Retries are owned by the official SDKs, which honour `retry-after` headers.
+     * For retries across providers or around a hand-written model, wrap it with
+     * `wrapLM(lm, retry())` instead.
      */
     retries?: number;
+    /**
+     * Language model for this call only, taking precedence over the module's
+     * own model and the configured default. Consumed by modules and stripped
+     * before the options reach a provider.
+     */
+    lm?: ILanguageModel;
     /**
      * Tools the model may call on this turn. Providers advertising
      * `supportsFunctionCalling` translate these into their own request shape;
@@ -168,10 +175,19 @@ export interface UsageStats {
     completionTokens: number;
     totalTokens: number;
     /**
-     * Estimated spend, when a provider reports it. ts-dspy no longer computes
-     * this from a built-in price table — those go stale and were producing
-     * numbers off by more than an order of magnitude. Compute it from
-     * `promptTokens`/`completionTokens` and current published pricing instead.
+     * Prompt tokens served from the provider's own prompt cache. A subset of
+     * `promptTokens`, reported separately because it is billed at a discount.
+     */
+    cachedTokens?: number;
+    /**
+     * Hidden reasoning tokens spent by a thinking model. A subset of
+     * `completionTokens`.
+     */
+    reasoningTokens?: number;
+    /**
+     * Estimated spend. ts-dspy ships no price table — those go stale and were
+     * producing numbers off by more than an order of magnitude — so this is
+     * filled only for models priced via `configure({ pricing })`.
      */
     totalCost?: number;
     requestCount?: number;

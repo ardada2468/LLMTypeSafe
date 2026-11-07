@@ -9,6 +9,7 @@ import type {
 import { buildCacheKey, type CacheKeyInput } from './cache';
 import { getCache } from './config';
 import { LMError } from './errors';
+import { recordLMUsage } from './usage';
 
 /**
  * Shared implementation for language-model providers.
@@ -32,6 +33,8 @@ export abstract class BaseLM implements ILanguageModel {
 
     private promptTokens = 0;
     private completionTokens = 0;
+    private cachedTokens = 0;
+    private reasoningTokens = 0;
     private requestCount = 0;
     private errorCount = 0;
     private cacheHits = 0;
@@ -116,7 +119,7 @@ export abstract class BaseLM implements ILanguageModel {
     }
 
     getUsage(): UsageStats {
-        return {
+        const usage: UsageStats = {
             promptTokens: this.promptTokens,
             completionTokens: this.completionTokens,
             totalTokens: this.promptTokens + this.completionTokens,
@@ -125,11 +128,18 @@ export abstract class BaseLM implements ILanguageModel {
             cacheHits: this.cacheHits,
             averageLatency: this.requestCount > 0 ? this.totalLatencyMs / this.requestCount : 0,
         };
+        // Optional, and reported only when a provider ever supplied them, so a
+        // provider that cannot see these does not claim a confident zero.
+        if (this.cachedTokens > 0) usage.cachedTokens = this.cachedTokens;
+        if (this.reasoningTokens > 0) usage.reasoningTokens = this.reasoningTokens;
+        return usage;
     }
 
     resetUsage(): void {
         this.promptTokens = 0;
         this.completionTokens = 0;
+        this.cachedTokens = 0;
+        this.reasoningTokens = 0;
         this.requestCount = 0;
         this.errorCount = 0;
         this.cacheHits = 0;
@@ -144,21 +154,47 @@ export abstract class BaseLM implements ILanguageModel {
         this.model = model;
     }
 
-    /** Record a completed request's token usage and latency. */
+    /**
+     * The key this instance's usage is reported under in per-call usage maps,
+     * e.g. `openai/gpt-5.2`. Also the first key looked up in
+     * `configure({ pricing })`.
+     */
+    protected usageKey(model: string = this.model): string {
+        return `${this.provider}/${model}`;
+    }
+
+    /**
+     * Record a completed request's token usage and latency.
+     *
+     * Updates this instance's lifetime counters and, when a module invocation
+     * or evaluation is collecting usage in the current async scope, that
+     * scope's collector too — which is what makes per-call usage exact under
+     * concurrency. Pass `model` when the request used a per-call model
+     * override, so the usage is attributed to the model that actually ran.
+     */
     protected recordUsage(usage: {
         promptTokens?: number;
         completionTokens?: number;
+        /** Prompt tokens served from the provider's prompt cache. */
+        cachedTokens?: number;
+        /** Hidden reasoning tokens, part of `completionTokens`. */
+        reasoningTokens?: number;
         latencyMs?: number;
+        model?: string;
     }): void {
         this.promptTokens += usage.promptTokens ?? 0;
         this.completionTokens += usage.completionTokens ?? 0;
+        this.cachedTokens += usage.cachedTokens ?? 0;
+        this.reasoningTokens += usage.reasoningTokens ?? 0;
         this.totalLatencyMs += usage.latencyMs ?? 0;
         this.requestCount += 1;
+        recordLMUsage(this.usageKey(usage.model), usage);
     }
 
     /** Record a failed request. */
     protected recordError(): void {
         this.errorCount += 1;
+        recordLMUsage(this.usageKey(), { error: true });
     }
 
     /**
@@ -204,6 +240,7 @@ export abstract class BaseLM implements ILanguageModel {
         const cached = await cache.get(key);
         if (cached !== undefined && cached !== null) {
             this.cacheHits += 1;
+            recordLMUsage(this.usageKey(input.options?.model), { cacheHit: true });
             return isolate(cached, input.operation) as T;
         }
 

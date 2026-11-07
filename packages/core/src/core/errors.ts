@@ -75,7 +75,23 @@ export class LMError extends TsDspyError {
  * Thrown when the provider rejected the call for exceeding a rate or quota
  * limit. Almost always worth retrying after a backoff.
  */
-export class RateLimitError extends LMError {}
+export class RateLimitError extends LMError {
+    /**
+     * How long the provider asked callers to wait before retrying, in
+     * milliseconds, when it said (a `retry-after` header, say). The `retry()`
+     * LM middleware waits at least this long.
+     */
+    readonly retryAfterMs?: number;
+
+    constructor(
+        provider: string,
+        message: string,
+        options?: { cause?: unknown; status?: number; retryAfterMs?: number }
+    ) {
+        super(provider, message, options);
+        this.retryAfterMs = options?.retryAfterMs;
+    }
+}
 
 /**
  * Thrown when the credentials were missing, wrong, or not entitled to the

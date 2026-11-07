@@ -27,6 +27,16 @@ export interface RenderDemosOptions {
     format?: DemoFormat;
 }
 
+/** Options for {@link buildPrompt} and {@link buildPromptContent}. */
+export interface PromptOptions extends RenderDemosOptions {
+    /**
+     * Task instructions opening the prompt in place of the signature's own
+     * description (`Predict.withInstructions`). For a string signature, which
+     * has no description, they are prepended.
+     */
+    instructions?: string;
+}
+
 /**
  * Render a prompt for one call.
  *
@@ -40,7 +50,7 @@ export function buildPrompt(
     signature: SignatureLike,
     inputs: Record<string, any>,
     demos: Example[] = [],
-    options: RenderDemosOptions = {}
+    options: PromptOptions = {}
 ): string {
     const content = buildPromptContent(signature, inputs, demos, options);
     return typeof content === 'string' ? content : contentToText(content);
@@ -51,27 +61,29 @@ function buildPromptText(
     signature: SignatureLike,
     inputs: Record<string, any>,
     demos: Example[] = [],
-    options: RenderDemosOptions = {}
+    options: PromptOptions = {}
 ): string {
     const demoBlock = renderDemos(signature, demos, options);
+    const instructions = options.instructions;
 
     if (typeof signature === 'string') {
-        return buildPromptFromString(signature, inputs, demoBlock);
+        return buildPromptFromString(signature, inputs, demoBlock, instructions);
     }
     if (isZodSignature(signature)) {
-        return buildPromptFromZod(signature, inputs, demoBlock);
+        return buildPromptFromZod(signature, inputs, demoBlock, instructions);
     }
-    return buildPromptFromClass(signature, inputs, demoBlock);
+    return buildPromptFromClass(signature, inputs, demoBlock, instructions);
 }
 
 function buildPromptFromString(
     signatureStr: string,
     inputs: Record<string, any>,
-    demoBlock = ''
+    demoBlock = '',
+    instructions?: string
 ): string {
     const parsed = Signature.parseStringSignature(signatureStr);
 
-    let prompt = demoBlock;
+    let prompt = instructions ? `${instructions}\n\n${demoBlock}` : demoBlock;
 
     for (const inputKey of parsed.inputs) {
         if (inputs[inputKey] !== undefined) {
@@ -96,15 +108,17 @@ function buildPromptFromString(
 function buildPromptFromClass(
     signatureClass: typeof Signature,
     inputs: Record<string, any>,
-    demoBlock = ''
+    demoBlock = '',
+    instructions?: string
 ): string {
     const inputFields = signatureClass.getInputFields();
     const outputFields = signatureClass.getOutputFields();
 
     let prompt = '';
 
-    if (signatureClass.description) {
-        prompt += `${signatureClass.description}\n\n`;
+    const description = instructions ?? signatureClass.description;
+    if (description) {
+        prompt += `${description}\n\n`;
     }
 
     // After the task description, before the real input: the model reads what
@@ -140,15 +154,17 @@ export function formatInputValue(value: unknown): string {
 function buildPromptFromZod(
     zodSignature: AnyZodSignature,
     inputs: Record<string, any>,
-    demoBlock = ''
+    demoBlock = '',
+    instructions?: string
 ): string {
     const inputShape = zodSignature.input.shape as Record<string, z.ZodType>;
     const outputShape = zodSignature.output.shape as Record<string, z.ZodType>;
 
     let prompt = '';
 
-    if (zodSignature.description) {
-        prompt += `${zodSignature.description}\n\n`;
+    const description = instructions ?? zodSignature.description;
+    if (description) {
+        prompt += `${description}\n\n`;
     }
 
     prompt += demoBlock;
@@ -504,7 +520,7 @@ export function buildPromptContent(
     signature: SignatureLike,
     inputs: Record<string, any>,
     demos: Example[] = [],
-    options: RenderDemosOptions = {}
+    options: PromptOptions = {}
 ): MessageContent {
     const imageFields = imageInputFields(signature);
     if (imageFields.size === 0) {

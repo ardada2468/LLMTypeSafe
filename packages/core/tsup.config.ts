@@ -1,4 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'tsup';
+
+const { version } = JSON.parse(
+    readFileSync(new URL('./package.json', import.meta.url), 'utf8')
+);
 
 export default defineConfig({
     // `src/testing/index.ts` backs the `@ts-dspy/core/testing` subpath export;
@@ -14,4 +19,6 @@ export default defineConfig({
     sourcemap: true,
     clean: true,
     target: 'es2022',
+    // Recorded in saved program state; see src/core/version.ts.
+    define: { __TS_DSPY_VERSION__: JSON.stringify(version) },
 });

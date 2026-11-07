@@ -1,8 +1,14 @@
-import { Module } from '../core/module';
+import {
+    Module,
+    PREDICTOR,
+    cloneModule,
+    type PredictorState,
+    type SerializedDemo,
+} from '../core/module';
 import { parseJsonResponse } from '../core/base-lm';
 import { Prediction } from '../core/prediction';
 import { type Signature, type SignatureLike, type SignatureSource } from '../core/signature';
-import { type Example } from '../core/example';
+import { Example } from '../core/example';
 import { contentToText, textPart } from '../utils/content';
 import type {
     ChatMessage,
@@ -11,7 +17,12 @@ import type {
     LLMCallOptions,
     MessageContent,
 } from '../types/language-model';
-import { parseOutput, buildPrompt, buildPromptContent } from '../utils/parsing';
+import {
+    parseOutput,
+    buildPrompt,
+    buildPromptContent,
+    type PromptOptions,
+} from '../utils/parsing';
 import {
     buildOutputSchema,
     buildOutputJsonSchema,
@@ -22,6 +33,7 @@ import { parsePartialJson } from '../utils/partial-json';
 import { ValidationError, type FieldValidationIssue } from '../core/errors';
 import { buildRepairPrompt, isRepeatedFailure, normaliseRepairAttempts } from '../core/repair';
 import { type TraceSpan } from '../core/trace';
+import { invokeLM, providerOptions, startLMCall } from '../core/lm-call';
 import type { FieldConfig, SignatureInput, SignatureOutput } from '../types/signature';
 
 /** Construction options for {@link Predict} and its subclasses. */
@@ -33,6 +45,12 @@ export interface PredictOptions {
      * produced by an optimizer, but hand-written demos work just as well.
      */
     demos?: Example[];
+    /**
+     * Task instructions, replacing the signature's own description in the
+     * prompt. Optimizers that rewrite instructions set this; the signature is
+     * left alone.
+     */
+    instructions?: string;
 }
 
 /**
@@ -140,16 +158,81 @@ export class Predict<
     /** Worked examples prepended to every prompt this module builds. */
     protected demos: Example[] = [];
 
+    /**
+     * Instructions overriding the signature's description in the prompt, or
+     * `undefined` to use the description. Optimizable state, like `demos`:
+     * saved by `dumpState()` and cleared by `resetCopy()`.
+     */
+    protected instructions?: string;
+
     constructor(signature: TSignature | string, lmOrOptions?: ILanguageModel | PredictOptions) {
         const options = resolveOptions(lmOrOptions);
 
         super(signature, options.lm);
         this.demos = [...(options.demos ?? [])];
+        this.instructions = options.instructions;
     }
 
     /** The demos this module renders, as a copy. */
     getDemos(): Example[] {
         return [...this.demos];
+    }
+
+    /**
+     * Replace this module's demos **in place**. Prefer {@link withDemos}, which
+     * leaves this module untouched; this exists for loading saved state and
+     * for optimizers that tune a copy they already own.
+     */
+    setDemos(demos: Example[]): void {
+        this.demos = [...demos];
+    }
+
+    /** The instruction override, or `undefined` when the signature's description is used. */
+    getInstructions(): string | undefined {
+        return this.instructions;
+    }
+
+    /** Set (or with `undefined`, clear) the instruction override **in place**. */
+    setInstructions(instructions: string | undefined): void {
+        this.instructions = instructions;
+    }
+
+    /**
+     * A copy of this module whose prompt opens with `instructions` instead of
+     * the signature's description. Like {@link withDemos}, it leaves this
+     * module untouched.
+     */
+    withInstructions(instructions: string): this {
+        return this.cloneWith({ instructions });
+    }
+
+    /** This predictor's optimizable state, as plain JSON. Used by `Module.dumpState`. */
+    dumpPredictorState(): PredictorState {
+        const demos: SerializedDemo[] = this.demos.map((demo) => {
+            const inputKeys = demo.getInputKeys();
+            // Round-tripped through JSON so the saved state is exactly what a
+            // file would hold, with no live references into the demo.
+            const data = JSON.parse(JSON.stringify(demo.toObject())) as Record<string, unknown>;
+            return inputKeys ? { data, inputKeys } : { data };
+        });
+        return this.instructions !== undefined
+            ? { demos, instructions: this.instructions }
+            : { demos };
+    }
+
+    /** Restore state from {@link dumpPredictorState}, in place. Used by `Module.loadState`. */
+    loadPredictorState(state: PredictorState): void {
+        this.demos = state.demos.map((demo) => {
+            const example = new Example(demo.data);
+            return demo.inputKeys ? example.withInputs(...demo.inputKeys) : example;
+        });
+        this.instructions = state.instructions;
+    }
+
+    /** Clear demos and the instruction override, in place. Used by `Module.resetCopy`. */
+    resetPredictorState(): void {
+        this.demos = [];
+        this.instructions = undefined;
     }
 
     /**
@@ -178,13 +261,16 @@ export class Predict<
      * fields replaced — so `ChainOfThought.withDemos()` returns a
      * `ChainOfThought`.
      *
-     * Only own enumerable properties are carried over, which covers ordinary
-     * public fields but not `#private` ones; a subclass using those should
-     * override `withDemos`/`withLM` with its own copy constructor.
+     * Own properties are carried over, which covers ordinary public fields but
+     * not `#private` ones; a subclass using those should override
+     * `withDemos`/`withLM` with its own copy constructor.
      */
-    private cloneWith(patch: { demos?: Example[]; lm?: ILanguageModel }): this {
-        const clone = Object.create(Object.getPrototypeOf(this)) as this;
-        Object.assign(clone, this, patch);
+    private cloneWith(patch: {
+        demos?: Example[];
+        lm?: ILanguageModel;
+        instructions?: string;
+    }): this {
+        const clone = cloneModule(this, patch);
         // Never share the demo array with the module we copied from, or pushing
         // to one module's demos would silently alter another's.
         (clone as Predict).demos = [...(clone as Predict).demos];
@@ -196,7 +282,7 @@ export class Predict<
         options?: LLMCallOptions
     ): Promise<Prediction<TOutput> & TOutput> {
         const prediction = await this.traced<TOutput>(inputs, async (span) => {
-            const prompt = this.buildPromptContent(inputs);
+            const prompt = this.buildPromptContent(inputs, options);
             return (await this.complete(prompt, options, span)) as TOutput;
         });
 
@@ -225,7 +311,7 @@ export class Predict<
         inputs: Record<string, any>,
         options?: StreamOptions
     ): PredictionStream<TOutput> {
-        const prompt = this.buildPrompt(inputs);
+        const prompt = this.buildPrompt(inputs, options);
         const parsed = (yield* this.streamComplete(prompt, options)) as TOutput;
 
         return new Prediction(parsed) as Prediction<TOutput> & TOutput;
@@ -247,9 +333,9 @@ export class Predict<
         throwIfAborted(options?.signal);
 
         const signature = this.requireSignature();
-        const structured = this.lm.getCapabilities().supportsStructuredOutput;
+        const structured = this.resolveLM(options).getCapabilities().supportsStructuredOutput;
 
-        if (!this.canStream()) {
+        if (!this.canStream(options)) {
             const parsed = await this.complete(prompt, options);
             yield { ...parsed } as PartialOutput<TOutput>;
             return parsed;
@@ -309,9 +395,23 @@ export class Predict<
     ): AsyncGenerator<string, void, void> {
         const messages: ChatMessage[] = [{ role: 'user', content: prompt }];
         const signal = options?.signal;
-        const stream = this.lm.chatStream!(messages, options);
+        const lm = this.resolveLM(options);
+        const callOptions = providerOptions(options);
+        const call = startLMCall({
+            lm,
+            method: 'chatStream',
+            traceText: prompt,
+            messages,
+            options: callOptions,
+            moduleId: this.moduleId,
+        });
+        const stream = call
+            ? call.run(() => lm.chatStream!(messages, callOptions))
+            : lm.chatStream!(messages, callOptions);
 
         let reading = false;
+        let received = '';
+        let settled = false;
         try {
             for (;;) {
                 throwIfAborted(signal);
@@ -319,17 +419,29 @@ export class Predict<
                 reading = true;
                 // Raced rather than awaited outright: a signal must be able to cut
                 // short a read that is waiting on a token which may never come.
-                const chunk = await raceAbort(stream.next(), signal);
+                // Each read runs in the call's scope so usage the provider
+                // records mid-stream is attributed to this call.
+                const next = call ? call.run(() => stream.next()) : stream.next();
+                const chunk = await raceAbort(next, signal);
                 reading = false;
 
                 if (chunk.done) {
                     break;
                 }
                 if (chunk.value.content) {
+                    received += chunk.value.content;
                     yield chunk.value.content;
                 }
             }
+            settled = true;
+            call?.end(received, received);
+        } catch (error) {
+            settled = true;
+            call?.fail(error);
+            throw error;
         } finally {
+            // A consumer that stopped early still ends the call, with what it got.
+            if (!settled) call?.end(received, received);
             // `return()` queues behind a read still in flight, so it is only
             // awaited when nothing is pending — otherwise closing an abandoned
             // stream would block the caller on that same stalled read.
@@ -341,11 +453,9 @@ export class Predict<
     }
 
     /** Whether this model can actually stream: `chatStream` is optional. */
-    protected canStream(): boolean {
-        return (
-            this.lm.getCapabilities().supportsStreaming &&
-            typeof this.lm.chatStream === 'function'
-        );
+    protected canStream(options?: LLMCallOptions): boolean {
+        const lm = this.resolveLM(options);
+        return lm.getCapabilities().supportsStreaming && typeof lm.chatStream === 'function';
     }
 
     /** Ask for the signature's JSON schema in the prompt, as `BaseLM` does. */
@@ -375,7 +485,7 @@ export class Predict<
         span?: TraceSpan
     ): Promise<Record<string, any>> {
         const repairAttempts = normaliseRepairAttempts(options?.repairAttempts);
-        const structured = this.lm.getCapabilities().supportsStructuredOutput;
+        const structured = this.resolveLM(options).getCapabilities().supportsStructuredOutput;
         let attemptPrompt: MessageContent = prompt;
         let previousError: ValidationError | undefined;
 
@@ -429,22 +539,56 @@ export class Predict<
             return this.completeFromContent(prompt, structured, options, span);
         }
 
+        const lm = this.resolveLM(options);
+        const callOptions = providerOptions(options);
+
         if (structured) {
             const schema = buildOutputJsonSchema(signature);
-            span?.startCall(prompt);
-            const raw = await this.lm.generateStructured<Record<string, any>>(
-                prompt,
-                schema,
-                options
+            const raw = await invokeLM(
+                {
+                    lm,
+                    method: 'generateStructured',
+                    traceText: prompt,
+                    prompt,
+                    options: callOptions,
+                    span,
+                    moduleId: this.moduleId,
+                },
+                () => lm.generateStructured<Record<string, any>>(prompt, schema, callOptions),
+                (result) => JSON.stringify(result)
             );
-            span?.endCall(JSON.stringify(raw));
             return this.validateStructured(raw);
         }
 
-        span?.startCall(prompt);
-        const rawOutput = await this.lm.generate(prompt, options);
-        span?.endCall(rawOutput);
+        const rawOutput = await this.generateText(prompt, options, span);
         return parseOutput(signature, rawOutput);
+    }
+
+    /**
+     * One instrumented plain-text `generate` call against the resolved model.
+     * Shared by every subclass that needs free text, such as the reasoning
+     * step of `ChainOfThought`.
+     */
+    protected generateText(
+        prompt: string,
+        options?: LLMCallOptions,
+        span?: TraceSpan
+    ): Promise<string> {
+        const lm = this.resolveLM(options);
+        const callOptions = providerOptions(options);
+        return invokeLM(
+            {
+                lm,
+                method: 'generate',
+                traceText: prompt,
+                prompt,
+                options: callOptions,
+                span,
+                moduleId: this.moduleId,
+            },
+            () => lm.generate(prompt, callOptions),
+            (text) => text
+        );
     }
 
     /**
@@ -465,9 +609,22 @@ export class Predict<
         const signature = this.requireSignature();
         const parts = structured ? withSchemaInstruction(content, signature) : content;
 
-        span?.startCall(contentToText(parts));
-        const rawOutput = await this.lm.chat([{ role: 'user', content: parts }], options);
-        span?.endCall(rawOutput);
+        const lm = this.resolveLM(options);
+        const callOptions = providerOptions(options);
+        const messages: ChatMessage[] = [{ role: 'user', content: parts }];
+        const rawOutput = await invokeLM(
+            {
+                lm,
+                method: 'chat',
+                traceText: contentToText(parts),
+                messages,
+                options: callOptions,
+                span,
+                moduleId: this.moduleId,
+            },
+            () => lm.chat(messages, callOptions),
+            (text) => text
+        );
 
         if (!structured) {
             return parseOutput(signature, rawOutput);
@@ -512,24 +669,43 @@ export class Predict<
      * content parts when a field is declared `image`, so the image reaches the
      * provider instead of the `[image: …]` placeholder a string is limited to.
      */
-    protected buildPromptContent(inputs: Record<string, any>): MessageContent {
-        const format = this.lm.getCapabilities().supportsStructuredOutput ? 'json' : 'labelled';
-        return buildPromptContent(this.requireSignature(), inputs, this.demos, { format });
+    protected buildPromptContent(
+        inputs: Record<string, any>,
+        options?: LLMCallOptions
+    ): MessageContent {
+        return buildPromptContent(
+            this.requireSignature(),
+            inputs,
+            this.demos,
+            this.promptOptions(options)
+        );
     }
 
-    protected buildPrompt(inputs: Record<string, any>): string {
+    protected buildPrompt(inputs: Record<string, any>, options?: LLMCallOptions): string {
+        return buildPrompt(
+            this.requireSignature(),
+            inputs,
+            this.demos,
+            this.promptOptions(options)
+        );
+    }
+
+    private promptOptions(options?: LLMCallOptions): PromptOptions {
         // Demos must demonstrate the shape the reply will actually take. A
         // provider with native structured output has its decoding constrained to
         // JSON, so labelled `field: value` demos would be modelling a format the
         // model is not permitted to emit.
-        const format = this.lm.getCapabilities().supportsStructuredOutput ? 'json' : 'labelled';
-        return buildPrompt(this.requireSignature(), inputs, this.demos, { format });
+        const structured = this.resolveLM(options).getCapabilities().supportsStructuredOutput;
+        return { format: structured ? 'json' : 'labelled', instructions: this.instructions };
     }
 
     protected parseOutput(rawOutput: string): Record<string, any> {
         return parseOutput(this.requireSignature(), rawOutput);
     }
 }
+
+// Marks every Predict (and subclass) as a predictor for `namedPredictors()`.
+Object.defineProperty(Predict.prototype, PREDICTOR, { value: true });
 
 /** Throw the signal's reason if the caller has cancelled. */
 export function throwIfAborted(signal?: AbortSignal): void {
