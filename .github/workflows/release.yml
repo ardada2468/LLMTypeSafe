@@ -28,7 +28,7 @@ jobs:
       # job-scoped publish credential. Without this, publishing fails.
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -37,7 +37,7 @@ jobs:
       # a placeholder, so npm authenticates with a dummy token and never falls
       # back to OIDC — every publish then 404s. registry.npmjs.org is npm's
       # default anyway, so nothing is lost by omitting it.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm

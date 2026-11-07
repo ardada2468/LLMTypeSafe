@@ -227,8 +227,23 @@ function isolate<T>(value: T, operation: CacheKeyInput['operation']): T {
     return structuredClone(value);
 }
 
-/** Extract a JSON object from a model reply, tolerating code fences. */
-export function parseJsonResponse<T>(raw: string, provider: string): T {
+/**
+ * Extract a JSON object from a model reply, tolerating code fences and stray
+ * prose around the object.
+ *
+ * Pass a provider name to fail with an {@link LMError}, or a function to build
+ * the error yourself — `Predict` reports an unparseable structured reply as a
+ * `ValidationError`, so the repair loop can act on it.
+ */
+export function parseJsonResponse<T>(raw: string, provider: string): T;
+export function parseJsonResponse<T>(
+    raw: string,
+    onError: (candidate: string, cause: unknown) => Error
+): T;
+export function parseJsonResponse<T>(
+    raw: string,
+    providerOrOnError: string | ((candidate: string, cause: unknown) => Error)
+): T {
     const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
     const candidate = (fenced?.[1] ?? raw).trim();
 
@@ -245,7 +260,10 @@ export function parseJsonResponse<T>(raw: string, provider: string): T {
                 // fall through to the error below
             }
         }
-        throw new LMError(provider, `Model did not return valid JSON: ${candidate}`, {
+        if (typeof providerOrOnError === 'function') {
+            throw providerOrOnError(candidate, cause);
+        }
+        throw new LMError(providerOrOnError, `Model did not return valid JSON: ${candidate}`, {
             cause,
         });
     }

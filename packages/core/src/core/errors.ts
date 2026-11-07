@@ -6,6 +6,20 @@ export class TsDspyError extends Error {
     }
 }
 
+/**
+ * Thrown when an iterative module (such as `RespAct`) runs out of steps without
+ * producing a valid final answer.
+ */
+export class MaxStepsError extends TsDspyError {
+    /** The step budget that was exhausted. */
+    readonly maxSteps: number;
+
+    constructor(message: string, maxSteps: number, options?: { cause?: unknown }) {
+        super(message, options);
+        this.maxSteps = maxSteps;
+    }
+}
+
 /** One field's worth of detail about why validation failed. */
 export interface FieldValidationIssue {
     /** Name of the output field that failed. */

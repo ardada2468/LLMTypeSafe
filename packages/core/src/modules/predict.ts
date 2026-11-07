@@ -1,4 +1,5 @@
 import { Module } from '../core/module';
+import { parseJsonResponse } from '../core/base-lm';
 import { Prediction } from '../core/prediction';
 import { type Signature, type SignatureLike, type SignatureSource } from '../core/signature';
 import { type Example } from '../core/example';
@@ -633,30 +634,19 @@ function withSchemaInstruction(
 
 /** Read a JSON object out of a reply, tolerating code fences and stray prose. */
 function extractJsonObject(raw: string): Record<string, any> {
-    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    const candidate = (fenced?.[1] ?? raw).trim();
-    try {
-        return JSON.parse(candidate) as Record<string, any>;
-    } catch {
-        const start = candidate.indexOf('{');
-        const end = candidate.lastIndexOf('}');
-        if (start !== -1 && end > start) {
-            try {
-                return JSON.parse(candidate.slice(start, end + 1)) as Record<string, any>;
-            } catch {
-                // fall through
-            }
-        }
-        throw new ValidationError(
-            [
-                {
-                    field: '(root)',
-                    expected: 'object',
-                    received: raw,
-                    message: 'model did not return a JSON object',
-                },
-            ],
-            raw
-        );
-    }
+    return parseJsonResponse<Record<string, any>>(
+        raw,
+        () =>
+            new ValidationError(
+                [
+                    {
+                        field: '(root)',
+                        expected: 'object',
+                        received: raw,
+                        message: 'model did not return a JSON object',
+                    },
+                ],
+                raw
+            )
+    );
 }

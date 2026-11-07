@@ -2,19 +2,9 @@ import { type Example } from '../core/example';
 import { type Prediction } from '../core/prediction';
 import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
 
-/** What a metric may return: a score, or a straight pass/fail. */
-export type MetricResult = number | boolean;
-
-/**
- * Judge one prediction against the labelled example it came from.
- *
- * Return `true`/`false` for a pass/fail metric, or a number for partial credit —
- * a numeric score counts as a pass when it meets the optimizer's `threshold`.
- */
-export type Metric = (
-    example: Example,
-    prediction: Prediction
-) => MetricResult | Promise<MetricResult>;
+// One metric type serves both `evaluate` and the optimizers; it lives with
+// `evaluate` and is re-exported here for the optimizers' convenience.
+export type { Metric, MetricResult } from '../evaluate/types';
 
 /**
  * The slice of a module an optimizer needs: run it, and produce a configured

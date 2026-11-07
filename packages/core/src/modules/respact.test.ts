@@ -8,12 +8,16 @@ import {
 import { Signature, OutputField, InputField } from '../core/signature';
 import { BaseLM } from '../core/base-lm';
 import { MockLM } from '../test-utils';
+import { MaxStepsError, TsDspyError } from '../core/errors';
+import { configure } from '../core/config';
+import { clearHistory, inspectHistory } from '../core/trace';
 import type {
     ChatMessage,
     ChatResult,
     LLMCallOptions,
     ModelCapabilities,
 } from '../types/language-model';
+import type { LMCall } from '../types/module';
 
 /**
  * A language model that advertises native tool calling and replies from a
@@ -321,6 +325,44 @@ describe('RespAct', () => {
             await expect(agent.forward({ question: 'Q' })).rejects.toThrow(
                 'RespAct exceeded maximum steps (2)'
             );
+        });
+
+        it('throws a MaxStepsError when the loop runs out of steps', async () => {
+            const lm = new MockLM({ responses: ['thinking...', 'still thinking...'] });
+            const agent = new RespAct('question -> answer', { tools: {}, maxSteps: 2, lm });
+
+            const error = await agent.forward({ question: 'Q' }).catch((e: unknown) => e);
+
+            expect(error).toBeInstanceOf(MaxStepsError);
+            expect(error).toBeInstanceOf(TsDspyError);
+            expect((error as MaxStepsError).maxSteps).toBe(2);
+            expect((error as Error).name).toBe('MaxStepsError');
+        });
+
+        it('tells the model when a reply has neither an Action nor a Final Answer', async () => {
+            const lm = new MockLM({
+                responses: ['Let me ponder this.', 'Final Answer: answer: 42'],
+            });
+            const agent = new RespAct('question -> answer', { tools: {}, maxSteps: 3, lm });
+
+            const result = await agent.forward({ question: 'Q' });
+
+            expect(result.answer).toBe('42');
+            const secondPrompt = lm.lastPrompt();
+            expect(secondPrompt).toContain(
+                'Observation: Your reply contained neither an Action'
+            );
+            expect(secondPrompt).toContain('Final Answer');
+        });
+
+        it('renders an object question as JSON rather than [object Object]', async () => {
+            const lm = new MockLM({ responses: ['Final Answer: answer: ok'] });
+            const agent = new RespAct('question -> answer', { tools: {}, lm });
+
+            await agent.forward({ question: { city: 'Paris' } });
+
+            expect(lm.lastPrompt()).toContain('Question: {"city":"Paris"}');
+            expect(lm.lastPrompt()).not.toContain('[object Object]');
         });
 
         it('emits events for each stage of the loop', async () => {
@@ -710,6 +752,49 @@ describe('RespAct', () => {
 
             expect(result.answer).toBe('recovered');
             expect(lm.turns[1].at(-1)?.content).toContain('Error executing boom: kaboom');
+        });
+
+        it('traces content-part messages as text rather than [object Object]', async () => {
+            configure({ tracing: true });
+            clearHistory();
+            try {
+                const lm = new ToolCallingLM([
+                    {
+                        content: '',
+                        toolCalls: [{ id: 'c1', name: 'echo', arguments: { input: 'hi' } }],
+                    },
+                    { content: 'answer: hi', finishReason: 'stop' },
+                ]);
+                // The loop reuses one message array across turns; swap the user
+                // turn for content parts, as a multimodal conversation would carry.
+                const original = lm.chatWithTools.bind(lm);
+                lm.chatWithTools = async (messages, options) => {
+                    messages[1] = {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: 'part one, ' },
+                            { type: 'text', text: 'part two' },
+                        ],
+                    };
+                    return original(messages, options);
+                };
+                const agent = new RespAct('question -> answer', {
+                    lm,
+                    tools: { echo: (input: string) => input },
+                });
+
+                const result = await agent.forward({ question: 'Q' });
+
+                const calls: LMCall[] = result.trace?.calls ?? [];
+                const prompts = calls.map((call) => call.prompt);
+                expect(prompts).toHaveLength(2);
+                expect(prompts[1]).toContain('user: part one, part two');
+                expect(prompts.join('\n')).not.toContain('[object Object]');
+                expect(inspectHistory().length).toBeGreaterThan(0);
+            } finally {
+                configure({ tracing: false });
+                clearHistory();
+            }
         });
 
         it('falls back to the text loop when the model cannot call tools', async () => {

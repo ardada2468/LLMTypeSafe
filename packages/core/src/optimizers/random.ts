@@ -36,34 +36,3 @@ export function shuffled<T>(items: readonly T[], rng: Rng): T[] {
     }
     return result;
 }
-
-/**
- * Map over items with at most `limit` in flight, returning results in input
- * order regardless of the order they completed in.
- *
- * Input order matters: an optimizer that kept whichever demos finished first
- * would be at the mercy of network timing, which is exactly the nondeterminism
- * the seed exists to remove.
- */
-export async function mapWithConcurrency<T, R>(
-    items: readonly T[],
-    limit: number,
-    worker: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-    const results = new Array<R>(items.length);
-    if (items.length === 0) {
-        return results;
-    }
-
-    const workers = Math.max(1, Math.min(Math.trunc(limit) || 1, items.length));
-    let cursor = 0;
-
-    const runners = Array.from({ length: workers }, async () => {
-        for (let index = cursor++; index < items.length; index = cursor++) {
-            results[index] = await worker(items[index], index);
-        }
-    });
-
-    await Promise.all(runners);
-    return results;
-}

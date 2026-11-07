@@ -1,4 +1,5 @@
 import { Example } from '../core/example';
+import { TsDspyError } from '../core/errors';
 import { Prediction } from '../core/prediction';
 import { Signature, InputField, OutputField } from '../core/signature';
 import { Predict } from '../modules/predict';
@@ -177,12 +178,31 @@ describe('evaluate', () => {
     });
 
     it('fails only the affected example when its input keys are missing', async () => {
-        const data = [new Example({ question: 'alpha', answer: 'alpha' })];
+        const data = [
+            new Example({ question: 'alpha', answer: 'alpha' }).withInputs('question'),
+            new Example({ question: 'beta', answer: 'beta' }),
+        ];
 
         const report = await evaluate(echoProgram, data, exactMatch);
 
-        expect(report.score).toBe(0);
-        expect(report.results[0].error?.message).toContain('Input keys not specified');
+        expect(report.results[0].score).toBe(1);
+        expect(report.results[1].score).toBe(0);
+        expect(report.results[1].error?.message).toContain('Input keys not specified');
+    });
+
+    it('throws up front when no example designates its input keys', async () => {
+        const data = [new Example({ question: 'alpha', answer: 'alpha' })];
+        let calls = 0;
+        const program = async (inputs: Record<string, any>) => {
+            calls += 1;
+            return echoProgram(inputs);
+        };
+
+        const run = evaluate(program, data, exactMatch);
+
+        await expect(run).rejects.toBeInstanceOf(TsDspyError);
+        await expect(run).rejects.toThrow(/withInputs|inputKeys/);
+        expect(calls).toBe(0);
     });
 
     it('aggregates token usage and latency by diffing the model', async () => {

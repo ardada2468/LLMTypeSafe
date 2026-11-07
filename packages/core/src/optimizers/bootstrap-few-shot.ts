@@ -1,7 +1,8 @@
 import { Example } from '../core/example';
 import { type Prediction } from '../core/prediction';
 import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
-import { createRng, mapWithConcurrency, shuffled } from './random';
+import { createRng, shuffled } from './random';
+import { mapWithConcurrency } from '../utils/pool';
 import { type DemoModule, type Metric, type MetricResult, resolveExampleInputs } from './types';
 
 /** One trainset example's outcome, reported as the run proceeds. */
@@ -157,9 +158,8 @@ export class BootstrapFewShot {
             }
 
             const batch = ordered.slice(start, start + batchSize);
-            const results = await mapWithConcurrency<Example, Candidate | null>(
+            const settled = await mapWithConcurrency<Example, Candidate | null>(
                 batch,
-                this.concurrency,
                 async (example, offset) => {
                     const index = start + offset;
                     try {
@@ -178,9 +178,12 @@ export class BootstrapFewShot {
                         this.report({ index, total, status: 'error', error });
                         return null;
                     }
-                }
+                },
+                { concurrency: batchSize }
             );
 
+            // The worker catches everything, so every slot is fulfilled.
+            const results = settled.map((r) => (r.status === 'fulfilled' ? r.value : null));
             for (const result of results) {
                 if (result && bootstrapped.length < this.maxBootstrappedDemos) {
                     bootstrapped.push(result);

@@ -11,9 +11,10 @@ import type {
     ToolSpec,
 } from '../types/language-model';
 import type { SignatureOutput } from '../types/signature';
-import { parseOutput as utilParseOutput } from '../utils/parsing';
+import { formatInputValue, parseOutput as utilParseOutput } from '../utils/parsing';
+import { contentToText } from '../utils/content';
 import { getOutputFieldConfigs } from '../utils/schema';
-import { ValidationError } from '../core/errors';
+import { MaxStepsError, ValidationError } from '../core/errors';
 import { buildRepairObservation } from '../core/repair';
 import { type TraceSpan } from '../core/trace';
 
@@ -191,7 +192,9 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
         const callOptions: LLMCallOptions = { ...options, tools: this.toolSpecs() };
 
         for (let step = 0; step < this.maxSteps; step++) {
-            const prompt = messages.map((m) => `${m.role}: ${m.content}`).join('\n\n');
+            const prompt = messages
+                .map((m) => `${m.role}: ${contentToText(m.content)}`)
+                .join('\n\n');
             span?.startCall(prompt);
             const result = await this.lm.chatWithTools!(messages, callOptions);
             span?.endCall(result.content ?? '');
@@ -347,6 +350,10 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
             }
 
             if (!/final answer:/i.test(response)) {
+                // Silently moving on would burn the step and leave the model no
+                // wiser, so tell it what was missing.
+                conversation +=
+                    '\n\nObservation: Your reply contained neither an Action (with an Action Input) nor a Final Answer. Follow the format: either "Action: [tool name]" followed by "Action Input: [input]", or "Final Answer: [answer]".';
                 continue;
             }
 
@@ -382,9 +389,10 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
         return utilParseOutput(this.signature, outputText);
     }
 
-    private exhaustedError(): Error {
-        return new Error(
-            `RespAct exceeded maximum steps (${this.maxSteps}) without producing a valid final answer`
+    private exhaustedError(): MaxStepsError {
+        return new MaxStepsError(
+            `RespAct exceeded maximum steps (${this.maxSteps}) without producing a valid final answer`,
+            this.maxSteps
         );
     }
 
@@ -398,7 +406,7 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
     }
 
     private questionOf(inputs: Record<string, any>): string {
-        return String(inputs.question ?? JSON.stringify(inputs));
+        return formatInputValue(inputs.question ?? inputs);
     }
 
     private outputFormatInstruction(): string {

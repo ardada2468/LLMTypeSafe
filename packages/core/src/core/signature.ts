@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { FieldConfig, ParsedSignature } from '../types/signature';
+import { TsDspyError } from './errors';
 
 /**
  * Field type marking an input as an image rather than text.
@@ -127,19 +128,46 @@ export abstract class Signature {
         return `${inputs.join(', ')} -> ${outputs.join(', ')}`;
     }
 
+    /**
+     * Parse the `"inputs -> outputs"` shorthand, e.g. `"question -> answer: number"`.
+     *
+     * @throws {TsDspyError} when the string is not exactly one `->` separating a
+     * non-empty input list from a non-empty output list of unique field names.
+     */
     static parseStringSignature(signature: string): ParsedSignature {
-        const [inputPart, outputPart] = signature.split('->').map((s) => s.trim());
+        const fail = (reason: string): never => {
+            throw new TsDspyError(
+                `Invalid string signature ${JSON.stringify(signature)}: ${reason}. ` +
+                    'Expected the form "input1, input2 -> output1, output2: type".'
+            );
+        };
 
-        const parseFields = (part: string) => {
+        if (typeof signature !== 'string') {
+            fail('a string signature must be a string');
+        }
+
+        const sides = signature.split('->');
+        if (sides.length < 2) fail('missing "->" between inputs and outputs');
+        if (sides.length > 2) fail('found more than one "->"');
+
+        const [inputPart, outputPart] = sides.map((s) => s.trim());
+        if (inputPart === '') fail('no input fields before "->"');
+        if (outputPart === '') fail('no output fields after "->"');
+
+        const seen = new Set<string>();
+        const parseFields = (part: string, side: 'input' | 'output') => {
             return part.split(',').map((field) => {
                 const trimmed = field.trim();
                 const [name, type] = trimmed.split(':').map((s) => s.trim());
+                if (!name) fail(`empty ${side} field name`);
+                if (seen.has(name)) fail(`duplicate field name "${name}"`);
+                seen.add(name);
                 return { name, type: type || 'string' };
             });
         };
 
-        const inputFields = parseFields(inputPart);
-        const outputFields = parseFields(outputPart);
+        const inputFields = parseFields(inputPart, 'input');
+        const outputFields = parseFields(outputPart, 'output');
 
         return {
             inputs: inputFields.map((f) => f.name),

@@ -4,22 +4,28 @@ import { type Module } from '../core/module';
 import type { ILanguageModel, LLMCallOptions } from '../types/language-model';
 
 /**
- * Score for one example. `true`/`false` are read as `1`/`0`, so a boolean
- * metric needs no ceremony.
+ * What a metric returns for one example: a numeric score, or a straight
+ * pass/fail. `evaluate` reads `true`/`false` as `1`/`0`; an optimizer counts a
+ * numeric score as a pass when it meets its `threshold`.
  */
-export type MetricScore = number | boolean;
+export type MetricResult = number | boolean;
+
+/**
+ * @deprecated Use {@link MetricResult}; this is the same type under its old name.
+ */
+export type MetricScore = MetricResult;
 
 /**
  * Grades one prediction against the example it came from.
  *
- * The shape is deliberately tiny and is treated as stable: optimizers consume
- * exactly this signature, so a metric written for `evaluate` works unchanged
- * when handed to a compiler.
+ * The shape is deliberately tiny and is treated as stable: `evaluate` and the
+ * optimizers consume exactly this signature, so a metric written for one works
+ * unchanged when handed to the other.
  */
 export type Metric = (
     example: Example,
     prediction: Prediction
-) => MetricScore | Promise<MetricScore>;
+) => MetricResult | Promise<MetricResult>;
 
 /**
  * Anything `evaluate` can run against one example's inputs — a module, or a
