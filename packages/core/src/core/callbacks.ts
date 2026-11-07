@@ -99,17 +99,25 @@ export interface ToolEndEvent extends CallbackEndBase {
     outputs?: unknown;
 }
 
-/** @experimental Emitted by adapters, which arrive in a later release. */
+/** Emitted when an adapter renders a call as chat messages. */
 export interface AdapterFormatEvent extends CallbackEndBase {
+    /** The adapter's `name`, e.g. `ChatAdapter`. */
     adapter: string;
+    /** The call's input field values. */
     inputs: Record<string, any>;
+    /** The messages produced. */
     outputs?: ChatMessage[];
 }
 
-/** @experimental Emitted by adapters, which arrive in a later release. */
+/**
+ * Emitted when an adapter parses and validates a reply. Carries `error` — a
+ * `ValidationError`, usually — when the reply did not satisfy the signature.
+ */
 export interface AdapterParseEvent extends CallbackEndBase {
     adapter: string;
+    /** The model's reply text. */
     inputs: string;
+    /** The validated output fields. */
     outputs?: Record<string, any>;
 }
 
@@ -130,9 +138,7 @@ export interface Callback {
     onLMEnd?(event: LMEndEvent): void;
     onToolStart?(event: ToolStartEvent): void;
     onToolEnd?(event: ToolEndEvent): void;
-    /** @experimental */
     onAdapterFormat?(event: AdapterFormatEvent): void;
-    /** @experimental */
     onAdapterParse?(event: AdapterParseEvent): void;
 }
 

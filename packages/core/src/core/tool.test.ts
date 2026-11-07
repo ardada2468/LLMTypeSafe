@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { Tool } from './tool';
 import { TsDspyError } from './errors';
 import { cosineSimilarity, type Embedder } from './embedder';
-import { RespAct } from '../modules/respact';
+import { ReAct } from '../modules/react';
 import { MockLM } from '../test-utils';
 
 describe('Tool', () => {
@@ -53,33 +53,35 @@ describe('Tool', () => {
         expect(() => Tool.fromFunction(() => 1)).toThrow(/needs a name/);
     });
 
-    it('is accepted by RespAct as a record value or in an array', async () => {
+    it('is accepted by ReAct as a record value or in an array', async () => {
         const add = Tool.fromFunction(({ a, b }: { a: number; b: number }) => a + b, {
             name: 'add',
             parameters: z.object({ a: z.number(), b: z.number() }),
         });
         const lm = new MockLM({
             responses: [
-                'Action: add\nAction Input: {"a": 2, "b": 3}',
-                'Final Answer: answer: 5',
-                'Action: plus\nAction Input: {"a": 1, "b": 1}',
-                'Final Answer: answer: 2',
+                'next_thought: add\nnext_tool_name: add\nnext_tool_args: {"a": 2, "b": 3}',
+                'next_thought: done\nnext_tool_name: finish\nnext_tool_args: {}',
+                'reasoning: the tool said 5\nanswer: 5',
+                'next_thought: add\nnext_tool_name: plus\nnext_tool_args: {"a": 1, "b": 1}',
+                'next_thought: done\nnext_tool_name: finish\nnext_tool_args: {}',
+                'reasoning: the tool said 2\nanswer: 2',
             ],
         });
 
-        const viaArray = await new RespAct('question -> answer', { lm, tools: [add] }).forward({
+        const viaArray = await new ReAct('question -> answer', { lm, tools: [add] }).forward({
             question: '2+3?',
         });
         expect(viaArray.answer).toBe('5');
-        expect(lm.calls[1].messages[0].content).toContain('Observation: 5');
+        expect(lm.calls[1].messages.at(-1)?.content).toContain('observation_0: 5');
 
         // A record key renames the tool.
-        const viaRecord = await new RespAct('question -> answer', {
+        const viaRecord = await new ReAct('question -> answer', {
             lm,
             tools: { plus: add },
         }).forward({ question: '1+1?' });
         expect(viaRecord.answer).toBe('2');
-        expect(lm.calls[3].messages[0].content).toContain('Observation: 2');
+        expect(lm.calls[4].messages.at(-1)?.content).toContain('observation_0: 2');
         expect(add.name).toBe('add');
     });
 });

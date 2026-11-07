@@ -13,13 +13,14 @@ import { currentUsageCollector, runWithCollector, UsageCollector } from './usage
 /**
  * Remove the options ts-dspy consumes itself before they reach a provider.
  *
- * `lm` selects the model and means nothing to a provider SDK. The original
- * object is returned untouched when there is nothing to strip, so a caller
- * comparing options by identity or deep equality sees exactly what it passed.
+ * `lm` selects the model and `adapter` the prompt format; neither means
+ * anything to a provider SDK. The original object is returned untouched when
+ * there is nothing to strip, so a caller comparing options by identity or deep
+ * equality sees exactly what it passed.
  */
 export function providerOptions(options?: LLMCallOptions): LLMCallOptions | undefined {
-    if (!options || !('lm' in options)) return options;
-    const { lm: _lm, ...rest } = options;
+    if (!options || (!('lm' in options) && !('adapter' in options))) return options;
+    const { lm: _lm, adapter: _adapter, ...rest } = options;
     return rest;
 }
 

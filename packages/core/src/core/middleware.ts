@@ -123,7 +123,7 @@ class MiddlewareLM implements ILanguageModel {
         // so defining them unconditionally would advertise abilities the
         // model lacks.
         if (typeof inner.chatWithTools === 'function') {
-            // RespAct recognises "no native tool calling" by BaseLM's default
+            // ReAct recognises "no native tool calling" by BaseLM's default
             // implementation being in place. Keep that identity: the default
             // only calls `this.chat`, which on this wrapper runs the chain.
             this.chatWithTools =

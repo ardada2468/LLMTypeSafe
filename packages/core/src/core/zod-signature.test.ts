@@ -4,7 +4,17 @@ import { MockLM } from '../test-utils';
 import { Predict } from '../modules/predict';
 import { ChainOfThought } from '../modules/chain-of-thought';
 import { ValidationError } from './errors';
-import { buildPrompt, parseOutput } from '../utils/parsing';
+import { parseOutput } from '../utils/parsing';
+import { ChatAdapter } from '../adapters/chat';
+import { contentToText } from '../utils/content';
+
+/** The whole prompt ChatAdapter builds, as one string. */
+function buildPrompt(sig: Parameters<ChatAdapter['format']>[0]['signature'], inputs: object) {
+    return new ChatAdapter()
+        .format({ signature: sig, inputs: inputs as Record<string, unknown> })
+        .map((message) => contentToText(message.content))
+        .join('\n\n');
+}
 import { buildOutputJsonSchema, getOutputFieldConfigs } from '../utils/schema';
 
 const AnalyzeReview = signature({
@@ -68,12 +78,13 @@ describe('getOutputFieldConfigs with a zod signature', () => {
     });
 });
 
-describe('buildPrompt with a zod signature', () => {
+// Rewritten for 0.7: prompts come from the adapter, in its `[[ ## field ## ]]` format.
+describe('ChatAdapter prompt for a zod signature', () => {
     it('opens with the description and lists the supplied inputs', () => {
         const prompt = buildPrompt(AnalyzeReview, { review: 'Great mug.' });
 
         expect(prompt).toContain('Analyze a product review.');
-        expect(prompt).toContain('review: Great mug.');
+        expect(prompt).toContain('[[ ## review ## ]]\nGreat mug.');
     });
 
     it('spells out the accepted enum options', () => {
@@ -85,8 +96,8 @@ describe('buildPrompt with a zod signature', () => {
     it('states numeric bounds and which fields may be omitted', () => {
         const prompt = buildPrompt(AnalyzeReview, { review: 'Great mug.' });
 
-        expect(prompt).toContain('rating (int, between 1 and 5)');
-        expect(prompt).toContain('followUp (string, optional)');
+        expect(prompt).toContain('int, between 1 and 5');
+        expect(prompt).toContain('string, optional');
     });
 
     it('puts an input field description beside its value', () => {
@@ -95,9 +106,9 @@ describe('buildPrompt with a zod signature', () => {
             output: z.object({ sentiment: z.string() }),
         });
 
-        expect(buildPrompt(described, { review: 'Great mug.' })).toContain(
-            'review (the review text): Great mug.'
-        );
+        const prompt = buildPrompt(described, { review: 'Great mug.' });
+        expect(prompt).toContain('`review` (string): the review text');
+        expect(prompt).toContain('[[ ## review ## ]]\nGreat mug.');
     });
 
     it('serialises a structured input value as JSON', () => {
@@ -106,7 +117,9 @@ describe('buildPrompt with a zod signature', () => {
             output: z.object({ status: z.string() }),
         });
 
-        expect(buildPrompt(nested, { order: { id: 'A1' } })).toContain('order: {"id":"A1"}');
+        expect(buildPrompt(nested, { order: { id: 'A1' } })).toContain(
+            '[[ ## order ## ]]\n{"id":"A1"}'
+        );
     });
 });
 
@@ -140,7 +153,8 @@ describe('parseOutput with a zod signature', () => {
         }
 
         expect(caught?.issues.map((issue) => issue.field)).toEqual(['sentiment']);
-        expect(caught?.issues[0].expected).toBe('enum');
+        // Changed in 0.7: zod enums report their members, like decorator enums.
+        expect(caught?.issues[0].expected).toBe('enum(positive|negative|neutral)');
     });
 
     it('accepts output that omits an optional field', () => {
@@ -378,8 +392,7 @@ describe('ChainOfThought with a zod signature', () => {
     it('infers the output type and adds reasoning to it', async () => {
         const lm = new MockLM({
             responses: [
-                'The reviewer praises the mug.',
-                'sentiment: positive\nrating: 4\nthemes: build quality',
+                'reasoning: The reviewer praises the mug.\nsentiment: positive\nrating: 4\nthemes: build quality',
             ],
         });
 

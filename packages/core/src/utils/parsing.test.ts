@@ -1,93 +1,10 @@
-import { buildPrompt, buildPromptContent, parseOutput } from './parsing';
-import { Signature, ImageField, InputField, OutputField } from '../core/signature';
+// Prompt building moved to the adapters in 0.7 (see adapters/*.test.ts); the
+// tolerant `field: value` reader stays here.
+import { parseOutput } from './parsing';
+import { Signature, InputField, OutputField } from '../core/signature';
 import { ValidationError } from '../core/errors';
 
 describe('Parsing Utils', () => {
-    describe('buildPrompt', () => {
-        it('should build prompt from string signature', () => {
-            const prompt = buildPrompt('question -> answer', {
-                question: 'What is the capital of France?',
-            });
-
-            expect(prompt).toContain('question: What is the capital of France?');
-            expect(prompt).toContain('Provide the answer in this format:');
-            expect(prompt).toContain('answer: [your response]');
-        });
-
-        it('should handle multiple inputs and outputs', () => {
-            const prompt = buildPrompt('question, context -> answer, confidence: float', {
-                question: 'What is the capital?',
-                context: 'France is a country in Europe.',
-            });
-
-            expect(prompt).toContain('question: What is the capital?');
-            expect(prompt).toContain('context: France is a country in Europe.');
-            expect(prompt).toContain('Provide the following fields:');
-            expect(prompt).toContain('answer (string): [your response]');
-            expect(prompt).toContain('confidence (float): [your response]');
-        });
-
-        it('should skip undefined inputs', () => {
-            const prompt = buildPrompt('question, context -> answer', {
-                question: 'What is the capital?',
-            });
-
-            expect(prompt).toContain('question: What is the capital?');
-            expect(prompt).not.toContain('context:');
-        });
-
-        it('should build prompt from a class signature with descriptions', () => {
-            class Rate extends Signature {
-                static description = 'Rate a review';
-
-                @InputField({ description: 'the review' })
-                review!: string;
-
-                @OutputField({ description: 'sentiment label' })
-                sentiment!: string;
-            }
-
-            const prompt = buildPrompt(Rate, { review: 'Great product' });
-
-            expect(prompt).toContain('Rate a review');
-            expect(prompt).toContain('review: Great product');
-            expect(prompt).toContain('sentiment (sentiment label):');
-        });
-
-        it('renders object and array inputs as JSON on a string signature', () => {
-            const prompt = buildPrompt('profile, tags -> summary', {
-                profile: { name: 'Ada', age: 36 },
-                tags: ['math', 'engines'],
-            });
-
-            expect(prompt).not.toContain('[object Object]');
-            expect(prompt).toContain('profile: {"name":"Ada","age":36}');
-            expect(prompt).toContain('tags: ["math","engines"]');
-        });
-
-        it('renders object and array inputs as JSON on a class signature', () => {
-            class Summarize extends Signature {
-                @InputField({ description: 'the profile' })
-                profile!: Record<string, unknown>;
-
-                @InputField({ description: 'tags', prefix: 'Tags:' })
-                tags!: string[];
-
-                @OutputField({ description: 'summary' })
-                summary!: string;
-            }
-
-            const prompt = buildPrompt(Summarize, {
-                profile: { name: 'Ada' },
-                tags: ['math'],
-            });
-
-            expect(prompt).not.toContain('[object Object]');
-            expect(prompt).toContain('profile: {"name":"Ada"}');
-            expect(prompt).toContain('Tags: ["math"]');
-        });
-    });
-
     describe('parseOutput', () => {
         it('should parse simple output from string signature', () => {
             const parsed = parseOutput('question -> answer', 'answer: Paris is the capital.');
@@ -225,106 +142,9 @@ describe('Parsing Utils', () => {
             );
         });
     });
-
-    describe('buildPromptContent', () => {
-        const PNG = 'iVBORw0KGgo=';
-        const DATA_URI = `data:image/png;base64,${PNG}`;
-
-        class ReadSign extends Signature {
-            static description = 'Read the sign in the photo.';
-
-            @ImageField({ description: 'photo of the sign' })
-            photo!: string;
-
-            @InputField({ description: 'the language to answer in' })
-            language!: string;
-
-            @OutputField({ description: 'the words on the sign' })
-            words!: string;
-        }
-
-        it('returns a plain string when every input is text', () => {
-            const content = buildPromptContent('question -> answer', { question: 'why?' });
-
-            expect(content).toBe(buildPrompt('question -> answer', { question: 'why?' }));
-            expect(typeof content).toBe('string');
-        });
-
-        it('emits content parts when a class input field is an image', () => {
-            const content = buildPromptContent(ReadSign, {
-                photo: DATA_URI,
-                language: 'French',
-            });
-
-            expect(content).toEqual([
-                { type: 'text', text: 'Read the sign in the photo.\n\nphoto: ' },
-                {
-                    type: 'image',
-                    source: { kind: 'base64', mediaType: 'image/png', data: PNG },
-                },
-                {
-                    type: 'text',
-                    text: '\nlanguage: French\n\nProvide:\nwords (the words on the sign):',
-                },
-            ]);
-        });
-
-        it('emits content parts for a string signature declaring an image input', () => {
-            const content = buildPromptContent('photo: image, question -> answer', {
-                photo: 'https://example.com/sign.png',
-                question: 'what does it say?',
-            });
-
-            expect(Array.isArray(content)).toBe(true);
-            expect(content[1]).toEqual({
-                type: 'image',
-                source: { kind: 'url', url: 'https://example.com/sign.png' },
-            });
-        });
-
-        it('skips an image input that was not supplied', () => {
-            const content = buildPromptContent(ReadSign, { language: 'French' });
-
-            expect(content).toBe(
-                'Read the sign in the photo.\n\nlanguage: French\n\n' +
-                    'Provide:\nwords (the words on the sign):'
-            );
-        });
-    });
-
-    describe('buildPrompt with images', () => {
-        it('flattens an image input to a placeholder, since a string has no pixels', () => {
-            const prompt = buildPrompt('photo: image -> caption', {
-                photo: 'data:image/png;base64,iVBORw0KGgo=',
-            });
-
-            expect(prompt).toContain('photo: [image: image/png]');
-        });
-    });
 });
 
 describe('enum fields', () => {
-    it('names the allowed members in the prompt of a class signature', () => {
-        class Classify extends Signature {
-            @InputField({ description: 'the review' })
-            review!: string;
-
-            @OutputField({
-                description: 'overall sentiment',
-                type: 'enum',
-                values: ['positive', 'negative'],
-            })
-            sentiment!: string;
-        }
-
-        const prompt = buildPrompt(Classify, { review: 'lovely' });
-
-        // The structured path gets the members as a JSON Schema `enum`; on the text
-        // path the prompt is the only place they can appear, and without them the
-        // model is being marked against a rubric it was never shown.
-        expect(prompt).toContain('[one of: positive, negative]');
-    });
-
     it('reports the members, not the bare word enum, when a value is refused', () => {
         expect(() => parseOutput('review -> sentiment: enum(a|b)', 'sentiment: c')).toThrow(
             ValidationError

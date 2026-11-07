@@ -289,7 +289,7 @@ export abstract class Module {
      *
      * A predictor reports itself as `self`, so a bare `Predict` returns
      * `[['self', predict]]`; a composite returns its predictors' dotted paths.
-     * `RespAct` holds no inner `Predict`, so it contributes none.
+     * `ReAct` contributes its `react` and `extract` predictors.
      */
     namedPredictors(): Array<[string, Predict<any, any>]> {
         const result: Array<[string, Predict<any, any>]> = [];

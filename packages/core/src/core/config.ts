@@ -63,10 +63,10 @@ export interface SettingsOverrides {
      */
     callbacks?: Callback[];
     /**
-     * Prompt formatting/parsing strategy.
-     *
-     * @experimental Accepted and carried through scopes today; the built-in
-     * modules start consulting it in a later release.
+     * Prompt formatting/parsing strategy for every module that does not choose
+     * its own. A call's `adapter` option and a module's `adapter` option both
+     * take precedence; with none set anywhere, modules use `JSONAdapter` on a
+     * model with native structured output and `ChatAdapter` otherwise.
      */
     adapter?: Adapter;
     /**
@@ -267,7 +267,7 @@ export function getCallbacks(): readonly Callback[] {
     return active()?.callbacks ?? globals.callbacks;
 }
 
-/** @experimental See {@link SettingsOverrides.adapter}. */
+/** The adapter of the active scope, else the global one. See {@link SettingsOverrides.adapter}. */
 export function getAdapter(): Adapter | undefined {
     return active()?.adapter ?? globals.adapter;
 }

@@ -90,7 +90,7 @@ export abstract class BaseLM implements ILanguageModel {
      * Default tool-calling implementation: run the turn as plain chat and report
      * no tool calls. Providers with native tool calling override this; a provider
      * that does must also report `supportsFunctionCalling: true`, since that flag
-     * is what callers such as `RespAct` branch on.
+     * is what callers such as `ReAct` branch on.
      */
     async chatWithTools(
         messages: ChatMessage[],

@@ -11,6 +11,13 @@ export {
     ImageField,
     IMAGE_FIELD_TYPE,
     isImageFieldType,
+    HISTORY_FIELD_TYPE,
+    isHistoryFieldType,
+    image,
+    history,
+    extendSignature,
+    toSignatureClass,
+    getSignatureInstructions,
 } from './core/signature';
 export type {
     AnyZodSignature,
@@ -18,7 +25,11 @@ export type {
     SignatureSource,
     ZodSignature,
     ZodSignatureDefinition,
+    FieldSpec,
+    FieldSpecs,
+    ExtendSignatureOptions,
 } from './core/signature';
+export { History } from './core/history';
 export { Module } from './core/module';
 export type {
     BatchOptions,
@@ -100,7 +111,26 @@ export { Tool } from './core/tool';
 export type { ToolOptions, ToolInit, ToolParameters } from './core/tool';
 export { cosineSimilarity } from './core/embedder';
 export type { Embedder } from './core/embedder';
-export type { Adapter } from './core/adapter';
+
+// Adapters
+export {
+    Adapter,
+    ChatAdapter,
+    JSONAdapter,
+    XMLAdapter,
+    TwoStepAdapter,
+    defaultAdapter,
+    resolveAdapter,
+    signatureLayout,
+} from './adapters';
+export type {
+    AdapterCallInput,
+    AdapterField,
+    AdapterFormatInput,
+    ChatAdapterOptions,
+    SignatureLayout,
+    TwoStepAdapterOptions,
+} from './adapters';
 
 // Caching
 export { MemoryCache } from './core/cache';
@@ -128,7 +158,7 @@ export type { FieldValidationIssue, ErrorDiscriminators, LMErrorClass } from './
 // Validation self-repair
 export {
     buildRepairPrompt,
-    buildRepairObservation,
+    buildRepairInstruction,
     describeValidationIssues,
     isRepeatedFailure,
     listFailingFields,
@@ -140,16 +170,21 @@ export type { RepairFormat } from './core/repair';
 export { Predict } from './modules/predict';
 export type { PredictOptions } from './modules/predict';
 export type { StreamOptions, PredictionStream, PartialOutput } from './modules/predict';
-export { ChainOfThought } from './modules/chain-of-thought';
-export { RespAct } from './modules/respact';
+export { ChainOfThought, REASONING_DESCRIPTION } from './modules/chain-of-thought';
+export type { WithReasoning } from './modules/chain-of-thought';
+export { ReAct, formatTrajectory } from './modules/react';
 export type {
     ToolFunction,
     ToolWithDescription,
     ToolDefinition,
     ToolParameterSchema,
-    RespActEvent,
-    RespActOptions,
-} from './modules/respact';
+    ReActEvent,
+    ReActOptions,
+    ReActExtras,
+    ReActOutput,
+} from './modules/react';
+export { RespAct } from './modules/respact';
+export type { RespActEvent, RespActOptions } from './modules/respact';
 
 // Optimizers
 export { LabeledFewShot, BootstrapFewShot } from './optimizers';
@@ -167,8 +202,7 @@ export type {
 export * from './evaluate';
 
 // Utilities
-export { buildPrompt, buildPromptContent, parseOutput, renderDemos } from './utils/parsing';
-export type { PromptOptions, RenderDemosOptions, DemoFormat } from './utils/parsing';
+export { parseOutput } from './utils/parsing';
 export {
     textPart,
     imagePart,
@@ -180,7 +214,14 @@ export {
     hasImageContent,
     contentToText,
 } from './utils/content';
-export { fieldConfigToZod, buildOutputSchema, buildOutputJsonSchema } from './utils/schema';
+export {
+    fieldConfigToZod,
+    buildOutputSchema,
+    buildOutputJsonSchema,
+    getInputFieldConfigs,
+    getOutputFieldConfigs,
+    validateOutputs,
+} from './utils/schema';
 export { parsePartialJson } from './utils/partial-json';
 export type { PartialJsonOptions } from './utils/partial-json';
 export { mapWithConcurrency, DEFAULT_CONCURRENCY } from './utils/pool';

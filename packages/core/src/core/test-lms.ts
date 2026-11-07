@@ -31,7 +31,10 @@ export class EchoLM extends BaseLM {
     async chat(messages: ChatMessage[], _options?: LLMCallOptions): Promise<string> {
         const prompt = messages.map((message) => contentToText(message.content)).join('\n');
         this.prompts.push(prompt);
-        const question = /question: (\S+)/.exec(prompt)?.[1] ?? '';
+        // Read the question from the last (user) turn: the system message's
+        // structure template mentions the field too, as a placeholder.
+        const turn = contentToText(messages.at(-1)?.content ?? '');
+        const question = /(?:question: |\[\[ ## question ## \]\]\n)(\S+)/.exec(turn)?.[1] ?? '';
         const behaviour = this.behaviour[question] ?? {};
         await new Promise((resolve) => setTimeout(resolve, behaviour.delayMs ?? 0));
         this.recordUsage({

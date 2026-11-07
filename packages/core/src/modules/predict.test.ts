@@ -34,7 +34,7 @@ describe('Predict', () => {
             await new Predict(QA, lm).forward({ question: 'Capital of France?' });
 
             expect(lm.lastPrompt()).toContain('Answer a question');
-            expect(lm.lastPrompt()).toContain('question: Capital of France?');
+            expect(lm.lastPrompt()).toContain('[[ ## question ## ]]\nCapital of France?');
         });
 
         it('throws ValidationError when a typed field cannot be coerced', async () => {
@@ -195,7 +195,10 @@ describe('Predict', () => {
                 { repairAttempts: 1 }
             );
 
-            expect(lm.lastPrompt()).toContain('question: Capital of France?');
+            expect(lm.lastPrompt()).toContain('[[ ## question ## ]]\nCapital of France?');
+            // The rejected reply goes back as an assistant turn, the issues as a user turn.
+            const roles = lm.calls[1].messages.map((message) => message.role);
+            expect(roles.slice(-2)).toEqual(['assistant', 'user']);
         });
 
         it('rethrows the last ValidationError once the attempts are spent', async () => {
@@ -327,7 +330,7 @@ describe('image inputs', () => {
 
         // Predict used to flatten the image to "[image: image/png]", so the
         // model never actually saw it.
-        const content = lm.calls.at(-1)?.messages[0]?.content;
+        const content = lm.calls.at(-1)?.messages.at(-1)?.content;
         expect(Array.isArray(content)).toBe(true);
         expect(content).toContainEqual({
             type: 'image',
@@ -340,6 +343,6 @@ describe('image inputs', () => {
 
         await new Predict(QA, lm).forward({ question: 'Capital of France?' });
 
-        expect(typeof lm.calls.at(-1)?.messages[0]?.content).toBe('string');
+        expect(typeof lm.calls.at(-1)?.messages.at(-1)?.content).toBe('string');
     });
 });

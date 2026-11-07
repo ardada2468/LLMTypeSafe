@@ -15,7 +15,7 @@ import type {
 } from './callbacks';
 import { Predict } from '../modules/predict';
 import { ChainOfThought } from '../modules/chain-of-thought';
-import { RespAct } from '../modules/respact';
+import { ReAct } from '../modules/react';
 import { MockLM } from '../test-utils';
 import { EchoLM } from './test-lms';
 
@@ -87,8 +87,9 @@ describe('callbacks', () => {
         expect(moduleStart.parentCallId).toBeUndefined();
 
         expect(lmStart.parentCallId).toBe(moduleStart.callId);
-        expect(lmStart.method).toBe('generate');
-        expect(lmStart.prompt).toContain('Capital?');
+        // Adapters speak chat: the prompt travels as messages.
+        expect(lmStart.method).toBe('chat');
+        expect(lmStart.messages.at(-1).content).toContain('Capital?');
         expect(lmStart.moduleId).toBe(predict.moduleId);
         expect(lmEnd.callId).toBe(lmStart.callId);
         expect(lmEnd.outputs).toBe('answer: Paris');
@@ -233,24 +234,51 @@ describe('callbacks', () => {
         expect(global.of('moduleStart')).toHaveLength(1);
     });
 
-    it('reports both ChainOfThought calls', async () => {
+    it('reports the single ChainOfThought call', async () => {
+        // Changed in 0.7: ChainOfThought makes one call, not two.
         const recorder = new Recorder();
         configure({ callbacks: [recorder] });
-        const lm = new MockLM({ responses: ['because', 'answer: A'] });
+        const lm = new MockLM({ responses: ['reasoning: because\nanswer: A'] });
 
         await new ChainOfThought('question -> answer', lm).forward({ question: 'Q' });
 
-        expect(recorder.of('lmStart')).toHaveLength(2);
+        expect(recorder.of('lmStart')).toHaveLength(1);
         expect(recorder.of('moduleStart')).toHaveLength(1);
     });
 
-    it('reports tool calls made by RespAct, nested under the module', async () => {
+    it('reports adapter format and parse events', async () => {
+        const events: Array<{ hook: string; event: any }> = [];
+        configure({
+            callbacks: [
+                {
+                    onAdapterFormat: (event) => events.push({ hook: 'format', event }),
+                    onAdapterParse: (event) => events.push({ hook: 'parse', event }),
+                },
+            ],
+        });
+        const lm = new MockLM({ responses: ['[[ ## answer ## ]]\nParis'] });
+
+        await new Predict('question -> answer', lm).forward({ question: 'Q' });
+
+        expect(events.map((e) => e.hook)).toEqual(['format', 'parse']);
+        expect(events[0].event.adapter).toBe('ChatAdapter');
+        expect(events[0].event.inputs).toEqual({ question: 'Q' });
+        expect(events[0].event.outputs.at(-1).role).toBe('user');
+        expect(events[1].event.inputs).toBe('[[ ## answer ## ]]\nParis');
+        expect(events[1].event.outputs).toEqual({ answer: 'Paris' });
+    });
+
+    it('reports tool calls made by ReAct, nested under the module', async () => {
         const recorder = new Recorder();
         configure({ callbacks: [recorder] });
         const lm = new MockLM({
-            responses: ['Action: weather\nAction Input: Paris', 'Final Answer: answer: sunny'],
+            responses: [
+                'next_thought: look it up\nnext_tool_name: weather\nnext_tool_args: {"input": "Paris"}',
+                'next_thought: done\nnext_tool_name: finish\nnext_tool_args: {}',
+                'reasoning: the tool said so\nanswer: sunny',
+            ],
         });
-        const agent = new RespAct('question -> answer', {
+        const agent = new ReAct('question -> answer', {
             lm,
             tools: { weather: async (city: string) => `sunny in ${city}` },
         });
@@ -265,7 +293,8 @@ describe('callbacks', () => {
         expect(toolStart.parentCallId).toBe(moduleStart.callId);
         expect(toolEnd.callId).toBe(toolStart.callId);
         expect(toolEnd.outputs).toBe('sunny in Paris');
-        expect(recorder.of('lmStart')).toHaveLength(2);
+        // Two steps and the extract call.
+        expect(recorder.of('lmStart')).toHaveLength(3);
     });
 
     it('reports a tool whose arguments fail validation', async () => {

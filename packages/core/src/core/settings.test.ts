@@ -14,7 +14,7 @@ import { Module } from './module';
 import { Prediction } from './prediction';
 import { Predict } from '../modules/predict';
 import { ChainOfThought } from '../modules/chain-of-thought';
-import { RespAct } from '../modules/respact';
+import { ReAct } from '../modules/react';
 import { MockLM } from '../test-utils';
 import { EchoLM } from './test-lms';
 
@@ -24,18 +24,18 @@ describe('before configure()', () => {
         // A fresh module graph per test file means nothing is configured yet.
         const predict = new Predict('question -> answer');
         const cot = new ChainOfThought('question -> answer');
-        const agent = new RespAct('question -> answer', { tools: {} });
+        const agent = new ReAct('question -> answer', { tools: {} });
 
         await expect(predict.forward({ question: 'Q' })).rejects.toThrow(
             /No language model configured/
         );
 
-        const lm = new MockLM({ responses: ['answer: A', 'thinking', 'answer: B'] });
+        const lm = new MockLM({ responses: ['answer: A', 'reasoning: thinking\nanswer: B'] });
         configure({ lm });
 
         expect((await predict.forward({ question: 'Q' })).answer).toBe('A');
         expect((await cot.forward({ question: 'Q' })).answer).toBe('B');
-        expect(agent).toBeInstanceOf(RespAct);
+        expect(agent).toBeInstanceOf(ReAct);
     });
 });
 

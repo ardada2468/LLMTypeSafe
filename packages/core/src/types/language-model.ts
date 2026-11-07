@@ -1,3 +1,5 @@
+import type { Adapter } from '../adapters/base';
+
 export interface LLMCallOptions {
     temperature?: number;
     maxTokens?: number;
@@ -23,6 +25,12 @@ export interface LLMCallOptions {
      * before the options reach a provider.
      */
     lm?: ILanguageModel;
+    /**
+     * Prompt format for this call only, taking precedence over the module's
+     * adapter and the configured one. Consumed by modules and stripped before
+     * the options reach a provider.
+     */
+    adapter?: Adapter;
     /**
      * Tools the model may call on this turn. Providers advertising
      * `supportsFunctionCalling` translate these into their own request shape;

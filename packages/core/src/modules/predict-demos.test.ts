@@ -2,7 +2,11 @@ import { Predict } from './predict';
 import { ChainOfThought } from './chain-of-thought';
 import { Signature, InputField, OutputField } from '../core/signature';
 import { Example } from '../core/example';
-import { buildPrompt, renderDemos } from '../utils/parsing';
+import { type SignatureLike } from '../core/signature';
+import { ChatAdapter } from '../adapters/chat';
+import { JSONAdapter } from '../adapters/json';
+import { contentToText } from '../utils/content';
+import type { ChatMessage } from '../types/language-model';
 import { MockLM } from '../test-utils';
 
 class QA extends Signature {
@@ -30,74 +34,59 @@ const tokyo = new Example({
     confidence: 0.98,
 }).withInputs('question');
 
+// Rewritten for 0.7: demos are formatted by the adapter as user/assistant
+// message pairs, not as a numbered "worked examples" block inside one prompt.
+
+/** The messages ChatAdapter builds for one call with `demos`. */
+function format(
+    signature: SignatureLike,
+    demos: Example[],
+    inputs = { question: 'Capital of Peru?' }
+) {
+    return new ChatAdapter().format({ signature, demos, inputs });
+}
+const text = (messages: ChatMessage[]) => messages.map((m) => contentToText(m.content));
+
 describe('demos in the prompt', () => {
-    it('renders nothing when a module has no demos', () => {
-        const withoutDemos = buildPrompt(QA, { question: 'Capital of Peru?' });
-        const withEmptyDemos = buildPrompt(QA, { question: 'Capital of Peru?' }, []);
-
-        expect(withEmptyDemos).toBe(withoutDemos);
-        expect(withoutDemos).not.toContain('worked example');
+    it('renders nothing extra when a module has no demos', () => {
+        expect(format(QA, []).map((m) => m.role)).toEqual(['system', 'user']);
     });
 
-    it('renders demos in the labelled format the parser reads back', () => {
-        const block = renderDemos(QA, [paris]);
+    it('renders each demo as a user turn and an assistant turn', () => {
+        const messages = format(QA, [paris]);
 
-        expect(block).toContain('question: Capital of France?');
-        expect(block).toContain('answer: Paris');
-        expect(block).toContain('confidence: 0.99');
-    });
-
-    it('numbers demos and keeps them in the order given', () => {
-        const block = renderDemos(QA, [paris, tokyo]);
-
-        expect(block).toContain('Here are 2 worked examples of this task:');
-        expect(block.indexOf('Example 1:')).toBeLessThan(block.indexOf('Example 2:'));
-        expect(block.indexOf('Paris')).toBeLessThan(block.indexOf('Tokyo'));
-    });
-
-    it('renders demos for a string signature', () => {
-        const prompt = buildPrompt('question -> answer', { question: 'Capital of Peru?' }, [
-            new Example({ question: 'Capital of France?', answer: 'Paris' }),
-        ]);
-
-        expect(prompt).toContain('question: Capital of France?');
-        expect(prompt).toContain('answer: Paris');
-        expect(prompt).toContain('question: Capital of Peru?');
-    });
-
-    it('splits a demo by the signature when the example declares no input keys', () => {
-        const block = renderDemos(QA, [
-            new Example({ question: 'Capital of Italy?', answer: 'Rome', confidence: 0.9 }),
-        ]);
-
-        expect(block).toContain('question: Capital of Italy?');
-        expect(block).toContain('answer: Rome');
-    });
-
-    it('places demos after the task description and before the real input', () => {
-        const prompt = buildPrompt(QA, { question: 'Capital of Peru?' }, [paris]);
-
-        expect(prompt.indexOf('Answer a question')).toBeLessThan(prompt.indexOf('Example 1:'));
-        expect(prompt.indexOf('Example 1:')).toBeLessThan(
-            prompt.indexOf('question: Capital of Peru?')
+        expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+        expect(text(messages)[1]).toBe('[[ ## question ## ]]\nCapital of France?');
+        expect(text(messages)[2]).toBe(
+            '[[ ## answer ## ]]\nParis\n\n[[ ## confidence ## ]]\n0.99\n\n[[ ## completed ## ]]'
         );
     });
 
-    it('honours a custom input prefix but labels outputs plainly', () => {
-        class Prefixed extends Signature {
-            @InputField({ description: 'the text', prefix: 'Text:' })
-            text!: string;
+    it('keeps demos in the order given, before the real input', () => {
+        const all = text(format(QA, [paris, tokyo])).join('\n');
 
-            @OutputField({ description: 'the label' })
-            label!: string;
-        }
+        expect(all.indexOf('Paris')).toBeLessThan(all.indexOf('Tokyo'));
+        expect(all.indexOf('Tokyo')).toBeLessThan(all.indexOf('Capital of Peru?'));
+    });
 
-        const block = renderDemos(Prefixed, [
-            new Example({ text: 'hello', label: 'greeting' }).withInputs('text'),
+    it('renders demos for a string signature', () => {
+        const all = text(
+            format('question -> answer', [
+                new Example({ question: 'Capital of France?', answer: 'Paris' }),
+            ])
+        ).join('\n');
+
+        expect(all).toContain('[[ ## question ## ]]\nCapital of France?');
+        expect(all).toContain('[[ ## answer ## ]]\nParis');
+    });
+
+    it('splits a demo by the signature when the example declares no input keys', () => {
+        const messages = format(QA, [
+            new Example({ question: 'Capital of Italy?', answer: 'Rome', confidence: 0.9 }),
         ]);
 
-        expect(block).toContain('Text: hello');
-        expect(block).toContain('label: greeting');
+        expect(text(messages)[1]).toContain('Capital of Italy?');
+        expect(text(messages)[2]).toContain('[[ ## answer ## ]]\nRome');
     });
 
     it('serialises non-string demo values as JSON', () => {
@@ -109,49 +98,42 @@ describe('demos in the prompt', () => {
             tags!: string[];
         }
 
-        const block = renderDemos(Tagged, [
-            new Example({ text: 'hello', tags: ['a', 'b'] }).withInputs('text'),
-        ]);
+        const messages = format(
+            Tagged,
+            [new Example({ text: 'hello', tags: ['a', 'b'] }).withInputs('text')],
+            { text: 'x' } as any
+        );
 
-        expect(block).toContain('tags: ["a","b"]');
+        expect(text(messages)[2]).toContain('[[ ## tags ## ]]\n["a","b"]');
     });
 
     it('drops a demo that shares no fields with the signature', () => {
-        const block = renderDemos(QA, [new Example({ unrelated: 'nothing to teach' })]);
+        const messages = format(QA, [new Example({ unrelated: 'nothing to teach' })]);
 
-        expect(block).toBe('');
+        expect(messages).toHaveLength(2);
     });
 
-    it('keeps output fields the signature never declared', () => {
-        const block = renderDemos(QA, [
-            new Example({
-                question: 'Capital of France?',
-                answer: 'Paris',
-                confidence: 0.99,
-                reasoning: 'France is in Europe and Paris is its seat of government.',
-            }).withInputs('question'),
-        ]);
+    it('ignores fields the signature does not declare', () => {
+        const all = text(
+            format(QA, [
+                new Example({ question: 'Capital of France?', answer: 'Paris', id: 'row-7' }),
+            ])
+        ).join('\n');
 
-        expect(block).toContain('reasoning: France is in Europe');
-        // Declared fields still lead, in signature order.
-        expect(block.indexOf('answer: Paris')).toBeLessThan(block.indexOf('reasoning:'));
+        expect(all).not.toContain('row-7');
     });
 
-    it('ignores undeclared fields when the example declares no input keys', () => {
-        const block = renderDemos(QA, [
-            new Example({ question: 'Capital of France?', answer: 'Paris', id: 'row-7' }),
-        ]);
+    it('renders demo replies as JSON for the JSON adapter', () => {
+        const messages = new JSONAdapter().format({
+            signature: QA,
+            demos: [paris],
+            inputs: { question: 'Capital of Peru?' },
+        });
 
-        expect(block).not.toContain('id:');
-    });
-
-    it('renders demos as JSON for the structured-output path', () => {
-        const block = renderDemos(QA, [paris], { format: 'json' });
-
-        expect(block).toContain('input: {"question":"Capital of France?"}');
-        expect(block).toContain('output: {"answer":"Paris","confidence":0.99}');
-        // The JSON schema, not the demo, dictates the shape on this path.
-        expect(block).not.toContain('in the same format');
+        expect(messages[2]).toEqual({
+            role: 'assistant',
+            content: '{"answer":"Paris","confidence":0.99}',
+        });
     });
 });
 
@@ -162,7 +144,7 @@ describe('Predict demo configuration', () => {
 
         await predict.forward({ question: 'Capital of Peru?' });
 
-        expect(lm.lastPrompt()).toContain('answer: Paris');
+        expect(lm.lastPrompt()).toContain('[[ ## answer ## ]]\nParis');
     });
 
     it('keeps the two-argument (signature, lm) form working', async () => {
@@ -170,7 +152,7 @@ describe('Predict demo configuration', () => {
 
         await new Predict(QA, lm).forward({ question: 'Capital of Peru?' });
 
-        expect(lm.lastPrompt()).not.toContain('worked example');
+        expect(lm.calls[0].messages.map((m) => m.role)).toEqual(['system', 'user']);
     });
 
     it('exposes its demos as a copy', () => {
@@ -194,7 +176,7 @@ describe('Predict demo configuration', () => {
 
     it('withDemos preserves the module subclass', async () => {
         const lm = new MockLM({
-            responses: ['because Peru', 'answer: Lima\nconfidence: 0.9'],
+            responses: ['reasoning: because Peru\nanswer: Lima\nconfidence: 0.9'],
         });
         const compiled = new ChainOfThought(QA, lm).withDemos([paris]);
 
@@ -202,7 +184,7 @@ describe('Predict demo configuration', () => {
 
         expect(compiled).toBeInstanceOf(ChainOfThought);
         expect(result.reasoning).toBe('because Peru');
-        expect(lm.calls[0].messages[0].content).toContain('answer: Paris');
+        expect(lm.lastPrompt()).toContain('[[ ## answer ## ]]\nParis');
     });
 
     it('sends JSON demos to a provider with native structured output', async () => {
@@ -213,8 +195,8 @@ describe('Predict demo configuration', () => {
 
         await new Predict(QA, { lm, demos: [paris] }).forward({ question: 'Capital of Peru?' });
 
-        expect(lm.structuredCalls[0].prompt).toContain('output: {"answer":"Paris"');
-        expect(lm.structuredCalls[0].prompt).not.toContain('answer: Paris');
+        expect(lm.structuredCalls[0].prompt).toContain('Assistant:\n{"answer":"Paris"');
+        expect(lm.structuredCalls[0].prompt).not.toContain('[[ ## answer ## ]]\nParis');
     });
 
     it('rejects an object carrying only half a language model', () => {

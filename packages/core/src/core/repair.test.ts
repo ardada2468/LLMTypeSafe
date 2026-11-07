@@ -1,6 +1,6 @@
 import { ValidationError, type FieldValidationIssue } from './errors';
 import {
-    buildRepairObservation,
+    buildRepairInstruction,
     buildRepairPrompt,
     describeValidationIssues,
     isRepeatedFailure,
@@ -96,15 +96,15 @@ describe('buildRepairPrompt', () => {
     });
 });
 
-describe('buildRepairObservation', () => {
-    it('names the malformed fields and the shape RespAct expects back', () => {
+describe('buildRepairInstruction', () => {
+    it('names the failing fields and closes with the adapter wording', () => {
         const error = new ValidationError(issues, 'answer: Paris');
 
-        const observation = buildRepairObservation(error);
+        const instruction = buildRepairInstruction(error, 'Reply in the right format.');
 
-        expect(observation).toContain('missing or malformed for: confidence, answer');
-        expect(observation).toContain('expected number, received "very high"');
-        expect(observation).toContain('Provide a Final Answer with every required field');
+        expect(instruction).toContain('failed validation for: confidence, answer');
+        expect(instruction).toContain('expected number, received "very high"');
+        expect(instruction.endsWith('Reply in the right format.')).toBe(true);
     });
 });
 
