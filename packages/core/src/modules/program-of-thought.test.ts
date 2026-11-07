@@ -86,7 +86,8 @@ describe('runSandboxed', () => {
         });
         expect(logged).toEqual({
             output: 'before',
-            error: 'Error: Script execution timed out after 50ms',
+            // vm reports the remaining budget, which can dip below 50ms on a slow runner.
+            error: expect.stringMatching(/^Error: Script execution timed out after \d+ms$/),
         });
     });
 
