@@ -108,6 +108,7 @@ export interface CacheKeyInput {
  * Sampling parameters that change the response and therefore the key. Options
  * that only affect transport — `timeout`, `retries`, `streaming`, `metadata` —
  * are deliberately excluded so a retry budget change does not miss the cache.
+ * The one exception is `metadata.rolloutId`; see {@link buildCacheKey}.
  */
 const SAMPLING_PARAMS = [
     'temperature',
@@ -124,11 +125,19 @@ const KEY_VERSION = 1;
 /**
  * Derive a stable, fixed-length cache key. Prompts and schemas can run to tens
  * of kilobytes, so the canonical form is hashed rather than stored.
+ *
+ * `options.metadata.rolloutId` joins the key when — and only when — it is set.
+ * It is how `BestOfN` and `Refine` ask for a genuinely new sample of an
+ * otherwise identical request (DSPy's `rollout_id`): without it every rollout
+ * after the first would be served the first one's cached reply. Leaving it out
+ * of the payload when absent keeps every existing key byte-for-byte stable, so
+ * turning this on invalidates nothing already cached.
  */
 export function buildCacheKey(input: CacheKeyInput): string {
     const options = input.options ?? {};
+    const rolloutId: unknown = options.metadata?.rolloutId;
 
-    const payload = {
+    const payload: Record<string, unknown> = {
         v: KEY_VERSION,
         provider: input.provider,
         model: input.model,
@@ -154,6 +163,9 @@ export function buildCacheKey(input: CacheKeyInput): string {
         // are unchanged.
         ...(options.providerOptions ? { providerOptions: options.providerOptions } : {}),
     };
+    if (rolloutId !== undefined && rolloutId !== null) {
+        payload.rolloutId = rolloutId;
+    }
 
     return createHash('sha256').update(stableStringify(payload)).digest('hex');
 }
