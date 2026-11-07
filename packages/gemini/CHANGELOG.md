@@ -1,5 +1,40 @@
 # @ts-dspy/gemini
 
+## 0.7.0
+
+### Minor Changes
+
+- d805fc8: Provider upgrades:
+
+  - **Reasoning controls**: OpenAI `reasoningEffort`, Anthropic `thinking` (adaptive or budgeted) and `effort`, Gemini `thinking` (`thinkingConfig`). Reasoning text is surfaced as `ChatResult.reasoning` and as `metadata.reasoningDelta` on stream chunks.
+  - **`providerOptions`** on `LLMCallOptions`: per-call, provider-keyed options deep-merged into the raw request.
+  - **Prompt caching**: Anthropic `cachePrompt` marks the system prompt and conversation prefix as cache breakpoints.
+  - **Usage**: `cachedTokens` and `reasoningTokens` are reported for all three providers, streaming and non-streaming. Anthropic `promptTokens` now includes cache reads/writes; Gemini `completionTokens` now includes thought tokens.
+  - **Embeddings**: `OpenAIEmbedder` and `GeminiEmbedder` implement core's `Embedder`.
+  - Consistent exports across providers and expanded READMEs.
+
+### Patch Changes
+
+- fbc1ea8: Runtime foundations:
+
+  - **Scoped settings**: `settings.context(overrides, fn)` / `withSettings`, backed by `AsyncLocalStorage`, so concurrent requests can use different models, caches, callbacks and adapters.
+  - **Lazy LM resolution (breaking)**: modules resolve their model at call time (`options.lm` → module → context → global) and can be constructed before `configure()`.
+  - **Composition and persistence**: `namedSubModules()`, `namedPredictors()`, `deepCopy()`, `resetCopy()`, `dumpState()`/`loadState()`, `save()`/`load()`; `Predict` gains optimizable `instructions`.
+  - **Callbacks**: module, LM, tool and adapter start/end events with correct parent ids under concurrency. Trace entries gain `id`/`parentId`.
+  - **Exact per-call usage**: `Prediction.getLMUsage()`, `trackUsage`, optional `pricing` for `totalCost`, and `cachedTokens`/`reasoningTokens` in `UsageStats`. Trace and evaluation usage no longer diff shared counters.
+  - **LM middleware**: `wrapLM(lm, retry(), fallback([...]), defaults({...}), rateLimit({...}))`. Gemini now retries through the shared backoff helper.
+  - **Contracts**: `Tool` (accepted by `RespAct`), `Embedder` + `cosineSimilarity`, and an experimental `Adapter` interface.
+
+- Updated dependencies [a026be5]
+- Updated dependencies [a016219]
+- Updated dependencies [fbc1ea8]
+- Updated dependencies [fa3b16b]
+- Updated dependencies [0b048b1]
+- Updated dependencies [df12e87]
+- Updated dependencies [a455632]
+- Updated dependencies [d805fc8]
+  - @ts-dspy/core@0.7.0
+
 ## 0.6.0
 
 ### Minor Changes
