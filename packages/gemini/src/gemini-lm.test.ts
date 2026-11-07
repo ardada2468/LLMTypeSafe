@@ -846,3 +846,149 @@ describe('GeminiLM', () => {
         });
     });
 });
+
+describe('GeminiLM thinking', () => {
+    it('maps the constructor default onto thinkingConfig', async () => {
+        mocks.generateContent.mockResolvedValue(response('ok'));
+        await new GeminiLM({
+            apiKey: 'k',
+            thinking: { budgetTokens: 2048, includeThoughts: true },
+        }).generate('Hi');
+
+        expect(mocks.generateContent.mock.calls[0][0].config.thinkingConfig).toEqual({
+            thinkingBudget: 2048,
+            includeThoughts: true,
+        });
+    });
+
+    it('lets providerOptions.gemini replace it per call', async () => {
+        mocks.generateContent.mockResolvedValue(response('ok'));
+        await new GeminiLM({ apiKey: 'k', thinking: { budgetTokens: 2048 } }).generate('Hi', {
+            providerOptions: { gemini: { thinking: { budgetTokens: 0, level: 'LOW' } } },
+        });
+
+        expect(mocks.generateContent.mock.calls[0][0].config.thinkingConfig).toEqual({
+            thinkingBudget: 0,
+            thinkingLevel: 'LOW',
+        });
+    });
+
+    it('omits thinkingConfig by default', async () => {
+        mocks.generateContent.mockResolvedValue(response('ok'));
+        await new GeminiLM({ apiKey: 'k' }).generate('Hi');
+        expect(mocks.generateContent.mock.calls[0][0].config).not.toHaveProperty(
+            'thinkingConfig'
+        );
+    });
+
+    it('merges raw provider options into the config without clobbering the schema', async () => {
+        mocks.generateContent.mockResolvedValue(response('{}'));
+        await new GeminiLM({ apiKey: 'k' }).generateStructured(
+            'Hi',
+            { type: 'object' },
+            { providerOptions: { gemini: { seed: 7 }, openai: { seed: 1 } } }
+        );
+
+        const config = mocks.generateContent.mock.calls[0][0].config;
+        expect(config.seed).toBe(7);
+        expect(config.responseJsonSchema).toEqual({ type: 'object' });
+        expect(config.responseMimeType).toBe('application/json');
+    });
+
+    it('returns thought summaries as reasoning, separate from the text', async () => {
+        mocks.generateContent.mockResolvedValue(
+            response('Paris', {
+                candidates: [
+                    {
+                        finishReason: 'STOP',
+                        content: {
+                            parts: [
+                                { text: 'Recall capitals.', thought: true },
+                                { text: 'Paris' },
+                            ],
+                        },
+                    },
+                ],
+            })
+        );
+
+        const result = await new GeminiLM({ apiKey: 'k' }).chatWithTools([
+            { role: 'user', content: 'Capital of France?' },
+        ]);
+        expect(result).toMatchObject({ content: 'Paris', reasoning: 'Recall capitals.' });
+    });
+
+    it('streams thought summaries in metadata', async () => {
+        mocks.generateContentStream.mockResolvedValue(
+            (async function* () {
+                yield {
+                    text: '',
+                    candidates: [{ content: { parts: [{ text: 'hmm', thought: true }] } }],
+                };
+                yield { text: 'ok' };
+            })()
+        );
+
+        const chunks = [];
+        for await (const chunk of new GeminiLM({ apiKey: 'k' }).generateStream('Hi')) {
+            chunks.push(chunk);
+        }
+        expect(chunks[0]).toEqual({
+            content: '',
+            done: false,
+            metadata: { reasoningDelta: 'hmm' },
+        });
+        expect(chunks[1]).toEqual({ content: 'ok', done: false });
+    });
+});
+
+describe('GeminiLM cached and reasoning tokens', () => {
+    const usageMetadata = {
+        promptTokenCount: 500,
+        cachedContentTokenCount: 400,
+        candidatesTokenCount: 20,
+        thoughtsTokenCount: 80,
+        totalTokenCount: 600,
+    };
+
+    it('records them, counting thoughts as completion tokens', async () => {
+        mocks.generateContent.mockResolvedValue(response('ok', { usageMetadata }));
+        const lm = new GeminiLM({ apiKey: 'k' });
+        await lm.generate('Hi');
+
+        expect(lm.getUsage()).toMatchObject({
+            promptTokens: 500,
+            completionTokens: 100,
+            cachedTokens: 400,
+            reasoningTokens: 80,
+        });
+    });
+
+    it('reports them on a stream', async () => {
+        mocks.generateContentStream.mockResolvedValue(
+            (async function* () {
+                yield { text: 'ok', usageMetadata };
+            })()
+        );
+        const lm = new GeminiLM({ apiKey: 'k' });
+        const chunks = [];
+        for await (const chunk of lm.generateStream('Hi')) chunks.push(chunk);
+
+        expect(chunks.at(-1)?.usage).toEqual({
+            promptTokens: 500,
+            completionTokens: 100,
+            totalTokens: 600,
+            cachedTokens: 400,
+            reasoningTokens: 80,
+        });
+        expect(lm.getUsage()).toMatchObject({ cachedTokens: 400, reasoningTokens: 80 });
+    });
+
+    it('reports a 1M context window for every model', () => {
+        for (const model of ['gemini-3.5-flash', 'gemini-3.5-pro', 'gemini-3.5-flash-lite']) {
+            expect(
+                new GeminiLM({ apiKey: 'k', model }).getCapabilities().maxContextLength
+            ).toBe(1_000_000);
+        }
+    });
+});

@@ -131,6 +131,7 @@ export type {
     SignatureLayout,
     TwoStepAdapterOptions,
 } from './adapters';
+export { providerOptionsFor, mergeRequestBody } from './core/provider-options';
 
 // Caching
 export { MemoryCache } from './core/cache';
