@@ -707,4 +707,165 @@ describe('OpenAILM', () => {
             ]);
         });
     });
+
+    describe('reasoning effort', () => {
+        it('sends reasoning_effort from the constructor default', async () => {
+            mocks.create.mockResolvedValue(completion('ok'));
+            await new OpenAILM({ apiKey: 'k', reasoningEffort: 'low' }).generate('Hi');
+
+            expect(mocks.create.mock.calls[0][0].reasoning_effort).toBe('low');
+            // The max_completion_tokens rule is unaffected.
+            expect(mocks.create.mock.calls[0][0]).not.toHaveProperty('max_tokens');
+        });
+
+        it('lets providerOptions.openai override it per call', async () => {
+            mocks.create.mockResolvedValue(completion('ok'));
+            await new OpenAILM({ apiKey: 'k', reasoningEffort: 'low' }).generate('Hi', {
+                maxTokens: 100,
+                providerOptions: { openai: { reasoningEffort: 'high' } },
+            });
+
+            const body = mocks.create.mock.calls[0][0];
+            expect(body.reasoning_effort).toBe('high');
+            expect(body.max_completion_tokens).toBe(100);
+            expect(body).not.toHaveProperty('reasoningEffort');
+        });
+
+        it('omits reasoning_effort when nothing sets it', async () => {
+            mocks.create.mockResolvedValue(completion('ok'));
+            await new OpenAILM({ apiKey: 'k' }).generate('Hi');
+            expect(mocks.create.mock.calls[0][0]).not.toHaveProperty('reasoning_effort');
+        });
+    });
+
+    describe('providerOptions', () => {
+        it('merges unknown keys into the request body and ignores other providers', async () => {
+            mocks.create.mockResolvedValue(completion('{}'));
+            await new OpenAILM({ apiKey: 'k' }).generateStructured(
+                'Hi',
+                { type: 'object' },
+                {
+                    providerOptions: {
+                        openai: {
+                            service_tier: 'flex',
+                            response_format: { type: 'json_schema' },
+                        },
+                        anthropic: { thinking: { budgetTokens: 1 } },
+                    },
+                }
+            );
+
+            const body = mocks.create.mock.calls[0][0];
+            expect(body.service_tier).toBe('flex');
+            expect(body).not.toHaveProperty('thinking');
+            // Nested objects merge rather than replace.
+            expect(body.response_format.json_schema.name).toBe('signature_output');
+        });
+
+        it('applies to streaming requests too', async () => {
+            mocks.create.mockResolvedValue((async function* () {})());
+            const chunks = [];
+            for await (const chunk of new OpenAILM({ apiKey: 'k' }).generateStream('Hi', {
+                providerOptions: { openai: { reasoningEffort: 'minimal', user: 'u1' } },
+            })) {
+                chunks.push(chunk);
+            }
+
+            const body = mocks.create.mock.calls[0][0];
+            expect(body).toMatchObject({
+                reasoning_effort: 'minimal',
+                user: 'u1',
+                stream: true,
+            });
+        });
+    });
+
+    describe('cached and reasoning tokens', () => {
+        const detailedUsage = {
+            prompt_tokens: 100,
+            completion_tokens: 40,
+            prompt_tokens_details: { cached_tokens: 64 },
+            completion_tokens_details: { reasoning_tokens: 30 },
+        };
+
+        it('records them on a non-streaming call', async () => {
+            mocks.create.mockResolvedValue(completion('ok', { usage: detailedUsage }));
+            const lm = new OpenAILM({ apiKey: 'k' });
+            await lm.generate('Hi');
+
+            expect(lm.getUsage()).toMatchObject({
+                promptTokens: 100,
+                completionTokens: 40,
+                cachedTokens: 64,
+                reasoningTokens: 30,
+            });
+        });
+
+        it('records them on a structured call', async () => {
+            mocks.create.mockResolvedValue(completion('{}', { usage: detailedUsage }));
+            const lm = new OpenAILM({ apiKey: 'k' });
+            await lm.generateStructured('Hi', { type: 'object' });
+            expect(lm.getUsage()).toMatchObject({ cachedTokens: 64, reasoningTokens: 30 });
+        });
+
+        it('records and reports them on a stream', async () => {
+            mocks.create.mockResolvedValue(
+                (async function* () {
+                    yield { choices: [{ delta: { content: 'ok' } }] };
+                    yield { choices: [], usage: detailedUsage };
+                })()
+            );
+            const lm = new OpenAILM({ apiKey: 'k' });
+            const chunks = [];
+            for await (const chunk of lm.generateStream('Hi')) chunks.push(chunk);
+
+            expect(chunks.at(-1)?.usage).toEqual({
+                promptTokens: 100,
+                completionTokens: 40,
+                totalTokens: 140,
+                cachedTokens: 64,
+                reasoningTokens: 30,
+            });
+            expect(lm.getUsage()).toMatchObject({ cachedTokens: 64, reasoningTokens: 30 });
+        });
+    });
+
+    describe('reasoning text', () => {
+        it('surfaces reasoning_content from compatible servers outside content', async () => {
+            mocks.create.mockResolvedValue({
+                choices: [
+                    {
+                        message: { content: 'Paris', reasoning_content: 'capital of France' },
+                        finish_reason: 'stop',
+                    },
+                ],
+                usage: { prompt_tokens: 1, completion_tokens: 1 },
+            });
+
+            const result = await new OpenAILM({ apiKey: 'k' }).chatWithTools([
+                { role: 'user', content: 'Capital?' },
+            ]);
+            expect(result).toMatchObject({ content: 'Paris', reasoning: 'capital of France' });
+        });
+
+        it('streams reasoning deltas in metadata', async () => {
+            mocks.create.mockResolvedValue(
+                (async function* () {
+                    yield { choices: [{ delta: { reasoning_content: 'thinking' } }] };
+                    yield { choices: [{ delta: { content: 'answer' } }] };
+                })()
+            );
+            const chunks = [];
+            for await (const chunk of new OpenAILM({ apiKey: 'k' }).generateStream('Hi')) {
+                chunks.push(chunk);
+            }
+
+            expect(chunks[0]).toEqual({
+                content: '',
+                done: false,
+                metadata: { reasoningDelta: 'thinking' },
+            });
+            expect(chunks[1]).toEqual({ content: 'answer', done: false });
+        });
+    });
 });

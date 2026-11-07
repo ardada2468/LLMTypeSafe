@@ -138,6 +138,21 @@ export abstract class Adapter {
         return this.complete(lm, messages, input);
     }
 
+    /**
+     * Finish a prediction whose first reply already arrived some other way —
+     * streamed, say: parse and validate `completion`, then repair through
+     * ordinary calls exactly as {@link call} would. `messages` are the ones
+     * `completion` answered.
+     */
+    completeFrom(
+        lm: ILanguageModel,
+        messages: ChatMessage[],
+        completion: string,
+        input: AdapterCallInput
+    ): Promise<Record<string, any>> {
+        return this.complete(lm, messages, input, completion);
+    }
+
     /** {@link format}, reported to `onAdapterFormat` callbacks. */
     formatMessages(input: AdapterFormatInput): ChatMessage[] {
         return observe('onAdapterFormat', this.name, input.inputs, () => this.format(input));
@@ -161,18 +176,23 @@ export abstract class Adapter {
      * request. A repair appends the rejected reply as an assistant turn and the
      * validation issues as a further user turn — always to the *original*
      * messages, so successive attempts do not stack up earlier corrections.
+     * `firstCompletion`, when given, stands in for the first request.
      */
     protected async complete(
         lm: ILanguageModel,
         messages: ChatMessage[],
-        input: AdapterCallInput
+        input: AdapterCallInput,
+        firstCompletion?: string
     ): Promise<Record<string, any>> {
         const repairAttempts = normaliseRepairAttempts(input.options?.repairAttempts);
         let attemptMessages = messages;
         let previousError: ValidationError | undefined;
 
         for (let attempt = 0; ; attempt++) {
-            const completion = await this.request(lm, attemptMessages, input);
+            const completion =
+                attempt === 0 && firstCompletion !== undefined
+                    ? firstCompletion
+                    : await this.request(lm, attemptMessages, input);
             try {
                 return this.parseOutputs(input.signature, completion);
             } catch (error) {

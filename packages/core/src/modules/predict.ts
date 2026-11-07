@@ -5,13 +5,21 @@ import {
     type PredictorState,
     type SerializedDemo,
 } from '../core/module';
-import { Prediction } from '../core/prediction';
+import type { Prediction } from '../core/prediction';
 import { type Signature, type SignatureLike, type SignatureSource } from '../core/signature';
 import { Example } from '../core/example';
 import type { ChatMessage, ILanguageModel, LLMCallOptions } from '../types/language-model';
 import { type TraceSpan } from '../core/trace';
 import { providerOptions, startLMCall } from '../core/lm-call';
-import { type Adapter, renderTranscript } from '../adapters/base';
+import { type Adapter, type AdapterCallInput, renderTranscript } from '../adapters/base';
+import { HINT_FIELD, predictorHint, withHintField } from '../core/hints';
+import {
+    AsyncChannel,
+    activeStreamListeners,
+    consumerGoneReason,
+    runWithStreamListener,
+    type StreamListener,
+} from '../core/stream-context';
 import { resolveAdapter } from '../adapters/select';
 import type { SignatureInput, SignatureOutput } from '../types/signature';
 
@@ -317,6 +325,15 @@ export class Predict<
     /**
      * One prediction through the adapter: format, call the model, parse and
      * validate, repairing up to `options.repairAttempts` times.
+     *
+     * Two things in the surrounding scope change how the call is made, without
+     * the caller having to thread anything through a hand-written `forward`:
+     *
+     * - a hint from `Refine` for this predictor adds a `hint_` input carrying
+     *   the advice from an earlier attempt;
+     * - a stream listener (`Predict.stream`, `streamify`) makes the call
+     *   stream, reporting partial outputs as they arrive, when the model and
+     *   adapter can.
      */
     protected predict(
         inputs: Record<string, any>,
@@ -324,15 +341,82 @@ export class Predict<
         span?: TraceSpan
     ): Promise<Record<string, any>> {
         const lm = this.resolveLM(options);
-        return this.resolveAdapter(lm, options).call(lm, {
-            signature: this.predictionSignature(),
+        const adapter = this.resolveAdapter(lm, options);
+
+        let signature = this.predictionSignature();
+        let callInputs = inputs;
+        const hint = predictorHint(this);
+        if (hint !== undefined) {
+            signature = withHintField(signature);
+            callInputs = { ...inputs, [HINT_FIELD]: hint };
+        }
+
+        const input: AdapterCallInput = {
+            signature,
             demos: this.demos,
-            inputs,
+            inputs: callInputs,
             instructions: this.instructions,
             options,
             span,
             moduleId: this.moduleId,
+        };
+
+        const listeners = activeStreamListeners();
+        if (listeners.length === 0) return adapter.call(lm, input);
+        if (this.canStream(options) && adapter.parsePartial) {
+            return this.predictStreaming(lm, adapter, input, listeners);
+        }
+        // Listening, but this model or adapter cannot stream: one ordinary
+        // call, reported as complete so listeners still see its fields.
+        return adapter.call(lm, input).then((outputs) => {
+            notifyComplete(listeners, this, {}, outputs);
+            return outputs;
         });
+    }
+
+    /**
+     * The streaming form of {@link predict}: stream the reply, reporting each
+     * new partial snapshot to `listeners` (and waiting for them, which is the
+     * back-pressure that lets a consumer that stops reading stop the provider
+     * stream too), then parse, validate and — on request — repair the full
+     * reply exactly as a non-streaming call would.
+     */
+    private async predictStreaming(
+        lm: ILanguageModel,
+        adapter: Adapter,
+        input: AdapterCallInput,
+        listeners: readonly StreamListener[]
+    ): Promise<Record<string, any>> {
+        // The innermost listener's signal, for a call whose options carried none.
+        const signal =
+            input.options?.signal ??
+            [...listeners].reverse().find((listener) => listener.signal)?.signal;
+        throwIfAborted(signal);
+
+        const messages = adapter.formatMessages(input);
+        const invocation = {};
+
+        let buffer = '';
+        let lastSnapshot = '';
+        for await (const delta of this.streamChunks(lm, messages, input, signal)) {
+            buffer += delta;
+            const snapshot = adapter.parsePartial!(input.signature, buffer);
+            const key = snapshotKey(snapshot);
+            if (key !== lastSnapshot && Object.keys(snapshot).length > 0) {
+                lastSnapshot = key;
+                await Promise.all(
+                    listeners.map((listener) =>
+                        listener.onPartial({ predictor: this, invocation, snapshot })
+                    )
+                );
+            }
+        }
+
+        throwIfAborted(signal);
+
+        const outputs = await adapter.completeFrom(lm, messages, buffer, input);
+        notifyComplete(listeners, this, invocation, outputs);
+        return outputs;
     }
 
     /**
@@ -353,6 +437,13 @@ export class Predict<
      * `next()`. The generator's return value is the `Prediction` wrapper, for
      * callers who iterate by hand.
      *
+     * Under the hood this *is* {@link forward}, run with a stream listener in
+     * scope: the invocation is traced, reported to module callbacks, has its
+     * usage collected, and is repaired on request (`repairAttempts`) exactly
+     * like a non-streaming call. Snapshots are handed over with back-pressure,
+     * so breaking out of the loop stops reading from the provider and closes
+     * its stream.
+     *
      * Falls back to a single non-streaming call, yielded once, when the model
      * does not support streaming or the adapter cannot parse partial replies.
      * A provider's native structured-output mode is not wired into its chat
@@ -362,48 +453,67 @@ export class Predict<
         inputs: Record<string, any>,
         options?: StreamOptions
     ): PredictionStream<TOutput> {
-        throwIfAborted(options?.signal);
+        const userSignal = options?.signal;
+        throwIfAborted(userSignal);
 
-        const signature = this.predictionSignature();
-        const lm = this.resolveLM(options);
-        const adapter = this.resolveAdapter(lm, options);
+        // One signal for both cancellations: the caller's, and this generator
+        // being closed early by a consumer that stopped reading.
+        const controller = new AbortController();
+        const onAbort = () => controller.abort(abortReason(userSignal!));
+        userSignal?.addEventListener('abort', onAbort, { once: true });
 
-        if (!this.canStream(options) || typeof adapter.parsePartial !== 'function') {
-            const parsed = await this.predict(inputs, options);
-            yield { ...parsed } as PartialOutput<TOutput>;
-            return new Prediction(parsed) as Prediction<TOutput> & TOutput;
-        }
+        const channel = new AsyncChannel<PartialOutput<TOutput>>();
+        const listener: StreamListener = {
+            signal: controller.signal,
+            onPartial: (event) =>
+                event.predictor === this
+                    ? channel.push({ ...event.snapshot } as PartialOutput<TOutput>)
+                    : undefined,
+        };
 
-        const messages = adapter.formatMessages({
-            signature,
-            demos: this.demos,
-            inputs,
-            instructions: this.instructions,
-        });
-
-        let buffer = '';
-        let lastSnapshot = '';
-        for await (const delta of this.streamChunks(messages, options)) {
-            buffer += delta;
-            const snapshot = adapter.parsePartial(signature, buffer);
-            const key = snapshotKey(snapshot);
-            if (key !== lastSnapshot && Object.keys(snapshot).length > 0) {
-                lastSnapshot = key;
-                yield snapshot as PartialOutput<TOutput>;
+        let prediction: (Prediction<TOutput> & TOutput) | undefined;
+        let settled = false;
+        const task = runWithStreamListener(listener, () =>
+            this.forward(inputs as SignatureInput<TSignature>, {
+                ...options,
+                signal: controller.signal,
+            })
+        ).then(
+            (result) => {
+                settled = true;
+                prediction = result;
+                channel.end();
+            },
+            (error: unknown) => {
+                settled = true;
+                channel.end({ error });
             }
+        );
+
+        try {
+            let lastSnapshot = '';
+            for (;;) {
+                const next = await channel.next();
+                if (next.done) break;
+                lastSnapshot = snapshotKey(next.value);
+                yield next.value;
+            }
+
+            // Validation coerces, so the final output usually differs from the
+            // last partial one; when it does not, one yield stands for both.
+            const final = prediction!.toObject() as PartialOutput<TOutput>;
+            if (snapshotKey(final) !== lastSnapshot) {
+                yield final;
+            }
+            return prediction!;
+        } finally {
+            // Abort before releasing the producer, so the read it resumes into
+            // sees the cancellation instead of pulling another chunk.
+            if (!settled) controller.abort(consumerGoneReason());
+            channel.cancel();
+            await task;
+            userSignal?.removeEventListener('abort', onAbort);
         }
-
-        throwIfAborted(options?.signal);
-
-        const parsed = adapter.parseOutputs(signature, buffer);
-
-        // Validation coerces, so the final snapshot usually differs from the last
-        // partial one; when it does not, one yield stands for both.
-        const final = { ...parsed };
-        if (snapshotKey(final) !== lastSnapshot) {
-            yield final as PartialOutput<TOutput>;
-        }
-        return new Prediction(parsed) as Prediction<TOutput> & TOutput;
     }
 
     /**
@@ -411,18 +521,19 @@ export class Predict<
      * however the loop ends — consumer `break`, abort, or error.
      */
     private async *streamChunks(
+        lm: ILanguageModel,
         messages: ChatMessage[],
-        options?: StreamOptions
+        input: AdapterCallInput,
+        signal?: AbortSignal
     ): AsyncGenerator<string, void, void> {
-        const signal = options?.signal;
-        const lm = this.resolveLM(options);
-        const callOptions = providerOptions(options);
+        const callOptions = providerOptions(input.options);
         const call = startLMCall({
             lm,
             method: 'chatStream',
             traceText: renderTranscript(messages),
             messages,
             options: callOptions,
+            span: input.span,
             moduleId: this.moduleId,
         });
         const stream = call
@@ -514,6 +625,22 @@ function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
             signal.removeEventListener('abort', onAbort);
         });
     });
+}
+
+/** Report a finished prediction to every listener. Listeners observe; they cannot fail it. */
+function notifyComplete(
+    listeners: readonly StreamListener[],
+    predictor: object,
+    invocation: object,
+    outputs: Record<string, any>
+): void {
+    for (const listener of listeners) {
+        try {
+            listener.onComplete?.({ predictor, invocation, outputs: { ...outputs } });
+        } catch {
+            // Deliberately swallowed.
+        }
+    }
 }
 
 /** A key for comparing two snapshots, insensitive to the order fields arrived in. */

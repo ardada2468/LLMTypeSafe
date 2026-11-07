@@ -744,3 +744,244 @@ describe('cache scoping', () => {
         ).not.toBe(scopeOf(new AnthropicLM({ apiKey: 'k', baseURL: 'https://b.example' })));
     });
 });
+
+describe('AnthropicLM thinking', () => {
+    it('sends a fixed budget, drops sampling, and keeps max_tokens above the budget', async () => {
+        mocks.create.mockResolvedValue(message('ok'));
+        await new AnthropicLM({ apiKey: 'k', model: 'claude-haiku-4-5' }).generate('Q', {
+            temperature: 0.2,
+            topP: 0.9,
+            maxTokens: 2000,
+            stopSequences: ['END'],
+            providerOptions: { anthropic: { thinking: { budgetTokens: 4096 } } },
+        });
+
+        const body = mocks.create.mock.calls[0][0];
+        expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 4096 });
+        expect(body.max_tokens).toBeGreaterThan(4096);
+        expect(body).not.toHaveProperty('temperature');
+        expect(body).not.toHaveProperty('top_p');
+        expect(body.stop_sequences).toEqual(['END']);
+    });
+
+    it('keeps a max_tokens that already exceeds the budget', async () => {
+        mocks.create.mockResolvedValue(message('ok'));
+        await new AnthropicLM({ apiKey: 'k', thinking: { budgetTokens: 2048 } }).generate('Q');
+        const body = mocks.create.mock.calls[0][0];
+        expect(body.max_tokens).toBe(DEFAULT_MAX_TOKENS);
+        expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 2048 });
+    });
+
+    it('sends adaptive thinking when no budget is given', async () => {
+        mocks.create.mockResolvedValue(message('ok'));
+        await new AnthropicLM({ apiKey: 'k', thinking: { display: 'summarized' } }).generate(
+            'Q'
+        );
+        expect(mocks.create.mock.calls[0][0].thinking).toEqual({
+            type: 'adaptive',
+            display: 'summarized',
+        });
+    });
+
+    it('lets a call disable thinking and restores sampling', async () => {
+        mocks.create.mockResolvedValue(message('ok'));
+        await new AnthropicLM({ apiKey: 'k', thinking: {} }).generate('Q', {
+            temperature: 0.3,
+            providerOptions: { anthropic: { thinking: false } },
+        });
+        const body = mocks.create.mock.calls[0][0];
+        expect(body.thinking).toEqual({ type: 'disabled' });
+        expect(body.temperature).toBe(0.3);
+    });
+
+    it('passes a raw thinking config through unchanged', async () => {
+        mocks.create.mockResolvedValue(message('ok'));
+        await new AnthropicLM({ apiKey: 'k' }).generate('Q', {
+            providerOptions: {
+                anthropic: { thinking: { type: 'adaptive', display: 'omitted' } },
+            },
+        });
+        expect(mocks.create.mock.calls[0][0].thinking).toEqual({
+            type: 'adaptive',
+            display: 'omitted',
+        });
+    });
+
+    it('omits thinking entirely by default', async () => {
+        mocks.create.mockResolvedValue(message('ok'));
+        await new AnthropicLM({ apiKey: 'k' }).generate('Q', { temperature: 0.5 });
+        const body = mocks.create.mock.calls[0][0];
+        expect(body).not.toHaveProperty('thinking');
+        expect(body.temperature).toBe(0.5);
+    });
+
+    it('merges effort into output_config alongside a structured format', async () => {
+        mocks.create.mockResolvedValue(message('{"a":1}'));
+        await new AnthropicLM({ apiKey: 'k', effort: 'low' }).generateStructured(
+            'Q',
+            { type: 'object' },
+            { providerOptions: { anthropic: { metadata: { user_id: 'u1' } } } }
+        );
+        const body = mocks.create.mock.calls[0][0];
+        expect(body.output_config).toEqual({
+            effort: 'low',
+            format: { type: 'json_schema', schema: { type: 'object' } },
+        });
+        expect(body.metadata).toEqual({ user_id: 'u1' });
+        expect(body).not.toHaveProperty('effort');
+    });
+
+    it('returns thinking as reasoning, never as content', async () => {
+        mocks.create.mockResolvedValue({
+            content: [
+                { type: 'thinking', thinking: 'Let me think. ', signature: 's' },
+                { type: 'redacted_thinking', data: 'x' },
+                { type: 'thinking', thinking: 'Done.', signature: 's' },
+                { type: 'text', text: 'Answer' },
+            ],
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 1, output_tokens: 2 },
+        });
+
+        const result = await new AnthropicLM({ apiKey: 'k' }).chatWithTools([
+            { role: 'user', content: 'Q' },
+        ]);
+        expect(result.content).toBe('Answer');
+        expect(result.reasoning).toBe('Let me think. Done.');
+    });
+
+    it('streams thinking deltas in metadata and the full reasoning at the end', async () => {
+        mocks.stream.mockReturnValue({
+            async *[Symbol.asyncIterator]() {
+                yield {
+                    type: 'content_block_delta',
+                    index: 0,
+                    delta: { type: 'thinking_delta', thinking: 'hmm' },
+                };
+                yield {
+                    type: 'content_block_delta',
+                    index: 1,
+                    delta: { type: 'text_delta', text: 'Hi' },
+                };
+            },
+            finalMessage: async () => ({
+                content: [
+                    { type: 'thinking', thinking: 'hmm', signature: 's' },
+                    { type: 'text', text: 'Hi' },
+                ],
+                stop_reason: 'end_turn',
+                usage: { input_tokens: 1, output_tokens: 2 },
+            }),
+        });
+
+        const chunks = [];
+        for await (const chunk of new AnthropicLM({ apiKey: 'k', thinking: {} }).generateStream(
+            'Q'
+        )) {
+            chunks.push(chunk);
+        }
+
+        expect(chunks[0]).toEqual({
+            content: '',
+            done: false,
+            metadata: { reasoningDelta: 'hmm' },
+        });
+        expect(chunks[1]).toEqual({ content: 'Hi', done: false });
+        expect(chunks.at(-1)?.metadata).toEqual({ reasoning: 'hmm' });
+        expect(mocks.stream.mock.calls[0][0].thinking).toEqual({ type: 'adaptive' });
+    });
+});
+
+describe('AnthropicLM prompt caching', () => {
+    it('marks the system prompt with an ephemeral cache breakpoint', async () => {
+        mocks.create.mockResolvedValue(message('ok'));
+        await new AnthropicLM({ apiKey: 'k', cachePrompt: true }).chat([
+            { role: 'system', content: 'Be terse.' },
+            { role: 'user', content: 'Q' },
+        ]);
+
+        const body = mocks.create.mock.calls[0][0];
+        expect(body.system).toEqual([
+            { type: 'text', text: 'Be terse.', cache_control: { type: 'ephemeral' } },
+        ]);
+        // A single user turn is not worth a cache write.
+        expect(body.messages).toEqual([{ role: 'user', content: 'Q' }]);
+    });
+
+    it('also marks the turn before the last in a conversation', async () => {
+        mocks.create.mockResolvedValue(message('ok'));
+        const messages = [
+            { role: 'system' as const, content: 'S' },
+            { role: 'user' as const, content: 'demo question' },
+            { role: 'assistant' as const, content: 'demo answer' },
+            { role: 'user' as const, content: 'real question' },
+        ];
+        await new AnthropicLM({ apiKey: 'k' }).chat(messages, {
+            providerOptions: { anthropic: { cachePrompt: true } },
+        });
+
+        const body = mocks.create.mock.calls[0][0];
+        expect(body.messages).toEqual([
+            { role: 'user', content: 'demo question' },
+            {
+                role: 'assistant',
+                content: [
+                    { type: 'text', text: 'demo answer', cache_control: { type: 'ephemeral' } },
+                ],
+            },
+            { role: 'user', content: 'real question' },
+        ]);
+        expect(messages[2].content).toBe('demo answer');
+    });
+
+    it('sends a plain system string when caching is off', async () => {
+        mocks.create.mockResolvedValue(message('ok'));
+        await new AnthropicLM({ apiKey: 'k' }).chat([
+            { role: 'system', content: 'S' },
+            { role: 'user', content: 'Q' },
+        ]);
+        expect(mocks.create.mock.calls[0][0].system).toBe('S');
+    });
+});
+
+describe('AnthropicLM cached and reasoning tokens', () => {
+    const usage = {
+        input_tokens: 10,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 300,
+        output_tokens: 50,
+        output_tokens_details: { thinking_tokens: 35 },
+    };
+
+    it('counts cache reads and writes in the prompt and reports both breakdowns', async () => {
+        mocks.create.mockResolvedValue(message('ok', { usage }));
+        const lm = new AnthropicLM({ apiKey: 'k' });
+        await lm.generate('Q');
+
+        expect(lm.getUsage()).toMatchObject({
+            promptTokens: 330,
+            completionTokens: 50,
+            cachedTokens: 300,
+            reasoningTokens: 35,
+        });
+    });
+
+    it('reports them on a stream', async () => {
+        mocks.stream.mockReturnValue({
+            async *[Symbol.asyncIterator]() {},
+            finalMessage: async () => message('ok', { usage }),
+        });
+        const lm = new AnthropicLM({ apiKey: 'k' });
+        const chunks = [];
+        for await (const chunk of lm.generateStream('Q')) chunks.push(chunk);
+
+        expect(chunks.at(-1)?.usage).toEqual({
+            promptTokens: 330,
+            completionTokens: 50,
+            totalTokens: 380,
+            cachedTokens: 300,
+            reasoningTokens: 35,
+        });
+        expect(lm.getUsage()).toMatchObject({ cachedTokens: 300, reasoningTokens: 35 });
+    });
+});
