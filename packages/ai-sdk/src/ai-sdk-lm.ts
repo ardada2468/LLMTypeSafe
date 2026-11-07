@@ -27,7 +27,7 @@ import {
     streamText,
     tool,
     type FinishReason as AIFinishReason,
-    type ImagePart,
+    type FilePart,
     type LanguageModel,
     type LanguageModelUsage,
     type ModelMessage,
@@ -136,6 +136,16 @@ export class AISDKLM extends BaseLM {
         };
     }
 
+    /**
+     * A per-call `model` is ignored for a model object (see `modelFor`), so it
+     * must not name the usage key either: `BaseLM` reports cache hits under
+     * the call's `model`, which would otherwise attribute them to a model
+     * that never ran.
+     */
+    protected usageKey(model?: string): string {
+        return super.usageKey(typeof this.languageModel === 'string' ? model : undefined);
+    }
+
     async chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string> {
         return (await this.chatWithTools(messages, options)).content;
     }
@@ -188,20 +198,36 @@ export class AISDKLM extends BaseLM {
             // A truncated reply is the one schema failure with a clear
             // remedy, so it gets a message saying what it is.
             if (NoObjectGeneratedError.isInstance(error) && error.finishReason === 'length') {
-                throw new LMError(
-                    this.provider,
-                    'Structured response was truncated; raise maxTokens.',
-                    {
-                        cause: error,
-                    }
-                );
+                throw this.truncated(error);
             }
             throw toLMError(error, this.provider);
         }
 
         this.recordCompletion(result.totalUsage, startedAt, options);
         this.assertNotFiltered(result.finishReason);
-        return result.output as T;
+
+        // `output` is a getter that throws `NoOutputGeneratedError` when the
+        // AI SDK never parsed one — a reply cut off before any text arrived,
+        // or one that ended for a reason other than `stop` with no text. That
+        // happens after `generateText` resolved, so it must be caught here
+        // too, or a raw AI SDK error escapes core's LMError taxonomy.
+        try {
+            return result.output as T;
+        } catch (error) {
+            this.recordError();
+            if (result.finishReason === 'length') throw this.truncated(error);
+            throw toLMError(error, this.provider);
+        }
+    }
+
+    private truncated(cause: unknown): LMError {
+        return new LMError(
+            this.provider,
+            'Structured response was truncated; raise maxTokens.',
+            {
+                cause,
+            }
+        );
     }
 
     async *generateStream(
@@ -445,27 +471,29 @@ function toPrompt(messages: ChatMessage[]) {
     return toAISDKPrompt(messages);
 }
 
-function toUserContent(content: ChatMessage['content']): string | Array<TextPart | ImagePart> {
+function toUserContent(content: ChatMessage['content']): string | Array<TextPart | FilePart> {
     if (typeof content === 'string') return content;
     return content.map((part) =>
         part.type === 'text' ? { type: 'text', text: part.text } : toImagePart(part)
     );
 }
 
-function toImagePart(part: ImageContentPart): ImagePart {
+/**
+ * Images go as `file` parts: AI SDK 7 deprecates the `image` part, and using
+ * it makes the SDK print a deprecation warning on every call. A URL whose
+ * media type is unknown is sent as the top-level `image` type, which the SDK
+ * resolves per provider.
+ */
+function toImagePart(part: ImageContentPart): FilePart {
     const source = part.source;
     if (source.kind === 'base64') {
-        return { type: 'image', image: source.data, mediaType: source.mediaType };
+        return { type: 'file', data: source.data, mediaType: source.mediaType };
     }
     const dataUri = /^data:([^;,]+)(?:;[^,]*)?;base64,(.*)$/s.exec(source.url);
     if (dataUri) {
-        return { type: 'image', image: dataUri[2], mediaType: source.mediaType ?? dataUri[1] };
+        return { type: 'file', data: dataUri[2], mediaType: source.mediaType ?? dataUri[1] };
     }
-    return {
-        type: 'image',
-        image: new URL(source.url),
-        ...(source.mediaType ? { mediaType: source.mediaType } : {}),
-    };
+    return { type: 'file', data: new URL(source.url), mediaType: source.mediaType ?? 'image' };
 }
 
 /** Declare tools without `execute`, so the AI SDK returns the calls instead of running them. */

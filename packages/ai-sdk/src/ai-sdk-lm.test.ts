@@ -11,6 +11,7 @@ import {
     ReAct,
     TimeoutError,
     Tool,
+    configure,
     type ChatMessage,
 } from '@ts-dspy/core';
 import { z } from 'zod';
@@ -116,6 +117,9 @@ describe('AISDKLM', () => {
             doGenerate: [textResult('A cat.')],
         });
         const lm = new AISDKLM({ model });
+        // AI SDK 7 deprecates the `image` prompt part and warns on every use;
+        // images must go as `file` parts so a library never prints that.
+        const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
 
         await lm.chat([
             {
@@ -149,6 +153,12 @@ describe('AISDKLM', () => {
         expect(JSON.stringify(content[1].data)).toContain('https://example.com/cat.png');
         expect(content[2].mediaType).toBe('image/jpeg');
         expect(content[3].mediaType).toBe('image/png');
+
+        const deprecations = warn.mock.calls.filter((call) =>
+            JSON.stringify(call).includes('image')
+        );
+        warn.mockRestore();
+        expect(deprecations).toEqual([]);
     });
 
     it('declares tools without execute and returns the calls', async () => {
@@ -264,6 +274,45 @@ describe('AISDKLM', () => {
             /truncated/
         );
         expect(lm.getUsage().errorCount).toBe(1);
+    });
+
+    it('reports a structured reply truncated before any text as an LMError', async () => {
+        // No text at all: the AI SDK resolves `generateText` and only throws
+        // NoOutputGeneratedError when `output` is read.
+        const lm = new AISDKLM({
+            model: mockModel([
+                {
+                    content: [],
+                    finishReason: { unified: 'length', raw: 'length' },
+                    usage: usage(10, 0),
+                    warnings: [],
+                },
+            ]),
+        });
+        const error: Error = await lm
+            .generateStructured<Error>('q', { type: 'object' })
+            .catch((e: Error) => e);
+        expect(error).toBeInstanceOf(LMError);
+        expect(error.message).toMatch(/truncated/);
+        expect(lm.getUsage().errorCount).toBe(1);
+    });
+
+    it('reports a structured reply with no output for another reason as an LMError', async () => {
+        const lm = new AISDKLM({
+            model: mockModel([
+                {
+                    content: [],
+                    finishReason: { unified: 'other', raw: 'unknown' },
+                    usage: usage(10, 0),
+                    warnings: [],
+                },
+            ]),
+        });
+        const error: Error = await lm
+            .generateStructured<Error>('q', { type: 'object' })
+            .catch((e: Error) => e);
+        expect(error).toBeInstanceOf(LMError);
+        expect(error.message).not.toMatch(/truncated/);
     });
 
     it('drives Predict with native structured output', async () => {
@@ -514,6 +563,25 @@ describe('AISDKLM', () => {
         expect(call.maxOutputTokens).toBe(256);
         expect(call.headers).toMatchObject({ 'x-test': '1' });
         expect(call.providerOptions).toEqual({ openai: { reasoningEffort: 'low' } });
+    });
+
+    it('attributes usage and cache hits to the bound model when a per-call model is ignored', async () => {
+        configure({ trackUsage: true, cache: true });
+        try {
+            const model = mockModel([textResult('{"answer":"A"}')]);
+            const predict = new Predict('question -> answer', new AISDKLM({ model }));
+
+            const first = await predict.forward({ question: 'Q' }, { model: 'other-model' });
+            const second = await predict.forward({ question: 'Q' }, { model: 'other-model' });
+
+            expect(model.doGenerateCalls).toHaveLength(1);
+            expect(Object.keys(first.getLMUsage())).toEqual(['openai/gpt-test']);
+            expect(second.getLMUsage()).toEqual({
+                'openai/gpt-test': expect.objectContaining({ cacheHits: 1, requestCount: 0 }),
+            });
+        } finally {
+            configure({ cache: false, trackUsage: false });
+        }
     });
 
     it('toLMError passes LMErrors through and wraps anything else', () => {
