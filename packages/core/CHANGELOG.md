@@ -1,5 +1,78 @@
 # @ts-dspy/core
 
+## 0.7.0
+
+### Minor Changes
+
+- a026be5: Adapters and signature types:
+
+  - **Adapters**: `ChatAdapter` (DSPy's `[[ ## field ## ]]` format, falling back to JSON when a reply ignores it), `JSONAdapter` (native structured output when available), `XMLAdapter` and `TwoStepAdapter({ extractionLM })`, on an `Adapter` base class with `format`/`parse`/`parsePartial`/`call`. Chosen per call (`options.adapter`), per module (`new Predict(sig, { adapter })`), per scope or globally; the default is `JSONAdapter` for structured-output models and `ChatAdapter` otherwise. `Predict.forward` and `Predict.stream` go through the adapter; demos and history are real user/assistant turns, and a repair is an assistant turn plus a corrective user turn. `onAdapterFormat`/`onAdapterParse` callbacks fire.
+  - **ChainOfThought is one call (breaking)**: the signature gains a leading `reasoning` output; `reasoning` streams like any other field.
+  - **`ReAct` (breaking)**: `RespAct` is renamed `ReAct` (the old name remains as a deprecated alias) and rebuilt after DSPy: `react` step predictor over inputs + `trajectory` → `next_thought`/`next_tool_name`/`next_tool_args`, then a `ChainOfThought` `extract` step. Works with any signature, not just `question`. Running out of `maxSteps` extracts from the trajectory instead of throwing `MaxStepsError`. Results carry `reasoning`, `trajectory` and `steps`.
+  - **Signature types**: `History` inputs (`type: 'history'`, zod `history()`, string `history: history`); zod `image()`; optional outputs resolve to `undefined` or their zod default; string signatures take quoted descriptions and `name?:` optional markers; `signature('q -> a', 'instructions')`; `extendSignature()` and `toSignatureClass()`.
+  - **Removed (breaking)**: `buildPrompt`, `buildPromptContent`, `renderDemos` and their option types (prompts belong to adapters), and `buildRepairObservation` (replaced by `buildRepairInstruction`).
+
+- a016219: New modules, retrieval and program streaming, after DSPy 3:
+
+  - **`BestOfN(module, { n, rewardFn, threshold, failCount?, temperature? })`**: runs a deep copy of the module up to `n` times, each rollout's calls stamped with `temperature` (default 1.0) and a distinct `metadata.rolloutId` — through the module's own models, the scope's model and `options.lm`, so it works through hand-written `forward` methods. Returns the first prediction reaching `threshold`, else the best (a NaN reward ranks lowest); tolerates `failCount` failures, and an abort stops it at once. Nested rollouts compose their ids (`"1/0"`), so an inner `BestOfN` still samples afresh.
+  - **`Refine`**: `BestOfN` plus, after each failed attempt, an `OfferFeedback` call whose per-predictor advice reaches the next attempt as a `hint_` input. Hints travel in an async-local scope, and the feedback predictor is invisible to `namedPredictors()`/`dumpState()`.
+  - **`Parallel({ concurrency, maxErrors, returnFailed, signal })`** with `.run([[module, inputs, options?], …])`, results in input order.
+  - **`MultiChainComparison(signature, { m = 3 })`**: compares `m` reasoning attempts (`completions`) and produces a `rationale` plus the outputs.
+  - **`ProgramOfThought(signature, { maxIters = 3, timeoutMs })`** _(experimental)_: the model writes JavaScript, run in a fresh `node:vm` context with its own microtask queue under the timeout and no host functions exposed (loaded lazily; still not a security boundary) with errors fed back for regeneration. `runSandboxed` and `extractCode` are exported.
+  - **Retrieval**: `Retriever` and `Passage` types, `InMemoryVectorStore` over any `Embedder`, a `Retrieve` module returning `{ passages }`, and `configure({ retriever })` / `settings.context({ retriever })`.
+  - **`streamify(program, { statusMessageProvider?, includeFinal? })`**: runs any program as an async stream of `status`, per-predictor `field` (with deltas) and `prediction` events. Every `Predict` streams while a streamified program is listening, with back-pressure; breaking out aborts the run and closes provider streams.
+  - **`Predict.stream` is now `forward` with a stream listener**: it emits module callbacks, records trace entries, attributes usage, passes the trace span to the LM call and honours `repairAttempts` — previously it did none of these.
+  - **Cache keys** include `options.metadata.rolloutId` when it is set; keys without one are unchanged.
+  - `Adapter.completeFrom(lm, messages, completion, input)` finishes a prediction whose first reply arrived some other way (parse, validate, repair).
+
+- fbc1ea8: Runtime foundations:
+
+  - **Scoped settings**: `settings.context(overrides, fn)` / `withSettings`, backed by `AsyncLocalStorage`, so concurrent requests can use different models, caches, callbacks and adapters.
+  - **Lazy LM resolution (breaking)**: modules resolve their model at call time (`options.lm` → module → context → global) and can be constructed before `configure()`.
+  - **Composition and persistence**: `namedSubModules()`, `namedPredictors()`, `deepCopy()`, `resetCopy()`, `dumpState()`/`loadState()`, `save()`/`load()`; `Predict` gains optimizable `instructions`.
+  - **Callbacks**: module, LM, tool and adapter start/end events with correct parent ids under concurrency. Trace entries gain `id`/`parentId`.
+  - **Exact per-call usage**: `Prediction.getLMUsage()`, `trackUsage`, optional `pricing` for `totalCost`, and `cachedTokens`/`reasoningTokens` in `UsageStats`. Trace and evaluation usage no longer diff shared counters.
+  - **LM middleware**: `wrapLM(lm, retry(), fallback([...]), defaults({...}), rateLimit({...}))`. Gemini now retries through the shared backoff helper.
+  - **Contracts**: `Tool` (accepted by `RespAct`), `Embedder` + `cosineSimilarity`, and an experimental `Adapter` interface.
+
+- fa3b16b: Documentation for 0.7: a [migration guide](https://github.com/ardada2468/LLMTypeSafe/blob/main/MIGRATION.md) covering every breaking change from 0.6 (single-call `ChainOfThought`, `RespAct` → `ReAct`, adapter-built prompts and the removed `buildPrompt`/`buildPromptContent`/`renderDemos`/`buildRepairObservation`, `Predict` over `chat`, lazy model resolution and `resolveLM`, the unified `Metric`, `Example`/`Prediction` proxies, tracing internals, `evaluate`'s ignored `lm` option, Anthropic/Gemini token counts, and string-signature validation), a rewritten `@ts-dspy/core` README, and new examples for composition and save/load, RAG with `KNNFewShot`, `MIPROv2`, `GEPA`, `Refine`, `streamify`, MCP, OpenTelemetry and the AI SDK.
+- 0b048b1: Bug fixes and test infrastructure:
+
+  - Object and array inputs now render as JSON in prompts for decorator-class and string signatures (previously `[object Object]`).
+  - `parseStringSignature` throws a `TsDspyError` for malformed signatures (missing or repeated `->`, empty sides, empty or duplicate field names).
+  - `RespAct` throws the new `MaxStepsError` when it runs out of steps, and nudges the model back to the format when a reply has neither an Action nor a Final Answer.
+  - `Example` and `Prediction` store their data behind a Proxy, so fields named `get`, `toObject` or `trace` no longer shadow methods. Both gain `toJSON()`.
+  - `Metric`/`MetricResult` are defined once (`MetricScore` is a deprecated alias); the duplicate `mapWithConcurrency` and the dead `ISignature` type are removed.
+  - `evaluate` throws up front when no example designates input keys and no `inputKeys` option is given.
+
+- df12e87: Three new integration packages:
+
+  - **`@ts-dspy/mcp`** (Model Context Protocol, on `@modelcontextprotocol/sdk`): `mcpTools(client, { include, exclude, prefix })` turns an MCP server's tools into core `Tool`s for `ReAct` — JSON Schema passed through unchanged, text content joined, non-text content described, `isError` thrown as `McpToolError` so the model sees the server's message. `connectMcp({ command, args, env, cwd })` / `connectMcp({ url, headers })` opens a stdio or Streamable HTTP client. `serveProgram(program, { name, version, toolName, description, signature })` returns an `McpServer` exposing a program as a tool whose input schema is derived from the signature's input fields and whose result is the prediction as JSON text.
+  - **`@ts-dspy/otel`** (OpenTelemetry): `OpenTelemetryCallback` creates `ts-dspy.module <Class>`, `chat <model>` and `execute_tool <name>` spans with GenAI semantic-convention attributes (`gen_ai.operation.name`, `gen_ai.provider.name`/`gen_ai.system`, `gen_ai.request.*`, `gen_ai.usage.*`, `gen_ai.response.finish_reasons`, `gen_ai.tool.name`), parented through ts-dspy's `parentCallId` so the hierarchy is correct under concurrency. Errors are recorded with `recordException`, `error.type` and an `ERROR` status. Prompt/completion capture is opt-in (`captureContent`). `instrument()` / `uninstrument()` register it globally.
+  - **`@ts-dspy/ai-sdk`** (Vercel AI SDK 7): `AISDKLM` wraps any AI SDK `LanguageModel` as a core `BaseLM` — chat with image parts, `chatStream`, `chatWithTools` (tools declared without `execute`, calls returned to ts-dspy), `generateStructured` via `Output.object` + `jsonSchema()`, cached/reasoning token usage, `signal`/`timeout`/`retries`, configurable capabilities, and `APICallError`/`RetryError` mapped onto core's `LMError` subclasses.
+
+- a455632: Optimizers, after DSPy 3.x. Every optimizer works on predictor paths (`namedPredictors()`), returns a compiled copy without touching the student, takes `{ seed, concurrency, onProgress }`, and exposes what it did for inspection (`results` / `detailedResults`, also attached to the returned program as a non-enumerable property).
+
+  - **`BootstrapFewShotWithRandomSearch`**: zero-shot, labelled-only, unshuffled and seeded shuffled bootstrap candidates, scored on the valset; returns the best with `candidatePrograms` (scores and states) attached.
+  - **`KNNFewShot`**: a `KNNProgram` wrapper that picks the `k` training examples nearest each call's inputs (any `Embedder`, cosine similarity) as demos, optionally bootstrapping them first.
+  - **`Ensemble`** and **`majority()`**: run several programs (or a seeded sample of `size`) and reduce their predictions, by default with a majority vote over the output fields.
+  - **`COPRO`**: per-predictor instruction search, `breadth` proposals over `depth` rounds, each round conditioned on earlier attempts and their scores.
+  - **`MIPROv2`**: bootstrapped demo-set candidates and grounded instruction proposals (LM dataset summary, program description, demos, a random tip) per predictor, searched with a seeded TPE sampler (`TPESampler`, pure TypeScript) over minibatches with periodic full evaluations; `auto: 'light' | 'medium' | 'heavy'` presets.
+  - **`SIMBA`**: stochastic mini-batch ascent — runs at a spread of temperatures, finds high-variability examples, and improves by appending a demo from a successful trajectory or a self-reflective rule to the instructions.
+  - **`GEPA`**: reflective prompt evolution — Pareto-front candidate selection over per-example valset scores, round-robin predictor reflection on train minibatches with metric feedback, merges of frontier candidates sharing an ancestor, metric-call budgets (`auto`, `maxMetricCalls`, `maxFullEvals`), checkpoint/resume through `logDir`, and `detailedResults` with candidates, scores, the Pareto front and lineage.
+  - **`BootstrapFewShot` assigns demos per predictor**: a `Module` student is traced and each predictor gets demos of its own inputs and outputs from passing runs (identical behaviour for a single `Predict`); a teacher now replaces the model on every predictor. Structural `DemoModule` students keep the previous behaviour.
+  - **Metrics may return `{ score, feedback }`** and receive `(example, prediction, trace?, predName?, predTrace?)`. `evaluate` reads the score and keeps `feedback` on each result; `metricScore()`/`metricFeedback()` normalise any result.
+  - Shared helpers: `evaluateProgram`, `runWithTrace`, `bootstrapTraces`, `proposeInstructions`, `summarizeDataset`, `describeProgram`, `sampleMinibatch`, plus `createRng`/`shuffled`. `Predict.getSignature()` returns the signature a predictor sends.
+
+- d805fc8: Provider upgrades:
+
+  - **Reasoning controls**: OpenAI `reasoningEffort`, Anthropic `thinking` (adaptive or budgeted) and `effort`, Gemini `thinking` (`thinkingConfig`). Reasoning text is surfaced as `ChatResult.reasoning` and as `metadata.reasoningDelta` on stream chunks.
+  - **`providerOptions`** on `LLMCallOptions`: per-call, provider-keyed options deep-merged into the raw request.
+  - **Prompt caching**: Anthropic `cachePrompt` marks the system prompt and conversation prefix as cache breakpoints.
+  - **Usage**: `cachedTokens` and `reasoningTokens` are reported for all three providers, streaming and non-streaming. Anthropic `promptTokens` now includes cache reads/writes; Gemini `completionTokens` now includes thought tokens.
+  - **Embeddings**: `OpenAIEmbedder` and `GeminiEmbedder` implement core's `Embedder`.
+  - Consistent exports across providers and expanded READMEs.
+
 ## 0.6.0
 
 ### Minor Changes

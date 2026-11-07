@@ -1,6 +1,6 @@
 {
   "name": "@ts-dspy/mcp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Model Context Protocol integration for TS-DSPy - use MCP server tools in ReAct and serve ts-dspy programs as MCP tools",
   "type": "module",
   "sideEffects": false,
@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@ts-dspy/core": "^0.6.0",
+    "@ts-dspy/core": "^0.7.0",
     "zod": "^4.1.13"
   },
   "keywords": [

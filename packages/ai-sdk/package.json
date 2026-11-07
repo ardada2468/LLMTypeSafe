@@ -1,6 +1,6 @@
 {
   "name": "@ts-dspy/ai-sdk",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Vercel AI SDK provider for TS-DSPy - run ts-dspy programs on any AI SDK language model",
   "type": "module",
   "sideEffects": false,
@@ -34,7 +34,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@ts-dspy/core": "^0.6.0"
+    "@ts-dspy/core": "^0.7.0"
   },
   "keywords": [
     "ai",
