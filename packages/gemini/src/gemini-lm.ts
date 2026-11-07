@@ -4,6 +4,7 @@ import {
     LMError,
     classify,
     contentToText,
+    retryWithBackoff,
     imageMediaType,
     normalizeImageSource,
     type ChatMessage,
@@ -99,6 +100,9 @@ const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 504]);
 
 /** First backoff step; doubles per attempt. */
 const RETRY_BASE_DELAY_MS = 250;
+
+/** Ceiling on a single backoff step. */
+const RETRY_MAX_DELAY_MS = 8_000;
 
 export class GeminiLM extends BaseLM {
     private readonly client: GoogleGenAI;
@@ -370,29 +374,29 @@ export class GeminiLM extends BaseLM {
      * The Gemini SDK reads its retry policy from client-level options only, so a
      * per-call `retries` cannot be expressed through it — and its own retry
      * wrapper replaces API errors with generic ones, losing the status code, and
-     * keeps retrying after an abort. The loop therefore lives here, which gives
+     * keeps retrying after an abort. Retrying is therefore done here, with
+     * core's `retryWithBackoff` (exponential backoff with jitter), which gives
      * `retries` the same meaning it has on the OpenAI and Anthropic providers.
+     * For a policy of your own, set `maxRetries: 0` and wrap the model with
+     * `wrapLM(gemini, retry({ ... }))`.
      */
     private async withRetries<T>(
         options: LLMCallOptions | undefined,
         attempt: () => Promise<T>
     ): Promise<T> {
-        const retries = options?.retries ?? this.maxRetries;
-        const signal = options?.signal;
-
-        for (let n = 0; ; n++) {
-            // Unlike the OpenAI and Anthropic SDKs, Gemini's client attaches the
-            // caller's signal with an `abort` listener, which never fires for a
-            // signal that aborted before the call. Check it ourselves so an
-            // already-cancelled request costs nothing.
-            signal?.throwIfAborted();
-            try {
-                return await attempt();
-            } catch (error) {
-                if (n >= retries || !isRetryable(error)) throw error;
-                await delay(RETRY_BASE_DELAY_MS * 2 ** n, signal);
-            }
-        }
+        // Unlike the OpenAI and Anthropic SDKs, Gemini's client attaches the
+        // caller's signal with an `abort` listener, which never fires for a
+        // signal that aborted before the call. The shared helper checks the
+        // signal before every attempt, so an already-cancelled request costs
+        // nothing, and cuts a pending backoff short when it aborts.
+        return retryWithBackoff(attempt, {
+            maxRetries: options?.retries ?? this.maxRetries,
+            initialDelayMs: RETRY_BASE_DELAY_MS,
+            maxDelayMs: RETRY_MAX_DELAY_MS,
+            signal: options?.signal,
+            // Raw SDK errors, not yet classified, so the policy is Gemini's own.
+            shouldRetry: isRetryable,
+        });
     }
 
     private recordUsageFrom(
@@ -640,25 +644,6 @@ function isRetryable(error: unknown): boolean {
     const status = statusOf(error);
     if (status !== undefined) return RETRYABLE_STATUS.has(status);
     return error instanceof TypeError;
-}
-
-/** Sleep, unless the caller cancels first. */
-function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
-    // An `abort` listener never fires for a signal that aborted earlier, so the
-    // sleep has to be short-circuited here rather than waited out.
-    if (signal?.aborted) return Promise.reject(signal.reason);
-
-    return new Promise((resolve, reject) => {
-        const onAbort = () => {
-            clearTimeout(timer);
-            reject(signal?.reason);
-        };
-        const timer = setTimeout(() => {
-            signal?.removeEventListener('abort', onAbort);
-            resolve();
-        }, ms);
-        signal?.addEventListener('abort', onAbort, { once: true });
-    });
 }
 
 /**

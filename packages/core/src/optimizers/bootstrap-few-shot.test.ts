@@ -261,18 +261,27 @@ describe('BootstrapFewShot', () => {
         expect(compiled.demos).toHaveLength(2);
     });
 
-    it('rejects a teacher when the module cannot swap its model', async () => {
-        const student: any = {
-            forward: async () => new Prediction({}),
-            withDemos: () => student,
+    // Changed in 0.7: a module without withLM() used to be rejected outright.
+    // Models now resolve at call time, so the teacher is applied through a
+    // settings scope instead, reaching every sub-module without its own model.
+    it('runs a module without withLM() inside a teacher-scoped context', async () => {
+        const teacher = new MockLM({ responses: ['answer: a0'] });
+        const inner = new Predict(QA);
+        const student = {
+            demos: [] as Example[],
+            forward: (inputs: Record<string, any>) => inner.forward(inputs),
+            withDemos(demos: Example[]) {
+                return { ...this, demos };
+            },
         };
 
-        await expect(
-            new BootstrapFewShot({ metric: exactMatch, teacher: new MockLM() }).compile(
-                student as any,
-                { trainset: trainset(1) }
-            )
-        ).rejects.toThrow(/withLM/);
+        const compiled = await new BootstrapFewShot({ metric: exactMatch, teacher }).compile(
+            student,
+            { trainset: trainset(1) }
+        );
+
+        expect(teacher.calls).toHaveLength(1);
+        expect(compiled.demos).toHaveLength(1);
     });
 
     it('runs at most `concurrency` attempts at a time', async () => {

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import type { z } from 'zod';
 import { BaseLM } from '../core/base-lm';
 import { Module } from '../core/module';
 import { type Prediction } from '../core/prediction';
@@ -17,6 +17,8 @@ import { getOutputFieldConfigs } from '../utils/schema';
 import { MaxStepsError, ValidationError } from '../core/errors';
 import { buildRepairObservation } from '../core/repair';
 import { type TraceSpan } from '../core/trace';
+import { Tool } from '../core/tool';
+import { invokeLM, providerOptions } from '../core/lm-call';
 
 export interface ToolFunction {
     (...args: any[]): Promise<any> | any;
@@ -42,18 +44,58 @@ export interface ToolWithDescription {
     parameters?: ToolParameterSchema;
 }
 
-export type ToolDefinition = ToolFunction | ToolWithDescription;
+export type ToolDefinition = ToolFunction | ToolWithDescription | Tool;
 
 /** A tool after normalisation, as stored on the agent. */
 interface NormalizedTool {
-    description: string;
-    function: ToolFunction;
-    /** JSON Schema advertised to the provider. Synthesised for untyped tools. */
-    parameters: Record<string, unknown>;
-    /** Present only when the caller declared a Zod schema. */
-    validator?: z.ZodType;
+    tool: Tool;
     /** False for tools kept on the historical single-string signature. */
     typed: boolean;
+}
+
+/**
+ * Convert any accepted tool form into a {@link Tool}.
+ *
+ * A bare function, or a description without `parameters`, keeps the
+ * historical calling convention — one string argument — so it becomes a Tool
+ * whose schema is a single `input` string and whose function unwraps it.
+ */
+function normalizeTool(name: string, definition: ToolDefinition): NormalizedTool {
+    if (definition instanceof Tool) {
+        return {
+            tool: definition.name === name ? definition : definition.withName(name),
+            typed: true,
+        };
+    }
+
+    const described: ToolWithDescription =
+        typeof definition === 'function'
+            ? { description: `Tool: ${name}`, function: definition }
+            : definition;
+    const declared = described.parameters;
+
+    if (declared === undefined) {
+        const fn = described.function;
+        return {
+            tool: new Tool({
+                name,
+                description: described.description,
+                parameters: untypedToolSchema(name),
+                fn: (args: { input: string }) => fn(args.input),
+            }),
+            typed: false,
+        };
+    }
+
+    return {
+        tool: new Tool({
+            name,
+            description: described.description,
+            parameters: declared,
+            fn: described.function,
+        }),
+        typed: true,
+    };
 }
 
 /** Schema advertised for a tool that did not declare one. */
@@ -68,14 +110,6 @@ function untypedToolSchema(name: string): Record<string, unknown> {
     };
 }
 
-function isZodSchema(value: unknown): value is z.ZodType {
-    return (
-        typeof value === 'object' &&
-        value !== null &&
-        typeof (value as { safeParse?: unknown }).safeParse === 'function'
-    );
-}
-
 /** Events emitted as the reasoning loop runs, for logging or debugging. */
 export type RespActEvent =
     | { type: 'thought'; step: number; text: string }
@@ -86,7 +120,12 @@ export type RespActEvent =
     | { type: 'parse_failed'; step: number; error: unknown };
 
 export interface RespActOptions {
-    tools: Record<string, ToolDefinition>;
+    /**
+     * The tools on offer: a record keyed by tool name (functions, described
+     * functions, or {@link Tool}s — the key wins over a Tool's own name), or
+     * an array of {@link Tool}s named by themselves.
+     */
+    tools: Record<string, ToolDefinition> | Tool[];
     maxSteps?: number;
     /** Language model to use. Defaults to the globally configured one. */
     lm?: ILanguageModel;
@@ -110,24 +149,11 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
         super(signature, options.lm);
 
         this.tools = {};
-        for (const [name, tool] of Object.entries(options.tools)) {
-            const described =
-                typeof tool === 'function'
-                    ? { description: `Tool: ${name}`, function: tool }
-                    : tool;
-            const declared = described.parameters;
-
-            this.tools[name] = {
-                description: described.description,
-                function: described.function,
-                typed: declared !== undefined,
-                validator: isZodSchema(declared) ? declared : undefined,
-                parameters: !declared
-                    ? untypedToolSchema(name)
-                    : isZodSchema(declared)
-                      ? (z.toJSONSchema(declared, { io: 'input' }) as Record<string, unknown>)
-                      : declared,
-            };
+        const entries: Array<[string, ToolDefinition]> = Array.isArray(options.tools)
+            ? options.tools.map((tool) => [tool.name, tool])
+            : Object.entries(options.tools);
+        for (const [name, tool] of entries) {
+            this.tools[name] = normalizeTool(name, tool);
         }
         this.maxSteps = options.maxSteps ?? 6;
         this.onEvent = options.onEvent;
@@ -141,11 +167,12 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
         Prediction<SignatureOutput<TSignature> & { steps: number }> &
             SignatureOutput<TSignature> & { steps: number }
     > {
-        const prediction = await this.traced(inputs, (span) =>
-            this.usesNativeTools()
-                ? this.nativeLoop(inputs, options, span)
-                : this.textLoop(inputs, options, span)
-        );
+        const prediction = await this.traced(inputs, (span) => {
+            const lm = this.resolveLM(options);
+            return this.usesNativeTools(lm)
+                ? this.nativeLoop(lm, inputs, options, span)
+                : this.textLoop(lm, inputs, options, span);
+        });
 
         return prediction as Prediction<SignatureOutput<TSignature> & { steps: number }> &
             SignatureOutput<TSignature> & { steps: number };
@@ -164,11 +191,10 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
      * — would otherwise take the native path, never see its tools, and answer
      * from the first reply without calling one.
      */
-    private usesNativeTools(): boolean {
+    private usesNativeTools(lm: ILanguageModel): boolean {
         if (this.forceTextMode) return false;
         if (Object.keys(this.tools).length === 0) return false;
-        const lm = this.lm as ILanguageModel | undefined;
-        if (!lm || typeof lm.chatWithTools !== 'function') return false;
+        if (typeof lm.chatWithTools !== 'function') return false;
         if (lm.chatWithTools === BaseLM.prototype.chatWithTools) return false;
         return lm.getCapabilities().supportsFunctionCalling === true;
     }
@@ -180,6 +206,7 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
      * tracing is on, so a trace holds each turn's prompt and reply.
      */
     private async nativeLoop(
+        lm: ILanguageModel,
         inputs: Record<string, any>,
         options: LLMCallOptions | undefined,
         span: TraceSpan | undefined
@@ -189,15 +216,30 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
             { role: 'user', content: this.questionOf(inputs) },
         ];
         const previousToolCalls = new Set<string>();
-        const callOptions: LLMCallOptions = { ...options, tools: this.toolSpecs() };
+        const callOptions: LLMCallOptions = {
+            ...providerOptions(options),
+            tools: this.toolSpecs(),
+        };
 
         for (let step = 0; step < this.maxSteps; step++) {
             const prompt = messages
                 .map((m) => `${m.role}: ${contentToText(m.content)}`)
                 .join('\n\n');
-            span?.startCall(prompt);
-            const result = await this.lm.chatWithTools!(messages, callOptions);
-            span?.endCall(result.content ?? '');
+            const result = await invokeLM(
+                {
+                    lm,
+                    method: 'chatWithTools',
+                    traceText: prompt,
+                    // A snapshot for callbacks: the loop keeps appending to
+                    // `messages`, which would rewrite the event after the fact.
+                    messages: [...messages],
+                    options: callOptions,
+                    span,
+                    moduleId: this.moduleId,
+                },
+                () => lm.chatWithTools!(messages, callOptions),
+                (reply) => reply.content ?? ''
+            );
             const text = result.content ?? '';
             if (text.trim().length > 0) {
                 this.emit({ type: 'thought', step, text });
@@ -291,11 +333,7 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
 
     /** The tool declarations sent to the provider on every native turn. */
     private toolSpecs(): ToolSpec[] {
-        return Object.entries(this.tools).map(([name, tool]) => ({
-            name,
-            description: tool.description,
-            parameters: tool.parameters,
-        }));
+        return Object.values(this.tools).map(({ tool }) => tool.toSpec());
     }
 
     // ------------------------------------------------------------------ text
@@ -305,18 +343,30 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
      * Every model call is reported to `span` when tracing is on.
      */
     private async textLoop(
+        lm: ILanguageModel,
         inputs: Record<string, any>,
         options: LLMCallOptions | undefined,
         span: TraceSpan | undefined
     ): Promise<Record<string, any>> {
         let conversation = this.buildInitialPrompt(inputs);
         const previousToolCalls = new Set<string>();
+        const callOptions = providerOptions(options);
 
         for (let step = 0; step < this.maxSteps; step++) {
             const prompt = conversation + '\n\nThought:';
-            span?.startCall(prompt);
-            const response = await this.lm.generate(prompt, options);
-            span?.endCall(response);
+            const response = await invokeLM(
+                {
+                    lm,
+                    method: 'generate',
+                    traceText: prompt,
+                    prompt,
+                    options: callOptions,
+                    span,
+                    moduleId: this.moduleId,
+                },
+                () => lm.generate(prompt, callOptions),
+                (text) => text
+            );
             conversation += `\n\nThought: ${response}`;
             this.emit({ type: 'thought', step, text: response });
 
@@ -426,7 +476,7 @@ export class RespAct<TSignature extends SignatureSource = typeof Signature> exte
 
     private buildInitialPrompt(inputs: Record<string, any>): string {
         const toolDescriptions = Object.entries(this.tools)
-            .map(([name, tool]) => `- ${name}: ${tool.description}${textInputHint(tool)}`)
+            .map(([name, tool]) => `- ${name}: ${tool.tool.description}${textInputHint(tool)}`)
             .join('\n');
 
         return `You have access to the following tools:
@@ -503,22 +553,6 @@ When you have everything you need, reply with the final answer and no tool call.
         }
 
         try {
-            let callArgs: unknown = args;
-            if (tool.validator) {
-                const validated = tool.validator.safeParse(args);
-                if (!validated.success) {
-                    throw new Error(
-                        `Invalid arguments: ${validated.error.issues
-                            .map(
-                                (issue) =>
-                                    `${issue.path.join('.') || '(root)'}: ${issue.message}`
-                            )
-                            .join('; ')}`
-                    );
-                }
-                callArgs = validated.data;
-            }
-
             if (!tool.typed && typeof args.input !== 'string') {
                 // An untyped tool is declared as taking one string called
                 // `input`. A model that sends something else would otherwise
@@ -528,9 +562,9 @@ When you have everything you need, reply with the final answer and no tool call.
                 );
             }
 
-            const result = await (tool.typed
-                ? tool.function(callArgs)
-                : tool.function(args.input));
+            // `Tool.call` validates Zod-declared arguments and reports the
+            // call to any registered callbacks.
+            const result = await tool.tool.call(args);
             const output = typeof result === 'string' ? result : stringifyResult(result);
             this.emit({ type: 'tool_result', step, tool: toolName, output });
             return output;
@@ -636,7 +670,7 @@ function propertyType(tool: NormalizedTool, name: string): string | undefined {
 }
 
 function schemaProperties(tool: NormalizedTool): Record<string, unknown> {
-    const properties = tool.parameters.properties;
+    const properties = tool.tool.parameters.properties;
     if (!properties || typeof properties !== 'object') return {};
     return properties as Record<string, unknown>;
 }

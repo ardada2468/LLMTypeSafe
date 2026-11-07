@@ -41,6 +41,12 @@ export class Example {
         return this[INPUT_KEYS] !== undefined;
     }
 
+    /** The designated input field names, or `undefined` before {@link Example.withInputs}. */
+    getInputKeys(): string[] | undefined {
+        const keys = this[INPUT_KEYS];
+        return keys ? [...keys] : undefined;
+    }
+
     getInputs(): Record<string, any> {
         const inputKeys = this[INPUT_KEYS];
         if (!inputKeys) {
