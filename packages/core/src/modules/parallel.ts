@@ -28,7 +28,11 @@ export interface ParallelOptions<TReturnFailed extends boolean = boolean> {
      * each failure's inputs and error can be inspected.
      */
     returnFailed?: TReturnFailed;
-    /** Stop starting new pairs once aborted, then reject with the abort reason. */
+    /**
+     * Stop starting new pairs once aborted, then reject with the abort reason.
+     * Also passed to every pair whose own options carry no signal, so calls
+     * already in flight are cancelled too.
+     */
     signal?: AbortSignal;
 }
 
@@ -126,7 +130,13 @@ export class Parallel<TReturnFailed extends boolean = false> {
             settled = await mapWithConcurrency(
                 execPairs,
                 async (pair, index) => {
-                    const [module, inputs, options] = pair;
+                    const [module, inputs, pairOptions] = pair;
+                    // The caller's signal reaches calls already in flight too,
+                    // unless the pair brought its own.
+                    const options =
+                        this.signal && !pairOptions?.signal
+                            ? { ...pairOptions, signal: this.signal }
+                            : pairOptions;
                     try {
                         return (await module.forward(inputs, options)) as Prediction &
                             Record<string, any>;

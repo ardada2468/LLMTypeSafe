@@ -226,8 +226,32 @@ export class ChatAdapter extends Adapter {
     // -------------------------------------------------------------- call
 
     async call(lm: ILanguageModel, input: AdapterCallInput): Promise<Record<string, any>> {
+        return this.withJsonFallback(lm, input, () => super.call(lm, input));
+    }
+
+    /**
+     * A streamed reply gets the same JSON fallback as {@link call}: without
+     * it, a program run under `streamify` (or `Predict.stream`) would fail on
+     * a reply that the same program, run normally, recovers from.
+     */
+    completeFrom(
+        lm: ILanguageModel,
+        messages: ChatMessage[],
+        completion: string,
+        input: AdapterCallInput
+    ): Promise<Record<string, any>> {
+        return this.withJsonFallback(lm, input, () =>
+            super.completeFrom(lm, messages, completion, input)
+        );
+    }
+
+    private async withJsonFallback(
+        lm: ILanguageModel,
+        input: AdapterCallInput,
+        run: () => Promise<Record<string, any>>
+    ): Promise<Record<string, any>> {
         try {
-            return await super.call(lm, input);
+            return await run();
         } catch (error) {
             if (!this.shouldFallBack(input.signature, error)) throw error;
             try {

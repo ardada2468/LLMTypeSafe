@@ -195,16 +195,124 @@ export function extractCode(text: string): string {
     return (fenced ? fenced[1] : text).trim();
 }
 
+/** Global through which the host asks the context to finish a run. Non-writable. */
+const FINISH = '__tsdspyFinish';
+
+/** Budget for reading back logs and describing an error, beyond `timeoutMs`. */
+const HOUSEKEEPING_MS = 100;
+
+/**
+ * Sets up a fresh context from the inside: a capturing `console`, and the
+ * finishing step that reads the code's completion value (or thrown error),
+ * follows it if it is a promise, and formats everything as plain strings.
+ *
+ * It is built by code running *in* the context so that the generated code
+ * never holds a function from the host realm: a host function's `constructor`
+ * is the host's `Function`, which would hand the code `process` in one line
+ * (`console.log.constructor('return process')()`). And every step that
+ * touches a value the code produced — a `then` or `toJSON` it defined, a
+ * getter on an error — runs inside a timed evaluation, so none of it can hang
+ * the host. The host reads back only `state`'s own string and boolean fields.
+ */
+const SANDBOX_PRELUDE = `(() => {
+    const logs = [];
+    const state = Object.create(null);
+    state.pending = false;
+    state.output = undefined;
+    state.error = undefined;
+    state.logs = '';
+    let stored;
+    const format = (value) => {
+        if (typeof value === 'string') return value;
+        try {
+            const json = JSON.stringify(value);
+            return json === undefined ? String(value) : json;
+        } catch {
+            return String(value);
+        }
+    };
+    const describe = (error) => {
+        try {
+            if (error && typeof error === 'object' && 'message' in error) {
+                const name = error.name;
+                const message = String(error.message);
+                return typeof name === 'string' && name ? name + ': ' + message : message;
+            }
+            return String(error);
+        } catch {
+            return 'The code threw a value that could not be described.';
+        }
+    };
+    const log = (...args) => {
+        logs.push(args.map(format).join(' '));
+    };
+    Object.defineProperty(globalThis, 'console', {
+        value: { log, info: log, warn: log, error: log, debug: log },
+        writable: true,
+        configurable: true,
+    });
+    const finish = (kind) => {
+        if (kind === 'collect') {
+            state.logs = logs.join('\\n');
+            return;
+        }
+        const value = stored;
+        stored = undefined;
+        if (kind === 'error') {
+            state.error = describe(value);
+            return;
+        }
+        try {
+            const thenable =
+                (typeof value === 'object' || typeof value === 'function') &&
+                value !== null &&
+                typeof value.then === 'function';
+            if (!thenable) {
+                if (value !== undefined) state.output = format(value);
+                return;
+            }
+            state.pending = true;
+            Promise.resolve(value).then(
+                (result) => {
+                    state.pending = false;
+                    if (result !== undefined) state.output = format(result);
+                },
+                (error) => {
+                    state.pending = false;
+                    state.error = describe(error);
+                }
+            );
+        } catch (error) {
+            state.error = describe(error);
+        }
+    };
+    Object.defineProperty(globalThis, '${FINISH}', { value: finish });
+    return { state, stash: (value) => { stored = value; } };
+})()`;
+
+/** What {@link SANDBOX_PRELUDE} hands back. Both belong to the context's realm. */
+interface SandboxHooks {
+    state: { pending: boolean; output?: string; error?: string; logs: string };
+    stash(value: unknown): void;
+}
+
 /**
  * Run `code` as a script in a fresh `node:vm` context and report what it
  * logged and its completion value. Never throws: failures come back in
  * `error`, worded for a model to read.
  *
- * The context has nothing in it but a capturing `console`, string-to-code
+ * The context has nothing in it but a capturing `console` (defined inside
+ * the context, so no host function is reachable through it), string-to-code
  * evaluation (`eval`, `new Function`) and WebAssembly compilation are
- * disabled, and synchronous execution is cut off after `timeoutMs`. A
- * completion value that is a promise is awaited for whatever is left of the
- * budget. **Not a security boundary** — see {@link ProgramOfThought}.
+ * disabled, and execution is cut off after `timeoutMs`.
+ *
+ * The context runs its own microtask queue (`microtaskMode: 'afterEvaluate'`),
+ * drained inside the timeout — so `Promise.resolve().then(() => { while
+ * (true) {} })` is cut off too, instead of hanging the host's event loop once
+ * the script returns. A completion value that is a promise is reported once it
+ * settles; with no timers or I/O in the context, one still pending when the
+ * microtasks have drained can never settle, and is reported as timed out.
+ * **Not a security boundary** — see {@link ProgramOfThought}.
  *
  * `node:vm` is imported on first use, so loading this library never requires
  * it — on an edge runtime without it, only running code fails.
@@ -223,87 +331,82 @@ export async function runSandboxed(
         return { output: '', error: 'node:vm is not available in this runtime.' };
     }
 
-    const logs: string[] = [];
-    const log = (...args: unknown[]) => {
-        logs.push(args.map(formatValue).join(' '));
-    };
     const sandbox = vm.createContext(
-        { console: { log, info: log, warn: log, error: log, debug: log } },
-        { codeGeneration: { strings: false, wasm: false } }
+        {},
+        { codeGeneration: { strings: false, wasm: false }, microtaskMode: 'afterEvaluate' }
     );
+    const { state, stash } = vm.runInContext(SANDBOX_PRELUDE, sandbox) as SandboxHooks;
 
     const startedAt = Date.now();
-    let value: unknown;
-    try {
-        value = new vm.Script(code, { filename: 'generated.js' }).runInContext(sandbox, {
-            timeout: timeoutMs,
-            breakOnSigint: false,
-        });
-        if (isThenable(value)) {
-            value = await withTimeout(value, Math.max(0, timeoutMs - (Date.now() - startedAt)));
+    const evaluate = (script: string | NodeVM.Script, timeout: number) => {
+        const options = { timeout: Math.max(1, timeout), breakOnSigint: false };
+        return typeof script === 'string'
+            ? vm.runInContext(script, sandbox, options)
+            : script.runInContext(sandbox, options);
+    };
+    const remaining = () => timeoutMs - (Date.now() - startedAt);
+    // Reading back logs and describing an error are bookkeeping, not the
+    // code's own work: they get a small budget of their own, so a run that
+    // used up its whole budget can still report what happened.
+    const housekeeping = (kind: 'collect' | 'error') => {
+        try {
+            evaluate(`${FINISH}('${kind}')`, HOUSEKEEPING_MS);
+        } catch {
+            // Out of time; report what was collected before.
         }
+    };
+    const logs = () => {
+        housekeeping('collect');
+        return typeof state.logs === 'string' ? state.logs : '';
+    };
+    // Every error is described inside the context — even vm's own timeout,
+    // which with a context-local microtask queue is created in the context's
+    // realm — since reading a value of the code's making outside a timed
+    // evaluation could run its getters unbounded.
+    const failure = (error: unknown): SandboxResult => {
+        stash(error);
+        housekeeping('error');
+        return {
+            output: logs(),
+            error:
+                typeof state.error === 'string'
+                    ? state.error
+                    : 'The code failed in a way that could not be described.',
+        };
+    };
+
+    try {
+        stash(evaluate(new vm.Script(code, { filename: 'generated.js' }), remaining()));
     } catch (error) {
-        return { output: logs.join('\n'), error: describeError(error) };
+        return failure(error);
     }
 
-    const lines = [...logs];
-    if (value !== undefined) lines.push(formatValue(value));
-    const output = lines.join('\n');
-    if (output.trim() === '') {
+    try {
+        // Evaluating also drains the context's microtask queue, which is what
+        // settles a promise completion value — within the remaining budget.
+        evaluate(`${FINISH}('value')`, remaining());
+    } catch (error) {
+        return failure(error);
+    }
+
+    const output = logs();
+    if (typeof state.error === 'string') return { output, error: state.error };
+    if (state.pending === true) {
         return {
             output,
+            error:
+                'Script execution timed out: the returned promise never settled ' +
+                '(the sandbox has no timers or I/O).',
+        };
+    }
+
+    const result = typeof state.output === 'string' ? state.output : undefined;
+    const full = result === undefined ? output : output ? `${output}\n${result}` : result;
+    if (full.trim() === '') {
+        return {
+            output: full,
             error: 'The code produced no output. Print the result with console.log, or end with an expression.',
         };
     }
-    return { output };
-}
-
-function isThenable(value: unknown): value is PromiseLike<unknown> {
-    return (
-        (typeof value === 'object' || typeof value === 'function') &&
-        value !== null &&
-        typeof (value as { then?: unknown }).then === 'function'
-    );
-}
-
-function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-        const timer = setTimeout(
-            () => reject(new Error(`Script execution timed out after ${ms}ms`)),
-            ms
-        );
-        Promise.resolve(promise).then(
-            (value) => {
-                clearTimeout(timer);
-                resolve(value);
-            },
-            (error: unknown) => {
-                clearTimeout(timer);
-                reject(error);
-            }
-        );
-    });
-}
-
-/**
- * An error as the model should read it. Errors thrown inside the context are
- * instances of *its* `Error`, not ours, so `instanceof` is no use; read the
- * fields structurally.
- */
-function describeError(error: unknown): string {
-    if (error && typeof error === 'object' && 'message' in error) {
-        const name = (error as { name?: unknown }).name;
-        const message = String((error as { message: unknown }).message);
-        return typeof name === 'string' && name ? `${name}: ${message}` : message;
-    }
-    return String(error);
-}
-
-function formatValue(value: unknown): string {
-    if (typeof value === 'string') return value;
-    try {
-        return JSON.stringify(value) ?? String(value);
-    } catch {
-        return String(value);
-    }
+    return { output: full };
 }

@@ -80,12 +80,49 @@ describe('runSandboxed', () => {
     it('cuts off code that runs too long', async () => {
         const result = await runSandboxed('while (true) {}', { timeoutMs: 50 });
         expect(result.error).toMatch(/timed out/i);
+
+        const logged = await runSandboxed('console.log("before"); while (true) {}', {
+            timeoutMs: 50,
+        });
+        expect(logged).toEqual({
+            output: 'before',
+            error: 'Error: Script execution timed out after 50ms',
+        });
     });
 
     it('awaits a promise completion value within the budget', async () => {
         expect(await runSandboxed('Promise.resolve(7)')).toEqual({ output: '7' });
         const pending = await runSandboxed('new Promise(() => {})', { timeoutMs: 30 });
         expect(pending.error).toMatch(/timed out/i);
+    });
+
+    it('cuts off a runaway microtask instead of hanging the host', async () => {
+        const result = await runSandboxed(
+            'Promise.resolve().then(() => { while (true) {} }); 1',
+            { timeoutMs: 50 }
+        );
+        expect(result.error).toMatch(/timed out/i);
+    });
+
+    it('reports async results and rejections', async () => {
+        expect(
+            await runSandboxed('(async () => { await null; console.log("x"); return 42; })()')
+        ).toEqual({ output: 'x\n42' });
+        expect((await runSandboxed('(async () => { throw new Error("boom"); })()')).error).toBe(
+            'Error: boom'
+        );
+    });
+
+    it('does not expose host functions through console', async () => {
+        const result = await runSandboxed('typeof console.log.constructor("return process")()');
+        expect(result.error).toMatch(/disallowed/i);
+    });
+
+    it('runs a hostile then() getter inside the timeout', async () => {
+        const result = await runSandboxed('({ get then() { while (true) {} } })', {
+            timeoutMs: 50,
+        });
+        expect(result.error).toMatch(/timed out/i);
     });
 
     it('reports code that produced nothing, or no code at all', async () => {

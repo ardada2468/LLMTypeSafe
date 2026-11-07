@@ -123,7 +123,7 @@ export class MultiChainComparison extends Module {
         );
         return this.predict.forward(
             { ...attempts, ...rest },
-            { temperature: this.temperature, ...options }
+            { ...options, temperature: options?.temperature ?? this.temperature }
         );
     }
 

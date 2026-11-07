@@ -96,6 +96,25 @@ describe('Parallel', () => {
         ).rejects.toThrow('cancelled');
     });
 
+    it('passes the caller’s signal to pairs without one of their own', async () => {
+        const seen: Array<AbortSignal | undefined> = [];
+        class Probe extends Module {
+            async forward(_inputs: Record<string, any>, options?: LLMCallOptions) {
+                seen.push(options?.signal);
+                return new Prediction({});
+            }
+        }
+        const controller = new AbortController();
+        const own = new AbortController();
+
+        await new Parallel({ signal: controller.signal, concurrency: 1 }).run([
+            [new Probe(), {}],
+            [new Probe(), {}, { signal: own.signal }],
+        ]);
+
+        expect(seen).toEqual([controller.signal, own.signal]);
+    });
+
     it('runs every pair in the caller’s settings scope', async () => {
         const lm = new MockLM({
             respond: () => '[[ ## answer ## ]]\nok\n\n[[ ## completed ## ]]',

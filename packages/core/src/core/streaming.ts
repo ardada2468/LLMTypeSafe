@@ -10,6 +10,7 @@ import {
 } from './callbacks';
 import { type Module } from './module';
 import { type Prediction } from './prediction';
+import { rolloutOrigin } from './rollout';
 import {
     AsyncChannel,
     consumerGoneReason,
@@ -37,8 +38,10 @@ export interface FieldStreamEvent {
     type: 'field';
     /**
      * The predictor's path in the program, as `namedPredictors()` reports it
-     * (`self` for a bare predictor), or its `moduleId` when it is not part of
-     * the program's tree — a copy made by `BestOfN`, say.
+     * (`self` for a bare predictor). A copy run by `BestOfN` or `Refine`
+     * reports under the path of the predictor it was copied from; a predictor
+     * outside the program's tree altogether (`Refine`'s feedback predictor, one
+     * built inside a `forward`) reports its `moduleId`.
      */
     path: string;
     field: string;
@@ -150,8 +153,15 @@ export function streamify(program: Module, options: StreamifyOptions = {}): Stre
         const paths = new Map<object, string>(
             program.namedPredictors().map(([path, predictor]) => [predictor, path])
         );
-        const pathOf = (predictor: object) =>
-            paths.get(predictor) ?? (predictor as { moduleId?: string }).moduleId ?? 'unknown';
+        const pathOf = (predictor: object) => {
+            // A rollout copy (BestOfN, Refine) reports under the path of the
+            // predictor it was copied from.
+            for (let at: object | undefined = predictor; at; at = rolloutOrigin(at)) {
+                const path = paths.get(at);
+                if (path !== undefined) return path;
+            }
+            return (predictor as { moduleId?: string }).moduleId ?? 'unknown';
+        };
 
         // The last value seen per invocation and field, for computing deltas.
         const lastValues = new WeakMap<object, Record<string, unknown>>();

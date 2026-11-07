@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { Predict } from './predict';
-import { BestOfN, selectBest, type BestOfNOptions } from './best-of-n';
+import { BestOfN, rethrowIfAborted, selectBest, type BestOfNOptions } from './best-of-n';
 import { type Module } from '../core/module';
 import { type Prediction } from '../core/prediction';
 import { signature, getSignatureInstructions, type SignatureLike } from '../core/signature';
@@ -130,6 +130,7 @@ export class Refine extends BestOfN {
         let lastError: unknown;
 
         for (let rolloutId = 0; rolloutId < this.n; rolloutId++) {
+            options?.signal?.throwIfAborted();
             try {
                 const names = new Map<object, string>();
                 const hints = new Map<object, string>();
@@ -169,6 +170,7 @@ export class Refine extends BestOfN {
                     options
                 );
             } catch (error) {
+                rethrowIfAborted(options?.signal, error);
                 failures += 1;
                 lastError = error;
                 if (failures > this.failCount) throw error;

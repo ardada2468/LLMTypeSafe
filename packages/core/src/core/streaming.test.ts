@@ -8,6 +8,7 @@ import { clearHistory, inspectHistory } from './trace';
 import { ValidationError } from './errors';
 import { Predict } from '../modules/predict';
 import { ChainOfThought } from '../modules/chain-of-thought';
+import { BestOfN } from '../modules/best-of-n';
 import { MockLM } from '../test-utils';
 import type { Callback } from './callbacks';
 import type {
@@ -113,6 +114,29 @@ describe('streamify', () => {
 
         const order = [...new Set(events.map((event) => `${event.path}.${event.field}`))];
         expect(order).toEqual(['draft.draft', 'polish.reasoning', 'polish.answer']);
+    });
+
+    it('labels a BestOfN rollout’s fields with the original predictor’s path', async () => {
+        const lm = new MockLM({
+            responses: [chat({ answer: 'two words' }), chat({ answer: 'one' })],
+            chunkSize: 4,
+        });
+        class Pipeline extends Module {
+            answer = new Predict('question -> answer', lm);
+            async forward(inputs: Record<string, any>) {
+                return this.answer.forward(inputs);
+            }
+        }
+        const program = new BestOfN(new Pipeline(), {
+            n: 2,
+            rewardFn: (_inputs, prediction) =>
+                String(prediction.get('answer')).split(' ').length === 1 ? 1 : 0,
+            threshold: 1,
+        });
+
+        const events = fields(await collect(streamify(program)({ question: 'Q' })));
+
+        expect(new Set(events.map((event) => event.path))).toEqual(new Set(['module.answer']));
     });
 
     it('emits status messages for tool calls by default', async () => {

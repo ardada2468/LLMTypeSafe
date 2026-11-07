@@ -103,6 +103,7 @@ export class BestOfN extends Module {
         let lastError: unknown;
 
         for (let rolloutId = 0; rolloutId < this.n; rolloutId++) {
+            options?.signal?.throwIfAborted();
             try {
                 const prediction = await runRollout(this.module, inputs, options, {
                     rolloutId,
@@ -112,6 +113,9 @@ export class BestOfN extends Module {
                 outcomes.push({ prediction, reward });
                 if (reward >= this.threshold) break;
             } catch (error) {
+                // A cancelled run is not a failed attempt: stop at once rather
+                // than burn the remaining attempts, each failing on the abort.
+                rethrowIfAborted(options?.signal, error);
                 failures += 1;
                 lastError = error;
                 if (failures > this.failCount) throw error;
@@ -122,17 +126,26 @@ export class BestOfN extends Module {
     }
 }
 
+/** Rethrow `error` when `signal` has aborted. Shared with `Refine`. */
+export function rethrowIfAborted(signal: AbortSignal | undefined, error: unknown): void {
+    if (signal?.aborted) throw error;
+}
+
 /**
- * The highest-rewarded prediction — the earliest among ties — or the last
- * error when no attempt produced one.
+ * The highest-rewarded prediction — the earliest among ties, NaN lowest — or
+ * the last error when no attempt produced one.
  */
 export function selectBest(
     outcomes: readonly AttemptOutcome[],
     lastError: unknown
 ): Prediction & Record<string, any> {
+    // A NaN reward ranks below every number, as in DSPy (which starts from
+    // `-inf` and keeps only a strictly greater reward): a reward function that
+    // could not score an attempt must not win over one that did.
+    const rank = (reward: number) => (Number.isNaN(reward) ? -Infinity : reward);
     let best: AttemptOutcome | undefined;
     for (const outcome of outcomes) {
-        if (!best || outcome.reward > best.reward) best = outcome;
+        if (!best || rank(outcome.reward) > rank(best.reward)) best = outcome;
     }
     if (!best) {
         throw lastError ?? new TsDspyError('No attempt produced a prediction.');

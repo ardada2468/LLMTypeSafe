@@ -20,17 +20,40 @@ export interface RolloutSettings {
  * in `options.metadata.rolloutId`. Both override whatever the call carried —
  * a rollout that inherited `temperature: 0` from a module's defaults would
  * sample the same answer every time, which defeats the point.
+ *
+ * A call that already carries a rollout id — from a rollout nested inside
+ * this one (a `BestOfN` inside a `Refine`), whose middleware runs first — keeps
+ * it, prefixed with this rollout's: `"1/0"`, `"1/1"`, …. Overwriting it would
+ * give every inner rollout the same id, and with caching on the inner
+ * `BestOfN` would be served its first attempt's reply on every attempt.
  */
 export function rolloutMiddleware(rollout: RolloutSettings): LMMiddleware {
-    return (request, next) =>
-        next({
+    return (request, next) => {
+        const inner: unknown = request.options?.metadata?.rolloutId;
+        const rolloutId =
+            inner === undefined || inner === null
+                ? rollout.rolloutId
+                : `${rollout.rolloutId}/${String(inner)}`;
+        return next({
             ...request,
             options: {
                 ...request.options,
                 temperature: rollout.temperature,
-                metadata: { ...request.options?.metadata, rolloutId: rollout.rolloutId },
+                metadata: { ...request.options?.metadata, rolloutId },
             },
         });
+    };
+}
+
+/** Rollout copy → what it was copied from. */
+const origins = new WeakMap<object, object>();
+
+/**
+ * The object `copy` was made from by a rollout, if it is a rollout copy. A
+ * rollout of a rollout's copy chains, so callers may need to follow it.
+ */
+export function rolloutOrigin(copy: object): object | undefined {
+    return origins.get(copy);
 }
 
 /**
@@ -61,6 +84,14 @@ export function runRollout(
     const wrap = (lm: ILanguageModel) => wrapLM(lm, middleware);
 
     const copy = module.deepCopy();
+    // The copy has the original's shape, so its predictors pair up with the
+    // original's in order. Recorded so `streamify` can label a rollout's
+    // field events with the path of the predictor it is a copy of.
+    const originals = module.namedPredictors();
+    copy.namedPredictors().forEach(([, predictor], index) => {
+        const original = originals[index]?.[1];
+        if (original) origins.set(predictor, original);
+    });
     for (const target of [copy, ...copy.namedSubModules().map(([, sub]) => sub)]) {
         const holder = target as unknown as { lm?: ILanguageModel };
         if (holder.lm) holder.lm = wrap(holder.lm);

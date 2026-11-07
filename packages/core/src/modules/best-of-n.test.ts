@@ -87,6 +87,25 @@ describe('BestOfN', () => {
         expect(lm.calls).toHaveLength(2);
     });
 
+    it('keeps nested rollouts distinct, so an inner BestOfN still samples afresh', async () => {
+        const lm = scripted(['a b', 'c d', 'e f', 'g h']);
+        const inner = new BestOfN(new Predict('question -> answer', lm), {
+            n: 2,
+            rewardFn: wordCount,
+            threshold: 1,
+        });
+        const outer = new BestOfN(inner, { n: 2, rewardFn: wordCount, threshold: 1 });
+
+        await context({ cache: new MemoryCache() }, () => outer.forward({ question: 'Q' }));
+
+        expect(lm.calls.map((call) => call.options?.metadata?.rolloutId)).toEqual([
+            '0/0',
+            '0/1',
+            '1/0',
+            '1/1',
+        ]);
+    });
+
     it('replays each rollout from the cache when the whole program runs again', async () => {
         const lm = scripted(['first try', 'Paris']);
         const cache = new MemoryCache();
@@ -152,6 +171,43 @@ describe('BestOfN', () => {
 
         await inner.forward({ question: 'Q' });
         expect(lm.calls[1].options?.metadata).toBeUndefined();
+    });
+
+    it('stops at once on abort instead of counting it as a failed attempt', async () => {
+        const controller = new AbortController();
+        let calls = 0;
+        const lm = new MockLM({
+            respond: () => {
+                calls += 1;
+                controller.abort(new Error('cancelled'));
+                return answer('two words');
+            },
+        });
+
+        const error = await new BestOfN(new Predict('question -> answer', lm), {
+            n: 5,
+            rewardFn: wordCount,
+            threshold: 1,
+        })
+            .forward({ question: 'Q' }, { signal: controller.signal })
+            .catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(Error);
+        expect(calls).toBe(1);
+    });
+
+    it('never prefers a NaN reward over a real one', async () => {
+        const lm = scripted(['first', 'second']);
+        const rewards = [NaN, 0.2];
+        let index = 0;
+
+        const result = await new BestOfN(new Predict('question -> answer', lm), {
+            n: 2,
+            rewardFn: () => rewards[index++]!,
+            threshold: 1,
+        }).forward({ question: 'Q' });
+
+        expect(result.answer).toBe('second');
     });
 
     it('tolerates failures up to failCount', async () => {
