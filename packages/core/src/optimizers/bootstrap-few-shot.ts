@@ -5,6 +5,8 @@ import { createRng, shuffled } from './random';
 import { mapWithConcurrency } from '../utils/pool';
 import { context } from '../core/config';
 import { type DemoModule, type Metric, type MetricResult, resolveExampleInputs } from './types';
+import { Module } from '../core/module';
+import { bootstrapTraces, labeledDemos, metricPasses, withDemosByPath } from './utils';
 
 /** One trainset example's outcome, reported as the run proceeds. */
 export interface BootstrapProgressEvent {
@@ -54,10 +56,10 @@ export interface BootstrapFewShotOptions {
      * teacher did. This is the technique that makes bootstrapping worth the
      * trouble: you pay for the strong model once, at compile time.
      *
-     * A module with `withLM` (every `Predict`) is copied onto the teacher. One
-     * without — a hand-written composite — is run inside
-     * `settings.context({ lm: teacher })`, which reaches every sub-module that
-     * has no model of its own.
+     * A `Module` student is deep-copied with every predictor pinned to the
+     * teacher. A structural `DemoModule` with `withLM` is copied onto the
+     * teacher; one without is run inside `settings.context({ lm: teacher })`,
+     * which reaches every sub-module that has no model of its own.
      */
     teacher?: ILanguageModel;
     /** Input field names, when the trainset examples do not declare their own. */
@@ -117,6 +119,13 @@ export class BootstrapFewShot {
     private readonly onProgress?: (event: BootstrapProgressEvent) => void;
     private readonly callOptions?: LLMCallOptions;
 
+    /**
+     * What the last compile produced, for inspection: bootstrapped demos per
+     * predictor path (`self` for a single predictor or a `DemoModule`), and the
+     * labelled demos added to every predictor.
+     */
+    results?: { demos: Record<string, Example[]>; labeled: Example[] };
+
     constructor(options: BootstrapFewShotOptions) {
         if (typeof options?.metric !== 'function') {
             throw new Error('BootstrapFewShot requires a metric function.');
@@ -134,8 +143,49 @@ export class BootstrapFewShot {
         this.callOptions = options.callOptions;
     }
 
-    /** Run the trainset and return a copy of `student` carrying the demos it earned. */
-    async compile<M extends DemoModule>(
+    /**
+     * Run the trainset and return a copy of `student` carrying the demos it
+     * earned. The student itself is never modified.
+     *
+     * A {@link Module} student gets demos **per predictor**: each passing run
+     * is traced, and every predictor it called receives a demo of its own
+     * inputs and outputs from that run. For a single `Predict` that is exactly
+     * the example's inputs paired with the prediction. Any other object with
+     * `withDemos` (a hand-written {@link DemoModule}) gets one demo list built
+     * from its final predictions.
+     */
+    async compile<M extends DemoModule | Module>(
+        student: M,
+        config: BootstrapFewShotConfig
+    ): Promise<M> {
+        if (student instanceof Module) {
+            return (await this.compileProgram(student, config)) as M;
+        }
+        return (await this.compileDemoModule(student as DemoModule, config)) as M;
+    }
+
+    /** Per-predictor bootstrapping through traces, for a real `Module`. */
+    private async compileProgram<M extends Module>(
+        student: M,
+        config: BootstrapFewShotConfig
+    ): Promise<M> {
+        const result = await bootstrapTraces(student, config.trainset, this.metric, {
+            maxBootstrappedDemos: this.maxBootstrappedDemos,
+            seed: this.seed,
+            concurrency: this.concurrency,
+            threshold: this.threshold,
+            teacher: this.teacher,
+            inputKeys: this.inputKeys,
+            callOptions: this.callOptions,
+            onAttempt: (attempt) => this.report(attempt),
+        });
+        const labeled = labeledDemos(result.ordered, result.used, this.maxLabeledDemos);
+        this.results = { demos: result.demos, labeled };
+        return withDemosByPath(student, result.demos, labeled);
+    }
+
+    /** One demo list from final predictions, for a structural `DemoModule`. */
+    private async compileDemoModule<M extends DemoModule>(
         student: M,
         config: BootstrapFewShotConfig
     ): Promise<M> {
@@ -199,10 +249,10 @@ export class BootstrapFewShot {
             }
         }
 
-        return student.withDemos([
-            ...bootstrapped.map((c) => c.demo),
-            ...this.labeledDemos(ordered, bootstrapped),
-        ]);
+        const demos = bootstrapped.map((c) => c.demo);
+        const labeled = this.labeledDemos(ordered, bootstrapped);
+        this.results = { demos: { self: demos }, labeled };
+        return student.withDemos([...demos, ...labeled]);
     }
 
     /**
@@ -240,12 +290,7 @@ export class BootstrapFewShot {
     }
 
     private passes(score: MetricResult): boolean {
-        if (typeof score === 'boolean') {
-            return score;
-        }
-        // NaN fails this comparison, which is the right answer for a metric that
-        // could not produce a number.
-        return score >= this.threshold;
+        return metricPasses(score, this.threshold);
     }
 
     /**
