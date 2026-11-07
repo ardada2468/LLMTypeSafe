@@ -13,13 +13,6 @@ export interface FieldConfig {
     values?: string[];
 }
 
-export interface ISignature {
-    inputFields: Record<string, FieldConfig>;
-    outputFields: Record<string, FieldConfig>;
-    instructions?: string;
-    description?: string;
-}
-
 export interface ParsedSignature {
     inputs: string[];
     outputs: string[];

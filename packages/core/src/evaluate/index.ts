@@ -14,6 +14,7 @@ export { formatReport } from './report';
 export type { FormatReportOptions } from './report';
 export type {
     Metric,
+    MetricResult,
     MetricScore,
     EvaluateOptions,
     EvaluationProgram,

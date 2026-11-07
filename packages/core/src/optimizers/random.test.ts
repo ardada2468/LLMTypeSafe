@@ -1,4 +1,4 @@
-import { createRng, mapWithConcurrency, shuffled } from './random';
+import { createRng, shuffled } from './random';
 
 describe('createRng', () => {
     it('produces the same sequence for the same seed', () => {
@@ -44,53 +44,5 @@ describe('shuffled', () => {
         const items = ['a', 'b', 'c', 'd', 'e', 'f'];
 
         expect(shuffled(items, createRng(5))).toEqual(shuffled(items, createRng(5)));
-    });
-});
-
-describe('mapWithConcurrency', () => {
-    it('returns results in input order, not completion order', async () => {
-        const delays = [30, 1, 20, 2];
-
-        const results = await mapWithConcurrency(delays, 4, async (delay, index) => {
-            await new Promise((resolve) => setTimeout(resolve, delay));
-            return index;
-        });
-
-        expect(results).toEqual([0, 1, 2, 3]);
-    });
-
-    it('runs no more than the limit at once', async () => {
-        let inFlight = 0;
-        let peak = 0;
-
-        await mapWithConcurrency(
-            Array.from({ length: 10 }, (_, i) => i),
-            3,
-            async () => {
-                inFlight += 1;
-                peak = Math.max(peak, inFlight);
-                await new Promise((resolve) => setTimeout(resolve, 1));
-                inFlight -= 1;
-                return null;
-            }
-        );
-
-        expect(peak).toBe(3);
-    });
-
-    it('handles an empty list', async () => {
-        expect(await mapWithConcurrency([], 4, async () => 1)).toEqual([]);
-    });
-
-    it('treats a limit below one as one', async () => {
-        const order: number[] = [];
-
-        await mapWithConcurrency([1, 2, 3], 0, async (item) => {
-            order.push(item);
-            await new Promise((resolve) => setTimeout(resolve, 1));
-            return item;
-        });
-
-        expect(order).toEqual([1, 2, 3]);
     });
 });

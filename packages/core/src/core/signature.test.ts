@@ -1,4 +1,5 @@
 import { Signature, ImageField, InputField, OutputField, isImageFieldType } from './signature';
+import { TsDspyError } from './errors';
 
 describe('Signature', () => {
     describe('parseStringSignature', () => {
@@ -30,6 +31,30 @@ describe('Signature', () => {
             expect(result.outputs).toEqual(['output1', 'output2']);
             expect(result.types.output1).toBe('int');
             expect(result.types.output2).toBe('string');
+        });
+
+        it.each([
+            ['question answer', /missing "->"/],
+            ['', /missing "->"/],
+            ['a -> b -> c', /more than one "->"/],
+            [' -> answer', /no input fields/],
+            ['question -> ', /no output fields/],
+            ['question, -> answer', /empty input field name/],
+            ['question -> answer, ', /empty output field name/],
+            ['question -> : number', /empty output field name/],
+            ['question, question -> answer', /duplicate field name "question"/],
+            ['question -> question', /duplicate field name "question"/],
+            ['a -> b, b: int', /duplicate field name "b"/],
+        ])('rejects %j with a TsDspyError', (input, reason) => {
+            let thrown: unknown;
+            try {
+                Signature.parseStringSignature(input);
+            } catch (error) {
+                thrown = error;
+            }
+            expect(thrown).toBeInstanceOf(TsDspyError);
+            expect((thrown as Error).message).toMatch(reason);
+            expect((thrown as Error).message).toContain('Expected the form');
         });
     });
 

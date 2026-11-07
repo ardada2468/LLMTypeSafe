@@ -2,6 +2,7 @@ import { type Example } from '../core/example';
 import { mapWithConcurrency } from '../utils/pool';
 import { type Prediction } from '../core/prediction';
 import { getDefaultLM } from '../core/config';
+import { TsDspyError } from '../core/errors';
 import type { ILanguageModel, LLMCallOptions, UsageStats } from '../types/language-model';
 import type {
     EvaluateOptions,
@@ -10,7 +11,7 @@ import type {
     EvaluationResult,
     EvaluationUsage,
     Metric,
-    MetricScore,
+    MetricResult,
 } from './types';
 
 const DEFAULT_CONCURRENCY = 4;
@@ -51,7 +52,7 @@ function toError(cause: unknown): Error {
 }
 
 /** Booleans become 1/0; anything non-finite becomes 0. */
-function toScore(value: MetricScore): number {
+function toScore(value: MetricResult): number {
     if (typeof value === 'boolean') return value ? 1 : 0;
     return Number.isFinite(value) ? value : 0;
 }
@@ -156,12 +157,33 @@ function safeOutputs(example: Example): Record<string, any> {
 }
 
 /**
+ * Fail before any model call when no example says which fields are inputs.
+ *
+ * Without this every row would fail individually with the same complaint, and
+ * the report would read as a 0% score rather than a setup mistake. A dataset
+ * where only some examples lack the split still runs: those rows fail on their
+ * own, as any other bad row does.
+ */
+function assertInputKeysDesignated(dataset: readonly Example[]): void {
+    if (dataset.length === 0 || dataset.some((example) => example.hasInputKeys())) return;
+
+    throw new TsDspyError(
+        'No example in the dataset designates its input fields, so evaluate cannot ' +
+            'tell inputs from expected outputs. Call example.withInputs(...keys) when ' +
+            'building the dataset, or pass { inputKeys: [...] } to evaluate().'
+    );
+}
+
+/**
  * Run `program` over `dataset`, grade each prediction with `metric`, and report
  * the aggregate.
  *
  * Failures are data, not control flow: an example whose program or metric
  * throws is recorded as a zero-score result with the error attached, and the
  * run continues. An evaluation that dies on row 40 of 500 tells you nothing.
+ *
+ * @throws {TsDspyError} up front when no example designates its input fields
+ * (via `withInputs`) and no `inputKeys` option is given.
  *
  * ```ts
  * const report = await evaluate(program, dataset, exactMatch, { concurrency: 8 });
@@ -179,6 +201,7 @@ export async function evaluate(
     const prepared = dataset.map((example) =>
         inputKeys ? example.withInputs(...inputKeys) : example
     );
+    assertInputKeysDesignated(prepared);
 
     const lm = resolveLM(program, options.lm);
     const before = lm?.getUsage();

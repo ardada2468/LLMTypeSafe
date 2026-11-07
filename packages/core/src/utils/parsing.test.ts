@@ -53,6 +53,39 @@ describe('Parsing Utils', () => {
             expect(prompt).toContain('review: Great product');
             expect(prompt).toContain('sentiment (sentiment label):');
         });
+
+        it('renders object and array inputs as JSON on a string signature', () => {
+            const prompt = buildPrompt('profile, tags -> summary', {
+                profile: { name: 'Ada', age: 36 },
+                tags: ['math', 'engines'],
+            });
+
+            expect(prompt).not.toContain('[object Object]');
+            expect(prompt).toContain('profile: {"name":"Ada","age":36}');
+            expect(prompt).toContain('tags: ["math","engines"]');
+        });
+
+        it('renders object and array inputs as JSON on a class signature', () => {
+            class Summarize extends Signature {
+                @InputField({ description: 'the profile' })
+                profile!: Record<string, unknown>;
+
+                @InputField({ description: 'tags', prefix: 'Tags:' })
+                tags!: string[];
+
+                @OutputField({ description: 'summary' })
+                summary!: string;
+            }
+
+            const prompt = buildPrompt(Summarize, {
+                profile: { name: 'Ada' },
+                tags: ['math'],
+            });
+
+            expect(prompt).not.toContain('[object Object]');
+            expect(prompt).toContain('profile: {"name":"Ada"}');
+            expect(prompt).toContain('Tags: ["math"]');
+        });
     });
 
     describe('parseOutput', () => {

@@ -46,6 +46,7 @@ export type { TraceSpan } from './core/trace';
 export {
     TsDspyError,
     ValidationError,
+    MaxStepsError,
     LMError,
     RateLimitError,
     AuthError,
@@ -84,9 +85,8 @@ export type {
 
 // Optimizers
 export { LabeledFewShot, BootstrapFewShot } from './optimizers';
+// `Metric` and `MetricResult` are exported once, from './evaluate' below.
 export type {
-    Metric,
-    MetricResult,
     DemoModule,
     LabeledFewShotOptions,
     LabeledFewShotConfig,

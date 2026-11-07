@@ -75,7 +75,7 @@ function buildPromptFromString(
 
     for (const inputKey of parsed.inputs) {
         if (inputs[inputKey] !== undefined) {
-            prompt += `${inputKey}: ${inputs[inputKey]}\n`;
+            prompt += `${inputKey}: ${formatInputValue(inputs[inputKey])}\n`;
         }
     }
 
@@ -114,7 +114,7 @@ function buildPromptFromClass(
     Object.entries(inputFields).forEach(([key, config]) => {
         if (inputs[key] !== undefined) {
             const prefix = config.prefix || `${key}:`;
-            prompt += `${prefix} ${inputs[key]}\n`;
+            prompt += `${prefix} ${formatInputValue(inputs[key])}\n`;
         }
     });
 
@@ -132,7 +132,7 @@ function buildPromptFromClass(
 }
 
 /** Render one input value for a prompt line, keeping structured values readable. */
-function formatInputValue(value: unknown): string {
+export function formatInputValue(value: unknown): string {
     if (value === null || typeof value !== 'object') return String(value);
     return JSON.stringify(value);
 }
