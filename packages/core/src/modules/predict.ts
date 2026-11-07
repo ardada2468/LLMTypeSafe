@@ -161,6 +161,16 @@ export class Predict<
         this.adapter = options.adapter;
     }
 
+    /**
+     * The signature this module actually sends — for a `ChainOfThought`, the
+     * signature with its leading `reasoning` output. Optimizers read it to
+     * describe a program's steps and to resolve a predictor's current
+     * instructions.
+     */
+    getSignature(): SignatureLike {
+        return this.predictionSignature();
+    }
+
     /** The adapter this module was given, or `undefined` when it uses the configured one. */
     getAdapter(): Adapter | undefined {
         return this.adapter;
