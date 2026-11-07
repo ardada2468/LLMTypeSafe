@@ -5,7 +5,9 @@ import {
     TimeoutError,
     classify,
     contentToText,
+    mergeRequestBody,
     normalizeImageSource,
+    providerOptionsFor,
     type ChatMessage,
     type ChatResult,
     type FinishReason,
@@ -14,6 +16,7 @@ import {
     type ModelCapabilities,
     type StreamChunk,
     type ToolCall,
+    type UsageStats,
 } from '@ts-dspy/core';
 import Anthropic, { APIConnectionTimeoutError, APIError } from '@anthropic-ai/sdk';
 import type {
@@ -21,7 +24,12 @@ import type {
     ContentBlockParam,
     ImageBlockParam,
     Message,
+    MessageCreateParamsNonStreaming,
     MessageParam,
+    OutputConfig,
+    TextBlockParam,
+    ThinkingConfigParam,
+    Usage,
 } from '@anthropic-ai/sdk/resources/messages';
 
 /** Current Claude Opus. Model IDs are exact — never append a date suffix. */
@@ -35,6 +43,43 @@ export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5';
 export const DEFAULT_MAX_TOKENS = 16_000;
 export const DEFAULT_STREAMING_MAX_TOKENS = 64_000;
 
+/**
+ * Extended thinking.
+ *
+ * With `budgetTokens` this sends `{ type: 'enabled', budget_tokens }`, the
+ * fixed-budget form that only older models (before Claude 4.6) accept —
+ * current models reject it with a 400. Without it, it sends
+ * `{ type: 'adaptive' }`, which lets the model decide how much to think and is
+ * what every current model expects; steer depth with `effort` instead.
+ */
+export interface AnthropicThinking {
+    /** Fixed thinking budget, at least 1024. Older models only. */
+    budgetTokens?: number;
+    /**
+     * Whether thinking text comes back. Current models default to `'omitted'`
+     * (empty thinking text), so set `'summarized'` to receive `reasoning`.
+     */
+    display?: 'summarized' | 'omitted';
+}
+
+/** `output_config.effort`: how much the model spends on thinking and output. */
+export type AnthropicEffort = NonNullable<OutputConfig['effort']>;
+
+/**
+ * Per-call options read from `providerOptions.anthropic`.
+ *
+ * `thinking`, `effort` and `cachePrompt` mean what they do on
+ * {@link AnthropicConfig}; `thinking` also accepts the raw API shape (an object
+ * with a `type`), sent unchanged. Every other key is merged into the Messages
+ * request body as-is — e.g. `{ anthropic: { metadata: { user_id: 'u-1' } } }`.
+ */
+export interface AnthropicProviderOptions {
+    thinking?: AnthropicThinking | ThinkingConfigParam | false;
+    effort?: AnthropicEffort;
+    cachePrompt?: boolean;
+    [key: string]: unknown;
+}
+
 export interface AnthropicConfig {
     apiKey?: string;
     model?: string;
@@ -42,10 +87,29 @@ export interface AnthropicConfig {
     baseURL?: string;
     /** Default per-request timeout in milliseconds. */
     timeout?: number;
-    /** Default retry count. The SDK retries 408/409/429/5xx and honours `retry-after`. */
+    /**
+     * Default retry count (SDK default: 2). The SDK retries 408/409/429/5xx and
+     * honours `retry-after`. Overridden per call by `options.retries`.
+     */
     maxRetries?: number;
     /** Default `max_tokens` for non-streaming requests. */
     maxTokens?: number;
+    /**
+     * Default extended-thinking setting; `false` sends `{ type: 'disabled' }`.
+     * Unset leaves the parameter out, so the model's own default applies.
+     * While thinking is on, `temperature` and `top_p` are not sent.
+     */
+    thinking?: AnthropicThinking | false;
+    /** Default `output_config.effort`. */
+    effort?: AnthropicEffort;
+    /**
+     * Mark the system prompt — and, in a multi-turn conversation, the turn
+     * before the last — with `cache_control: { type: 'ephemeral' }`, so a
+     * repeated prefix (instructions, few-shot demos) is read from Anthropic's
+     * prompt cache. Cache reads show up as `cachedTokens` in usage. Prefixes
+     * below the model's minimum cacheable length are silently not cached.
+     */
+    cachePrompt?: boolean;
 }
 
 /**
@@ -65,6 +129,9 @@ export class AnthropicLM extends BaseLM {
     private readonly client: Anthropic;
     private readonly defaultMaxTokens: number;
     private readonly baseURL?: string;
+    private readonly thinking?: AnthropicThinking | false;
+    private readonly effort?: AnthropicEffort;
+    private readonly cachePrompt: boolean;
 
     constructor(config: AnthropicConfig = {}) {
         super('anthropic', config.model ?? DEFAULT_ANTHROPIC_MODEL);
@@ -77,6 +144,9 @@ export class AnthropicLM extends BaseLM {
         });
         this.defaultMaxTokens = config.maxTokens ?? DEFAULT_MAX_TOKENS;
         this.baseURL = config.baseURL;
+        this.thinking = config.thinking;
+        this.effort = config.effort;
+        this.cachePrompt = config.cachePrompt ?? false;
     }
 
     /**
@@ -84,7 +154,14 @@ export class AnthropicLM extends BaseLM {
      * tokens must not serve a cache entry recorded by one that allows 8192.
      */
     protected cacheScope(): unknown {
-        return { maxTokens: this.defaultMaxTokens, baseURL: this.baseURL ?? null };
+        return {
+            maxTokens: this.defaultMaxTokens,
+            baseURL: this.baseURL ?? null,
+            // Spread only when set, so existing cache keys stay valid.
+            ...(this.thinking !== undefined ? { thinking: this.thinking } : {}),
+            ...(this.effort ? { effort: this.effort } : {}),
+            ...(this.cachePrompt ? { cachePrompt: true } : {}),
+        };
     }
 
     async chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string> {
@@ -95,20 +172,15 @@ export class AnthropicLM extends BaseLM {
         messages: ChatMessage[],
         options?: LLMCallOptions
     ): Promise<ChatResult> {
-        const { system, messages: converted } = toAnthropicMessages(messages);
         const startedAt = Date.now();
 
         let message: Message;
         try {
             message = await this.client.messages.create(
-                {
-                    model: options?.model ?? this.model,
-                    max_tokens: options?.maxTokens ?? this.defaultMaxTokens,
-                    messages: converted,
-                    ...(system ? { system } : {}),
-                    ...samplingParams(options),
-                    ...toolParams(options),
-                },
+                this.buildRequest(messages, options, {
+                    maxTokens: this.defaultMaxTokens,
+                    extra: toolParams(options),
+                }),
                 requestOptions(options)
             );
         } catch (error) {
@@ -117,18 +189,20 @@ export class AnthropicLM extends BaseLM {
         }
 
         this.recordUsage({
-            promptTokens: message.usage?.input_tokens ?? 0,
-            completionTokens: message.usage?.output_tokens ?? 0,
+            ...usageOf(message.usage),
             latencyMs: Date.now() - startedAt,
+            model: options?.model,
         });
 
         this.assertNotRefused(message);
 
         const toolCalls = toolCallsOf(message);
+        const reasoning = reasoningOf(message);
         return {
             content: textOf(message),
             ...(toolCalls.length > 0 ? { toolCalls } : {}),
             finishReason: finishReasonOf(message.stop_reason),
+            ...(reasoning ? { reasoning } : {}),
         };
     }
 
@@ -142,18 +216,17 @@ export class AnthropicLM extends BaseLM {
         let message: Message;
         try {
             message = await this.client.messages.create(
-                {
-                    model: options?.model ?? this.model,
-                    max_tokens: options?.maxTokens ?? this.defaultMaxTokens,
-                    messages: [{ role: 'user', content: prompt }],
-                    output_config: {
-                        format: {
-                            type: 'json_schema',
-                            schema: schema as Record<string, unknown>,
+                this.buildRequest([{ role: 'user', content: prompt }], options, {
+                    maxTokens: this.defaultMaxTokens,
+                    extra: {
+                        output_config: {
+                            format: {
+                                type: 'json_schema',
+                                schema: schema as Record<string, unknown>,
+                            },
                         },
                     },
-                    ...samplingParams(options),
-                },
+                }),
                 requestOptions(options)
             );
         } catch (error) {
@@ -162,9 +235,9 @@ export class AnthropicLM extends BaseLM {
         }
 
         this.recordUsage({
-            promptTokens: message.usage?.input_tokens ?? 0,
-            completionTokens: message.usage?.output_tokens ?? 0,
+            ...usageOf(message.usage),
             latencyMs: Date.now() - startedAt,
+            model: options?.model,
         });
 
         this.assertNotRefused(message);
@@ -199,18 +272,13 @@ export class AnthropicLM extends BaseLM {
         messages: ChatMessage[],
         options?: LLMCallOptions
     ): AsyncGenerator<StreamChunk, void, unknown> {
-        const { system, messages: converted } = toAnthropicMessages(messages);
         const startedAt = Date.now();
 
         const stream = this.client.messages.stream(
-            {
-                model: options?.model ?? this.model,
-                max_tokens: options?.maxTokens ?? DEFAULT_STREAMING_MAX_TOKENS,
-                messages: converted,
-                ...(system ? { system } : {}),
-                ...samplingParams(options),
-                ...toolParams(options),
-            },
+            this.buildRequest(messages, options, {
+                maxTokens: DEFAULT_STREAMING_MAX_TOKENS,
+                extra: toolParams(options),
+            }),
             requestOptions(options)
         );
 
@@ -223,6 +291,13 @@ export class AnthropicLM extends BaseLM {
 
                 if (event.delta.type === 'text_delta') {
                     yield { content: event.delta.text, done: false };
+                } else if (event.delta.type === 'thinking_delta') {
+                    // Thinking is not answer text, so it travels in metadata.
+                    yield {
+                        content: '',
+                        done: false,
+                        metadata: { reasoningDelta: event.delta.thinking },
+                    };
                 } else if (event.delta.type === 'input_json_delta') {
                     // Tool arguments stream as JSON fragments on their own event
                     // type. They are not text, so they travel in metadata rather
@@ -246,24 +321,25 @@ export class AnthropicLM extends BaseLM {
             throw toLMError(error);
         }
 
+        const usage = usageOf(final.usage);
         this.recordUsage({
-            promptTokens: final.usage?.input_tokens ?? 0,
-            completionTokens: final.usage?.output_tokens ?? 0,
+            ...usage,
             latencyMs: Date.now() - startedAt,
+            model: options?.model,
         });
         this.assertNotRefused(final);
 
         const toolCalls = toolCallsOf(final);
+        const reasoning = reasoningOf(final);
+        const metadata = {
+            ...(toolCalls.length > 0 ? { toolCalls } : {}),
+            ...(reasoning ? { reasoning } : {}),
+        };
         yield {
             content: '',
             done: true,
-            ...(toolCalls.length > 0 ? { metadata: { toolCalls } } : {}),
-            usage: {
-                promptTokens: final.usage?.input_tokens ?? 0,
-                completionTokens: final.usage?.output_tokens ?? 0,
-                totalTokens:
-                    (final.usage?.input_tokens ?? 0) + (final.usage?.output_tokens ?? 0),
-            },
+            ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+            usage: streamUsage(usage),
         };
     }
 
@@ -276,6 +352,55 @@ export class AnthropicLM extends BaseLM {
             maxContextLength: 1_000_000,
             supportedFormats: ['text', 'json_schema'],
         };
+    }
+
+    /**
+     * Assemble a Messages request: the converted conversation, `max_tokens`,
+     * thinking, effort, prompt-cache markers and sampling, then the
+     * operation's own fields, then the raw `providerOptions.anthropic` keys.
+     */
+    private buildRequest(
+        messages: ChatMessage[],
+        options: LLMCallOptions | undefined,
+        request: { maxTokens: number; extra?: Record<string, unknown> }
+    ): MessageCreateParamsNonStreaming {
+        const {
+            thinking: callThinking,
+            effort: callEffort,
+            cachePrompt: callCachePrompt,
+            ...raw
+        } = providerOptionsFor(options, 'anthropic') as AnthropicProviderOptions;
+
+        const thinking = toThinkingParam(
+            callThinking !== undefined ? callThinking : this.thinking
+        );
+        const effort = callEffort ?? this.effort;
+        const cachePrompt = callCachePrompt ?? this.cachePrompt;
+
+        const { system, messages: converted } = toAnthropicMessages(messages);
+
+        let maxTokens = options?.maxTokens ?? request.maxTokens;
+        // The API requires `budget_tokens < max_tokens`; leave the answer room.
+        if (thinking?.type === 'enabled' && maxTokens <= thinking.budget_tokens) {
+            maxTokens = thinking.budget_tokens + MIN_ANSWER_TOKENS;
+        }
+
+        const body: Record<string, unknown> = {
+            model: options?.model ?? this.model,
+            max_tokens: maxTokens,
+            messages: cachePrompt ? markConversationPrefix(converted) : converted,
+            ...(system ? { system: cachePrompt ? cachedSystem(system) : system } : {}),
+            // Thinking requires the default sampling: the API rejects a
+            // non-default temperature or top_p alongside it.
+            ...(thinking && thinking.type !== 'disabled' ? {} : samplingParams(options)),
+            ...(options?.stopSequences ? { stop_sequences: options.stopSequences } : {}),
+            ...(thinking ? { thinking } : {}),
+            ...request.extra,
+        };
+        const withEffort = effort
+            ? mergeRequestBody(body, { output_config: { effort } })
+            : body;
+        return mergeRequestBody(withEffort, raw) as unknown as MessageCreateParamsNonStreaming;
     }
 
     /**
@@ -298,6 +423,91 @@ export class AnthropicLM extends BaseLM {
             { category }
         );
     }
+}
+
+/** Room left for the answer when `max_tokens` is raised above a thinking budget. */
+const MIN_ANSWER_TOKENS = 1024;
+
+/** Translate the ts-dspy thinking option into the API's `thinking` parameter. */
+function toThinkingParam(
+    thinking: AnthropicThinking | ThinkingConfigParam | false | undefined
+): ThinkingConfigParam | undefined {
+    if (thinking === undefined) return undefined;
+    if (thinking === false) return { type: 'disabled' };
+    if ('type' in thinking) return thinking;
+    const display = thinking.display ? { display: thinking.display } : {};
+    if (thinking.budgetTokens !== undefined) {
+        return { type: 'enabled', budget_tokens: thinking.budgetTokens, ...display };
+    }
+    return { type: 'adaptive', ...display };
+}
+
+/** The system prompt as one text block carrying a cache breakpoint. */
+function cachedSystem(system: string): TextBlockParam[] {
+    return [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
+}
+
+/**
+ * Put a cache breakpoint on the last block of the turn before the final one,
+ * so a conversation or a run of few-shot turns is cached up to — but not
+ * including — the newest message, which differs on every call. A single-turn
+ * request is left alone: caching it would only pay the cache-write premium.
+ * The caller's array is not mutated.
+ */
+function markConversationPrefix(messages: MessageParam[]): MessageParam[] {
+    if (messages.length < 2) return messages;
+    const index = messages.length - 2;
+    const blocks = toBlocks(messages[index].content);
+    const last = blocks.at(-1);
+    // Thinking blocks cannot carry a breakpoint; nothing to mark then.
+    if (!last || last.type === 'thinking' || last.type === 'redacted_thinking') {
+        return messages;
+    }
+    const marked = [...messages];
+    marked[index] = {
+        ...messages[index],
+        content: [...blocks.slice(0, -1), { ...last, cache_control: { type: 'ephemeral' } }],
+    };
+    return marked;
+}
+
+interface AnthropicUsage {
+    promptTokens: number;
+    completionTokens: number;
+    cachedTokens?: number;
+    reasoningTokens?: number;
+}
+
+/**
+ * Token usage. Anthropic's `input_tokens` excludes cache reads and writes, so
+ * the prompt total adds them back — `cachedTokens` (cache reads) is then a
+ * subset of `promptTokens`, as it is for every provider.
+ */
+function usageOf(usage: Usage | null | undefined): AnthropicUsage {
+    const cacheRead = usage?.cache_read_input_tokens ?? undefined;
+    const cacheWrite = usage?.cache_creation_input_tokens ?? 0;
+    const thinking = usage?.output_tokens_details?.thinking_tokens;
+    return {
+        promptTokens: (usage?.input_tokens ?? 0) + cacheWrite + (cacheRead ?? 0),
+        completionTokens: usage?.output_tokens ?? 0,
+        ...(cacheRead !== undefined ? { cachedTokens: cacheRead } : {}),
+        ...(thinking !== undefined ? { reasoningTokens: thinking } : {}),
+    };
+}
+
+function streamUsage(usage: AnthropicUsage): Partial<UsageStats> {
+    return { ...usage, totalTokens: usage.promptTokens + usage.completionTokens };
+}
+
+/** Text of the `thinking` blocks, which never counts as the answer. */
+function reasoningOf(message: Message): string {
+    return message.content
+        .filter(
+            (block): block is Extract<typeof block, { type: 'thinking' }> =>
+                block.type === 'thinking'
+        )
+        .map((block) => block.thinking)
+        .join('');
 }
 
 /**
@@ -550,7 +760,6 @@ function samplingParams(options?: LLMCallOptions): Record<string, unknown> {
         params.top_p = options.topP;
     }
 
-    if (options?.stopSequences) params.stop_sequences = options.stopSequences;
     return params;
 }
 
