@@ -60,10 +60,14 @@ function escapeRegExp(value: string): string {
 }
 
 function cleanValue(value: string): string {
-    return value
-        .replace(/^\*+|\*+$/g, '')
-        .replace(/^["']|["']$/g, '')
-        .trim();
+    const bare = value.replace(/^\*+|\*+$/g, '').trim();
+    // Only a quote that wraps the whole value is decoration; stripping each
+    // end independently would eat the closing quote of `She said "maybe"`.
+    const quote = bare[0];
+    if (bare.length >= 2 && (quote === '"' || quote === "'") && bare.endsWith(quote)) {
+        return bare.slice(1, -1).trim();
+    }
+    return bare;
 }
 
 /**
@@ -91,7 +95,8 @@ function extractFieldValue(
             'i'
         ),
         // Field name appearing mid-line, e.g. "**answer:** 42".
-        new RegExp(`${escaped}\\s*[:=]\\s*(.+)`, 'i'),
+        // The lookbehind keeps `type` from matching inside `prototype:`.
+        new RegExp(`(?<![\\w])${escaped}\\s*[:=]\\s*(.+)`, 'i'),
     ];
 
     for (const pattern of patterns) {

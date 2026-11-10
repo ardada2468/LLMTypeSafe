@@ -142,8 +142,12 @@ function hasContent(value: unknown): boolean {
     return true;
 }
 
+/** Nesting beyond this is not a real payload. */
+const MAX_DEPTH = 256;
+
 class PartialJsonReader {
     private index: number;
+    private depth = 0;
 
     constructor(
         private readonly source: string,
@@ -165,8 +169,17 @@ class PartialJsonReader {
         }
 
         const char = this.source[this.index];
-        if (char === '{') return this.readObject();
-        if (char === '[') return this.readArray();
+        if (char === '{' || char === '[') {
+            // The reader recurses per level; a reply that is nothing but
+            // brackets would otherwise overflow the stack and throw.
+            if (this.depth >= MAX_DEPTH) return NOTHING;
+            this.depth += 1;
+            try {
+                return char === '{' ? this.readObject() : this.readArray();
+            } finally {
+                this.depth -= 1;
+            }
+        }
         if (char === '"') return this.readString();
         if (char === 't' || char === 'f' || char === 'n') return this.readLiteral();
         return this.readNumber();

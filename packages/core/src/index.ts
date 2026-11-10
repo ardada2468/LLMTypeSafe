@@ -114,6 +114,8 @@ export {
     CircuitOpenError,
     BudgetExceededError,
 } from './core/resilience';
+export { buildCacheKey } from './core/cache';
+export type { CacheKeyInput } from './core/cache';
 export type {
     CircuitState,
     CircuitBreakerOptions,

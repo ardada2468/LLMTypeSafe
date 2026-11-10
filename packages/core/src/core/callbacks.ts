@@ -159,11 +159,23 @@ export function emit<H extends HookName>(
         const fn = callback[hook] as ((event: EventOf<H>) => void) | undefined;
         if (typeof fn !== 'function') continue;
         try {
-            fn.call(callback, event);
+            // A hook written `async` rejects rather than throws; left alone
+            // that is an unhandled rejection, which ends the process.
+            const returned: unknown = fn.call(callback, event);
+            if (isThenable(returned)) returned.then(undefined, () => {});
         } catch {
             // Deliberately swallowed — see the doc comment on Callback.
         }
     }
+}
+
+/** Whether a hook's return value is a promise whose rejection needs handling. */
+export function isThenable(value: unknown): value is PromiseLike<unknown> {
+    return (
+        value !== null &&
+        (typeof value === 'object' || typeof value === 'function') &&
+        typeof (value as { then?: unknown }).then === 'function'
+    );
 }
 
 /** One open invocation on the logical call stack. */

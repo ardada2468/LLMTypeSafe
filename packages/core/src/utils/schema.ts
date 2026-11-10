@@ -158,14 +158,23 @@ function enumMembersOrThrow(resolved: ResolvedFieldType): [string, ...string[]] 
     return values as [string, ...string[]];
 }
 
+const THOUSANDS = /^[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?%?$/;
+const DECIMAL = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?%?$/i;
+
 /** Strings that came out of a text response need trimming before coercion. */
 function preprocessNumber(value: unknown): unknown {
     if (typeof value !== 'string') return value;
     const trimmed = value.trim();
     // Number('') === 0, which would silently accept an empty field.
     if (trimmed === '') return value;
-    // Tolerate thousands separators and a trailing unit-free percent sign.
-    return Number(trimmed.replace(/,/g, '').replace(/%$/, ''));
+    // Tolerate thousands separators and a trailing unit-free percent sign —
+    // but only commas that really are thousands separators: deleting every
+    // comma would read a decimal-comma `1,5` as 15.
+    const plain = THOUSANDS.test(trimmed) ? trimmed.replace(/,/g, '') : trimmed;
+    // Anything that is not a plain decimal is left for validation to reject;
+    // `Number()` alone would accept `0x10`, `1e`, or whitespace.
+    if (!DECIMAL.test(plain)) return value;
+    return Number(plain.replace(/%$/, ''));
 }
 
 function preprocessBoolean(value: unknown): unknown {
@@ -179,13 +188,28 @@ function preprocessBoolean(value: unknown): unknown {
 function preprocessArray(value: unknown): unknown {
     if (Array.isArray(value)) return value;
     if (typeof value !== 'string') return value;
-    const trimmed = value.trim();
+    // Models often wrap a JSON array in a code fence.
+    const trimmed = value
+        .trim()
+        .replace(/^```[\w-]*[ \t]*\n?/, '')
+        .replace(/\n?```$/, '')
+        .trim();
     if (trimmed.startsWith('[')) {
         try {
             return JSON.parse(trimmed);
         } catch {
-            // Fall through to delimiter splitting.
+            // Perhaps trailing prose: try the outermost bracketed span.
         }
+        const end = trimmed.lastIndexOf(']');
+        if (end > 0) {
+            try {
+                return JSON.parse(trimmed.slice(0, end + 1));
+            } catch {
+                // Broken JSON. Splitting it on commas would yield fragments of
+                // JSON syntax that pass as strings, so let validation fail.
+            }
+        }
+        return value;
     }
     const parts = trimmed
         .split(/[,;\n]/)
@@ -529,7 +553,10 @@ function stripOptionalNulls(schema: z.ZodType | undefined, value: unknown): unkn
         const cleaned: Record<string, unknown> = {};
 
         for (const [key, item] of Object.entries(value)) {
-            const field = shape[key];
+            // Model-chosen keys: never follow one up the prototype chain
+            // (`constructor`), and never let one set a prototype.
+            if (key === '__proto__') continue;
+            const field = Object.hasOwn(shape, key) ? shape[key] : undefined;
             if (item === null && field !== undefined && acceptsUndefined(field)) continue;
             cleaned[key] = stripOptionalNulls(field, item);
         }
@@ -564,7 +591,7 @@ export function stripAbsentNulls(
 
     const cleaned: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(source)) {
-        if (value !== null) cleaned[key] = value;
+        if (value !== null && key !== '__proto__') cleaned[key] = value;
     }
     return cleaned;
 }
@@ -765,7 +792,16 @@ export function fieldConfigToZod(config: FieldConfig): z.ZodType {
 
         case 'string':
         default:
-            schema = z.string();
+            // A model answering in JSON sometimes writes a text field's value
+            // as a nested object or array (ReAct's tool arguments, most
+            // often). Its JSON text is the faithful reading of that.
+            schema = z.preprocess(
+                (value) =>
+                    isPlainObject(value) || Array.isArray(value)
+                        ? JSON.stringify(value)
+                        : value,
+                z.string()
+            );
             break;
     }
 

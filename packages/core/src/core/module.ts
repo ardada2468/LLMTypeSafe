@@ -176,12 +176,16 @@ export abstract class Module {
             ...callOptions
         } = options;
 
-        return mapWithConcurrency(inputs, (input) => this.forward(input, callOptions), {
-            concurrency,
-            onSettled: onProgress,
-            stopOnError,
-            signal,
-        }) as Promise<BatchResult<Awaited<ReturnType<this['forward']>>>[]>;
+        return mapWithConcurrency(
+            inputs,
+            (input) => this.forward(input, signal ? { ...callOptions, signal } : callOptions),
+            {
+                concurrency,
+                onSettled: onProgress,
+                stopOnError,
+                signal,
+            }
+        ) as Promise<BatchResult<Awaited<ReturnType<this['forward']>>>[]>;
     }
 
     /**

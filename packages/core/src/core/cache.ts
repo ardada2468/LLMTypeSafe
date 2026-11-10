@@ -162,6 +162,10 @@ export function buildCacheKey(input: CacheKeyInput): string {
         // Only present when set, so keys for calls without provider options
         // are unchanged.
         ...(options.providerOptions ? { providerOptions: options.providerOptions } : {}),
+        // Likewise for tools: a reply produced with tools on offer (often an
+        // empty tool-call turn) must not answer the same messages without them.
+        ...(options.tools?.length ? { tools: options.tools } : {}),
+        ...(options.toolChoice !== undefined ? { toolChoice: options.toolChoice } : {}),
     };
     if (rolloutId !== undefined && rolloutId !== null) {
         payload.rolloutId = rolloutId;

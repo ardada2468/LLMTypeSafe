@@ -80,6 +80,17 @@ export class InMemoryVectorStore implements Retriever {
                 `Embedder returned ${vectors.length} vectors for ${normalised.length} documents.`
             );
         }
+        // One malformed vector would make every later query throw, so reject
+        // the batch before any of it is indexed.
+        const dimensions = this.documents[0]?.vector.length ?? vectors[0]!.length;
+        vectors.forEach((vector, index) => {
+            if (vector.length !== dimensions || !vector.every(Number.isFinite)) {
+                throw new RangeError(
+                    `Embedder returned an invalid vector for document ${index}: expected ` +
+                        `${dimensions} finite numbers, got ${vector.length} values.`
+                );
+            }
+        });
         normalised.forEach((document, index) => {
             this.documents.push({
                 text: document.text,

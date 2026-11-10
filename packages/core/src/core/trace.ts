@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { type UsageStats } from '../types/language-model';
 import { type LMCall, type TraceEntry } from '../types/module';
 import { getTraceHandler, getTraceHistorySize, isTracingEnabled } from './config';
-import { type CallFrame } from './callbacks';
+import { isThenable, type CallFrame } from './callbacks';
 import { sumUsage } from './usage';
 
 /**
@@ -156,7 +156,8 @@ function record(entry: TraceEntry): TraceEntry {
     const handler = getTraceHandler();
     if (handler) {
         try {
-            handler(entry);
+            const returned: unknown = handler(entry);
+            if (isThenable(returned)) returned.then(undefined, () => {});
         } catch {
             // Deliberately swallowed — see the doc comment above.
         }

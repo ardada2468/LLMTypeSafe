@@ -588,10 +588,12 @@ function specToFieldConfig(
 export function toSignatureClass(shorthand: string, instructions?: string): typeof Signature {
     const parsed = Signature.parseStringSignature(shorthand);
     const config = (name: string, side: 'input' | 'output'): FieldConfig => ({
-        description:
-            parsed.descriptions[name] ??
-            `${side === 'input' ? 'Input' : 'Output'} field: ${name}`,
-        type: parsed.types[name] ?? 'string',
+        // Own properties only: a field named `constructor` or `toString`
+        // would otherwise pick up Object.prototype's.
+        description: Object.hasOwn(parsed.descriptions, name)
+            ? parsed.descriptions[name]!
+            : `${side === 'input' ? 'Input' : 'Output'} field: ${name}`,
+        type: Object.hasOwn(parsed.types, name) ? parsed.types[name]! : 'string',
         required: !parsed.optional.includes(name),
     });
     return defineSignatureClass(

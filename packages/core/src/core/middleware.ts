@@ -268,12 +268,16 @@ export async function retryWithBackoff<T>(
         shouldRetry = isRetryableLMError,
     } = options;
 
+    // A NaN from `Number(process.env.X)` would make `n >= maxRetries` false
+    // forever; fall back to the default rather than retry without end.
+    const limit = Number.isFinite(maxRetries) ? Math.max(0, Math.floor(maxRetries)) : 3;
+
     for (let n = 0; ; n++) {
         signal?.throwIfAborted();
         try {
             return await attempt(n);
         } catch (error) {
-            if (n >= maxRetries || signal?.aborted || !shouldRetry(error, n)) throw error;
+            if (n >= limit || signal?.aborted || !shouldRetry(error, n)) throw error;
             await sleep(backoffDelay(n, error, { initialDelayMs, maxDelayMs, jitter }), signal);
         }
     }
@@ -284,7 +288,9 @@ function backoffDelay(
     error: unknown,
     options: { initialDelayMs: number; maxDelayMs: number; jitter: boolean }
 ): number {
-    const exponential = Math.min(options.maxDelayMs, options.initialDelayMs * 2 ** attempt);
+    const initial = Number.isFinite(options.initialDelayMs) ? options.initialDelayMs : 500;
+    const ceiling = Number.isNaN(options.maxDelayMs) ? 20_000 : options.maxDelayMs;
+    const exponential = Math.max(0, Math.min(ceiling, initial * 2 ** attempt));
     const delay = options.jitter
         ? exponential / 2 + (Math.random() * exponential) / 2
         : exponential;
@@ -295,6 +301,8 @@ function backoffDelay(
     }
     return delay;
 }
+
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 /** Sleep, unless the signal aborts first. */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -307,22 +315,60 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
             clearTimeout(timer);
             reject(signal?.reason);
         };
-        const timer = setTimeout(() => {
-            signal?.removeEventListener('abort', onAbort);
-            resolve();
-        }, ms);
+        // setTimeout treats anything past 2^31-1 ms as 1ms — an hours-long
+        // Retry-After would turn into an immediate retry.
+        const timer = setTimeout(
+            () => {
+                signal?.removeEventListener('abort', onAbort);
+                resolve();
+            },
+            Math.min(ms, MAX_TIMEOUT_MS)
+        );
         signal?.addEventListener('abort', onAbort, { once: true });
     });
 }
 
 /**
- * The default retry policy: rate limits, timeouts, and server-side (5xx)
- * failures. Authentication, context-length, content-filter and other client
- * errors are final — retrying them only costs time.
+ * The default retry policy: rate limits, timeouts, server-side (5xx) failures
+ * and dropped connections. Authentication, context-length, content-filter and
+ * other client errors are final — retrying them only costs time.
  */
 export function isRetryableLMError(error: unknown): boolean {
     if (error instanceof RateLimitError || error instanceof TimeoutError) return true;
-    return error instanceof LMError && error.status !== undefined && error.status >= 500;
+    if (error instanceof LMError && error.status !== undefined) return error.status >= 500;
+    return isConnectionError(error);
+}
+
+const CONNECTION_ERROR_CODES = new Set([
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'ECONNABORTED',
+    'ETIMEDOUT',
+    'EPIPE',
+    'EAI_AGAIN',
+    'ENETUNREACH',
+    'EHOSTUNREACH',
+    'UND_ERR_SOCKET',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_BODY_TIMEOUT',
+]);
+
+/**
+ * Whether a failure never reached the provider: a reset socket, a DNS blip, or
+ * `fetch` failing outright. Looks down the `cause` chain, since both provider
+ * SDKs and `fetch` wrap the underlying network error.
+ */
+function isConnectionError(error: unknown): boolean {
+    let current: unknown = error;
+    for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+        const code = (current as { code?: unknown }).code;
+        if (typeof code === 'string' && CONNECTION_ERROR_CODES.has(code)) return true;
+        if (current instanceof TypeError && current.message === 'fetch failed') return true;
+        if (current.name === 'APIConnectionError') return true;
+        current = current.cause;
+    }
+    return false;
 }
 
 export interface RetryOptions extends Omit<BackoffOptions, 'signal' | 'shouldRetry'> {
@@ -393,7 +439,14 @@ export function fallback(lms: ILanguageModel[], options: FallbackOptions = {}): 
  * from overriding it.
  */
 export function defaults(options: LLMCallOptions): LMMiddleware {
-    return (request, next) => next({ ...request, options: { ...options, ...request.options } });
+    return (request, next) => {
+        // An explicit `undefined` means "unset", not "override the default".
+        const merged: Record<string, unknown> = { ...options };
+        for (const [key, value] of Object.entries(request.options ?? {})) {
+            if (value !== undefined) merged[key] = value;
+        }
+        return next({ ...request, options: merged as LLMCallOptions });
+    };
 }
 
 // ---------------------------------------------------------------- rate limit
@@ -422,7 +475,16 @@ export function rateLimit(options: RateLimitOptions): LMMiddleware {
         const now = Date.now();
         const slot = Math.max(now, nextSlot);
         nextSlot = slot + interval;
-        if (slot > now) await sleep(slot - now, request.options?.signal);
+        if (slot > now) {
+            try {
+                await sleep(slot - now, request.options?.signal);
+            } catch (error) {
+                // Hand the reserved slot back, or calls cancelled while queued
+                // would keep delaying everything behind them.
+                nextSlot = Math.max(Date.now(), nextSlot - interval);
+                throw error;
+            }
+        }
         return next(request);
     };
 }

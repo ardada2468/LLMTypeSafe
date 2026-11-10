@@ -370,9 +370,24 @@ export class ReAct<TSignature extends SignatureSource = typeof Signature> extend
             previousToolCalls.add(key);
             this.emit({ type: 'tool_call', step, tool: toolName, input: description });
 
-            trajectory[`observation_${step}`] = parsedArgs.ok
-                ? await this.runTool(toolName, parsedArgs.args, step)
-                : this.reportToolError(toolName, parsedArgs.error, step);
+            // A call that failed may be retried: only a call that produced a
+            // result is worth refusing to repeat.
+            const allowRetry = () => previousToolCalls.delete(key);
+            if (parsedArgs.ok) {
+                trajectory[`observation_${step}`] = await this.runTool(
+                    toolName,
+                    parsedArgs.args,
+                    step,
+                    allowRetry
+                );
+            } else {
+                allowRetry();
+                trajectory[`observation_${step}`] = this.reportToolError(
+                    toolName,
+                    parsedArgs.error,
+                    step
+                );
+            }
         }
 
         return this.finish(inputs, trajectory, steps, stepOptions);
@@ -575,10 +590,13 @@ export class ReAct<TSignature extends SignatureSource = typeof Signature> extend
         // wrong instead and let it retry.
         if (unparsedArguments(call)) {
             const error = new Error(`Tool arguments were not valid JSON: ${call.rawArguments}`);
+            previousToolCalls.delete(key);
             return this.reportToolError(call.name, error, step);
         }
 
-        return this.runTool(call.name, call.arguments, step);
+        return this.runTool(call.name, call.arguments, step, () =>
+            previousToolCalls.delete(key)
+        );
     }
 
     /** The tool declarations sent to the provider on every native turn. */
@@ -637,7 +655,8 @@ export class ReAct<TSignature extends SignatureSource = typeof Signature> extend
     private async runTool(
         toolName: string,
         args: Record<string, unknown>,
-        step: number
+        step: number,
+        onError?: () => void
     ): Promise<string> {
         const tool = this.tools[toolName];
         if (!tool) {
@@ -661,6 +680,7 @@ export class ReAct<TSignature extends SignatureSource = typeof Signature> extend
             this.emit({ type: 'tool_result', step, tool: toolName, output });
             return output;
         } catch (error) {
+            onError?.();
             return this.reportToolError(toolName, error, step);
         }
     }
@@ -789,8 +809,10 @@ function schemaProperties(tool: NormalizedTool): Record<string, unknown> {
 /** Stable, human-readable rendering of a tool call's arguments. */
 function describeArguments(args: Record<string, unknown>): string {
     const keys = Object.keys(args ?? {});
-    if (keys.length === 1 && typeof args[keys[0]] === 'string') {
-        return args[keys[0]] as string;
+    // The untyped-tool shape reads best as its bare string. Any other single
+    // argument keeps its name, so `{a: "x"}` and `{b: "x"}` stay distinct.
+    if (keys.length === 1 && keys[0] === 'input' && typeof args.input === 'string') {
+        return args.input;
     }
     const sorted: Record<string, unknown> = {};
     for (const key of keys.sort()) {

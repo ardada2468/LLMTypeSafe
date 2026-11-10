@@ -141,7 +141,13 @@ export async function invokeLM<T>(
         handle.fail(error);
         throw error;
     }
-    handle.end(result, describe(result));
+    let description = '';
+    try {
+        description = describe(result);
+    } catch {
+        // Describing a reply for observers must not fail a call that succeeded.
+    }
+    handle.end(result, description);
     return result;
 }
 

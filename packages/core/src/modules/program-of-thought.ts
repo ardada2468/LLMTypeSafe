@@ -201,6 +201,9 @@ const FINISH = '__tsdspyFinish';
 /** Budget for reading back logs and describing an error, beyond `timeoutMs`. */
 const HOUSEKEEPING_MS = 100;
 
+/** Cap on captured `console` output, in characters. */
+const MAX_OUTPUT_CHARS = 64_000;
+
 /**
  * Sets up a fresh context from the inside: a capturing `console`, and the
  * finishing step that reads the code's completion value (or thrown error),
@@ -243,8 +246,19 @@ const SANDBOX_PRELUDE = `(() => {
             return 'The code threw a value that could not be described.';
         }
     };
+    let logged = 0;
     const log = (...args) => {
-        logs.push(args.map(format).join(' '));
+        // A loop that prints forever would otherwise grow without bound and
+        // land, whole, in the next prompt.
+        if (logged > ${MAX_OUTPUT_CHARS}) return;
+        const line = args.map(format).join(' ');
+        logged += line.length + 1;
+        logs.push(
+            logged > ${MAX_OUTPUT_CHARS}
+                ? line.slice(0, Math.max(0, line.length - (logged - ${MAX_OUTPUT_CHARS}))) +
+                      '\\n[output truncated]'
+                : line
+        );
     };
     Object.defineProperty(globalThis, 'console', {
         value: { log, info: log, warn: log, error: log, debug: log },
@@ -321,7 +335,9 @@ export async function runSandboxed(
     code: string,
     options: { timeoutMs?: number } = {}
 ): Promise<SandboxResult> {
-    const timeoutMs = options.timeoutMs ?? 5000;
+    const requested = options.timeoutMs ?? 5000;
+    // NaN would reach node:vm as its timeout and be rejected there.
+    const timeoutMs = Number.isFinite(requested) && requested > 0 ? requested : 5000;
     if (code.trim() === '') return { output: '', error: 'No code was generated.' };
 
     let vm: typeof NodeVM;

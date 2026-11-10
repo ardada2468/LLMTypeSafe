@@ -55,7 +55,10 @@ export class XMLAdapter extends ChatAdapter {
                 if (open) sections[name] = open[1].trim();
             }
         }
-        return Object.keys(sections).length > 0 || /<[\w-]+>/.test(text) ? sections : null;
+        // No declared field tag means this is not our format, however many
+        // angle brackets the prose contains (`List<String>`, `<div>`): let the
+        // tolerant label parser have it.
+        return Object.keys(sections).length > 0 ? sections : null;
     }
 
     protected startsStructured(text: string): boolean {

@@ -183,7 +183,11 @@ export class ChatAdapter extends Adapter {
         _names: string[],
         _partial = false
     ): Record<string, string> | null {
-        const marker = /\[\[\s*##\s*([^\]#]+?)\s*##\s*\]\]/g;
+        // Only at the start of a line, as in DSPy: a value that mentions
+        // `[[ ## answer ## ]]` in passing must not be split there. Every
+        // quantifier is over a disjoint character class, so an unterminated
+        // marker followed by a long run of spaces cannot backtrack.
+        const marker = /^[ \t]*\[\[[ \t]*##[ \t]*([A-Za-z_][\w-]*)[ \t]*##[ \t]*\]\]/gm;
         const found: Array<{ name: string; start: number; end: number }> = [];
         for (let match = marker.exec(text); match; match = marker.exec(text)) {
             found.push({

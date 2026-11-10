@@ -237,7 +237,16 @@ export abstract class BaseLM implements ILanguageModel {
         // never either, and Redis clients resolve a missing key to `null`, so a
         // custom store that forgets to translate would otherwise report a hit
         // and fail somewhere far away from the cache.
-        const cached = await cache.get(key);
+        //
+        // A cache is an optimisation, never a dependency: a store that is down
+        // reads as a miss, and a failed write must not discard a reply that
+        // has already been paid for.
+        let cached: unknown;
+        try {
+            cached = await cache.get(key);
+        } catch {
+            cached = undefined;
+        }
         if (cached !== undefined && cached !== null) {
             this.cacheHits += 1;
             recordLMUsage(this.usageKey(input.options?.model), { cacheHit: true });
@@ -245,7 +254,11 @@ export abstract class BaseLM implements ILanguageModel {
         }
 
         const value = await run();
-        await cache.set(key, isolate(value, input.operation));
+        try {
+            await cache.set(key, isolate(value, input.operation));
+        } catch {
+            // See above.
+        }
         return value;
     }
 }
@@ -281,7 +294,19 @@ export function parseJsonResponse<T>(
     raw: string,
     providerOrOnError: string | ((candidate: string, cause: unknown) => Error)
 ): T {
-    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    // A reply that is already JSON is taken as it is. Looking for a code fence
+    // first would mistake a fenced snippet *inside* a string value — any
+    // field holding code or markdown — for the payload.
+    const trimmed = raw.trim();
+    try {
+        return JSON.parse(trimmed) as T;
+    } catch {
+        // Not bare JSON; look for a fence or a brace-delimited span below.
+    }
+
+    const fenced =
+        trimmed.match(/^```(?:json)?[ \t]*\n([\s\S]*)\n[ \t]*```$/i) ??
+        raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
     const candidate = (fenced?.[1] ?? raw).trim();
 
     try {
