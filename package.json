@@ -40,7 +40,8 @@
     "example:otel": "tsx examples/otel-tracing.ts",
     "example:ai-sdk": "tsx examples/ai-sdk.ts",
     "example:refine": "tsx examples/refine.ts",
-    "example:streamify": "tsx examples/streamify.ts"
+    "example:streamify": "tsx examples/streamify.ts",
+    "example:production": "tsx examples/production.ts"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",

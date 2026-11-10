@@ -28,9 +28,25 @@ export interface MemoryCacheOptions {
      * used entry is evicted. Defaults to 1000.
      */
     maxSize?: number;
+    /**
+     * How long an entry stays valid, in milliseconds. Unset, entries live
+     * until evicted. Set it wherever answers go stale or data may only be
+     * retained for a bounded time.
+     */
+    ttlMs?: number;
 }
 
 const DEFAULT_MAX_SIZE = 1000;
+
+function validTtl(ttlMs: number | undefined, owner: string): number | undefined {
+    if (ttlMs === undefined) return undefined;
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+        throw new RangeError(
+            `${owner} ttlMs must be a positive number, received ${String(ttlMs)}`
+        );
+    }
+    return ttlMs;
+}
 
 /**
  * In-process LRU cache, and the default backing store for
@@ -40,10 +56,12 @@ const DEFAULT_MAX_SIZE = 1000;
  * the iterator yields; reads re-insert their key to mark it most recent.
  */
 export class MemoryCache implements Cache {
-    private readonly entries = new Map<string, unknown>();
+    private readonly entries = new Map<string, { value: unknown; expiresAt: number }>();
 
     /** Entry ceiling this cache was constructed with. */
     readonly maxSize: number;
+    /** Entry lifetime in milliseconds, when one was set. */
+    readonly ttlMs?: number;
 
     constructor(options: MemoryCacheOptions = {}) {
         const maxSize = options.maxSize ?? DEFAULT_MAX_SIZE;
@@ -53,6 +71,7 @@ export class MemoryCache implements Cache {
             );
         }
         this.maxSize = maxSize;
+        this.ttlMs = validTtl(options.ttlMs, 'MemoryCache');
     }
 
     /** Number of entries currently held. */
@@ -61,17 +80,21 @@ export class MemoryCache implements Cache {
     }
 
     get(key: string): unknown {
-        if (!this.entries.has(key)) return undefined;
+        const entry = this.entries.get(key);
+        if (!entry) return undefined;
 
-        const value = this.entries.get(key);
         this.entries.delete(key);
-        this.entries.set(key, value);
-        return value;
+        if (entry.expiresAt <= Date.now()) return undefined;
+        this.entries.set(key, entry);
+        return entry.value;
     }
 
     set(key: string, value: unknown): void {
         this.entries.delete(key);
-        this.entries.set(key, value);
+        this.entries.set(key, {
+            value,
+            expiresAt: this.ttlMs === undefined ? Infinity : Date.now() + this.ttlMs,
+        });
 
         while (this.entries.size > this.maxSize) {
             const oldest = this.entries.keys().next();
@@ -82,6 +105,102 @@ export class MemoryCache implements Cache {
 
     clear(): void {
         this.entries.clear();
+    }
+}
+
+export interface FileCacheOptions {
+    /** Directory holding one JSON file per entry. Created if missing. */
+    directory: string;
+    /** How long an entry stays valid, in milliseconds. Unset, entries never expire. */
+    ttlMs?: number;
+}
+
+/**
+ * A cache that survives restarts: one JSON file per entry in a directory.
+ *
+ * For development loops, evaluation and optimizer runs — where re-running the
+ * same prompts after a crash or a code change should cost nothing — and for a
+ * single machine. Writes are atomic (temp file, then rename), so concurrent
+ * processes sharing the directory never read a half-written entry. Reach for
+ * Redis or similar when several machines must share a cache.
+ *
+ * Cached replies are stored in plain text: put the directory somewhere with
+ * the access controls the prompts deserve, and set `ttlMs` if they may only be
+ * retained for a bounded time. Node.js only.
+ *
+ * ```ts
+ * configure({ cache: new FileCache({ directory: '.cache/llm', ttlMs: 86_400_000 }) });
+ * ```
+ */
+export class FileCache implements Cache {
+    readonly directory: string;
+    readonly ttlMs?: number;
+    private ready?: Promise<unknown>;
+
+    constructor(options: FileCacheOptions) {
+        if (typeof options?.directory !== 'string' || options.directory === '') {
+            throw new TypeError('FileCache requires a directory.');
+        }
+        this.directory = options.directory;
+        this.ttlMs = validTtl(options.ttlMs, 'FileCache');
+    }
+
+    /** Keys are hashes already; anything else is hashed, so a key can never name a path. */
+    private async fileFor(key: string): Promise<string> {
+        const { join } = await import('node:path');
+        const name = /^[a-f0-9]{16,128}$/.test(key)
+            ? key
+            : createHash('sha256').update(key).digest('hex');
+        return join(this.directory, `${name}.json`);
+    }
+
+    async get(key: string): Promise<unknown> {
+        const { readFile, rm } = await import('node:fs/promises');
+        const file = await this.fileFor(key);
+        let entry: { value?: unknown; expiresAt?: number | null };
+        try {
+            entry = JSON.parse(await readFile(file, 'utf8'));
+        } catch {
+            // Absent, unreadable or corrupt: all of them are a miss.
+            return undefined;
+        }
+        if (typeof entry?.expiresAt === 'number' && entry.expiresAt <= Date.now()) {
+            await rm(file, { force: true }).catch(() => {});
+            return undefined;
+        }
+        return entry?.value;
+    }
+
+    async set(key: string, value: unknown): Promise<void> {
+        const { mkdir, rename, writeFile } = await import('node:fs/promises');
+        this.ready ??= mkdir(this.directory, { recursive: true });
+        await this.ready;
+
+        const file = await this.fileFor(key);
+        const temporary = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+        const entry = {
+            value,
+            expiresAt: this.ttlMs === undefined ? null : Date.now() + this.ttlMs,
+        };
+        await writeFile(temporary, JSON.stringify(entry), { encoding: 'utf8', mode: 0o600 });
+        await rename(temporary, file);
+    }
+
+    /** Remove every entry this cache wrote. Other files in the directory are left alone. */
+    async clear(): Promise<void> {
+        const { readdir, rm } = await import('node:fs/promises');
+        const { join } = await import('node:path');
+        let names: string[];
+        try {
+            names = await readdir(this.directory);
+        } catch {
+            return;
+        }
+        await Promise.all(
+            names
+                .filter((name) => /^[a-f0-9]{16,128}\.json$/.test(name))
+                .map((name) => rm(join(this.directory, name), { force: true }))
+        );
     }
 }
 

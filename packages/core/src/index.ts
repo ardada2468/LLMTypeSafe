@@ -168,8 +168,14 @@ export type {
 export { providerOptionsFor, mergeRequestBody } from './core/provider-options';
 
 // Caching
-export { MemoryCache } from './core/cache';
-export type { Cache, MemoryCacheOptions, MaybePromise } from './core/cache';
+export { MemoryCache, FileCache } from './core/cache';
+export type { Cache, MemoryCacheOptions, FileCacheOptions, MaybePromise } from './core/cache';
+
+// Governance: keep personal data out of prompts, and keep a record of what ran
+export { redact } from './core/redact';
+export type { RedactOptions, RedactionPattern, BuiltInEntity } from './core/redact';
+export { auditLogger } from './core/audit';
+export type { AuditLoggerOptions, AuditRecord } from './core/audit';
 
 // Tracing
 export { inspectHistory, clearHistory } from './core/trace';

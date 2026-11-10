@@ -109,7 +109,12 @@ export class CassetteLM extends BaseLM {
         }
 
         if (!options.model && !options.lm) {
-            const recordedModel = this.recorded[0]?.request.model;
+            // Prefer an entry known to have used the recorder's default: the
+            // first entry may carry a per-call override, and adopting that
+            // would make every default-model call miss.
+            const recordedModel = (
+                this.recorded.find((entry) => entry.defaultModel) ?? this.recorded[0]
+            )?.request.model;
             if (recordedModel) {
                 this.setModel(recordedModel);
             }
@@ -151,7 +156,11 @@ export class CassetteLM extends BaseLM {
             options: keyedOptions(options),
         };
 
-        return this.play(request, () => this.requireLM().chat(messages, options));
+        return this.play(
+            request,
+            () => this.requireLM().chat(messages, options),
+            !options?.model
+        );
     }
 
     async generateStructured<T>(
@@ -167,8 +176,10 @@ export class CassetteLM extends BaseLM {
             options: keyedOptions(options),
         };
 
-        return this.play<T>(request, () =>
-            this.requireLM().generateStructured<T>(prompt, schema, options)
+        return this.play<T>(
+            request,
+            () => this.requireLM().generateStructured<T>(prompt, schema, options),
+            !options?.model
         );
     }
 
@@ -198,7 +209,11 @@ export class CassetteLM extends BaseLM {
         };
     }
 
-    private async play<T>(request: CassetteRequest, live: () => Promise<T>): Promise<T> {
+    private async play<T>(
+        request: CassetteRequest,
+        live: () => Promise<T>,
+        defaultModel: boolean
+    ): Promise<T> {
         const key = hashRequest(request);
 
         if (this.mode !== 'record') {
@@ -223,7 +238,12 @@ export class CassetteLM extends BaseLM {
             throw error;
         }
 
-        this.remember({ key, request, response: snapshot(response) });
+        this.remember({
+            key,
+            request,
+            response: snapshot(response),
+            ...(defaultModel ? { defaultModel: true } : {}),
+        });
         this.plays.set(key, (this.plays.get(key) ?? 0) + 1);
         this.recordUsage({ latencyMs: Date.now() - startedAt });
 

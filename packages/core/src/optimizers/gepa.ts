@@ -455,7 +455,9 @@ export class GEPA {
                 } else {
                     feedback = `The program failed with an error: ${describeError(run.error)}`;
                 }
-                s.metricCalls += 1;
+                // The metric ran twice for a prediction: once to score, once
+                // for feedback. With a judge model behind it, both are spend.
+                s.metricCalls += run.prediction ? 2 : 1;
                 oldScores.push(score);
                 const step: MetricTraceStep | undefined = predTrace.at(-1);
                 if (step) {

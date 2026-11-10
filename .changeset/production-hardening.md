@@ -16,6 +16,11 @@ Production hardening. See MIGRATION.md ("0.7 → 0.8") for the behaviour changes
 - `evaluate` options `maxErrors` and `failureScore`; `callOptions.signal` now cancels the run.
 - `retryAfterMsFrom(headers)`, `buildCacheKey`, and `ToolCall.providerMetadata`.
 
+- Governance: `redact()` middleware replaces emails, phone numbers, SSNs, card numbers, IP addresses and custom patterns with placeholders before a request leaves the process, and restores them in the reply. `auditLogger()` is a callback writing one structured record per module, model and tool call, with no content unless asked.
+- Caching: `MemoryCache` takes a `ttlMs`; new on-disk `FileCache`.
+- `ProgramOfThought` runs generated code on a worker thread with a heap limit (`memoryLimitMb`) and a hard timeout, terminated on abort. `isolation: 'inline'` keeps the old behaviour.
+- `ReAct` takes `toolTimeoutMs`, and validates `maxSteps`.
+
 **Fixed in core**
 
 - Async callbacks and `onTrace` handlers that reject no longer cause unhandled rejections.
@@ -27,13 +32,15 @@ Production hardening. See MIGRATION.md ("0.7 → 0.8") for the behaviour changes
 - `ProgramOfThought` caps captured output at 64k characters.
 - Optimizers throw when every example fails at the provider, and no longer pass the student's sampling options to proposer or reflection calls. `MIPROv2` returns the student when its own demos beat everything searched. `GEPA` rejects a checkpoint written for different instructions and applies `failureScore` consistently. `maxBootstrappedDemos: 0` bootstraps nothing.
 - `tokenF1` and `exactMatch` no longer treat distinct objects or dates as equal.
-- Cassettes are written atomically and keyed on `tools`, `toolChoice` and `providerOptions`.
+- Cassettes are written atomically and keyed on `tools`, `toolChoice` and `providerOptions`; a replay no longer adopts a per-call model override as its default.
+- `GEPA` counts both metric invocations per reflection example against `maxMetricCalls`.
 
 **Providers and integrations**
 
 - OpenAI: a refusal raises `ContentFilterError`, an empty `choices` raises `LMError`, a cancelled call raises `TimeoutError`, and `RateLimitError.retryAfterMs` is populated. `OpenAICompatibleLM` no longer sends `OPENAI_ORG_ID` / `OPENAI_PROJECT_ID` to third-party hosts.
 - Anthropic: structured-output schemas are stripped of unsupported constraints; `temperature` / `top_p` are sent only to models that accept them; a forced tool choice becomes `auto` on models that reject one; a cancelled call raises `TimeoutError`; `retryAfterMs` is populated.
 - Gemini: function-call thought signatures and ids survive a tool round trip; timeouts and cancellations raise `TimeoutError`; no more SDK `console.warn` on tool-calling turns.
+- Streaming: OpenAI and Gemini streams carry the assembled tool calls, and every provider reports `finishReason`, on the final chunk's `metadata`. Anthropic streaming honours an explicit `maxTokens`.
 - AI SDK: per-call `providerOptions` are honoured.
 - MCP: `serveProgram` cancels the program when the client cancels the call.
 - OTel: error messages are recorded only with `captureContent`; token usage is recorded on failed spans; Gemini is reported as `gcp.gemini`.

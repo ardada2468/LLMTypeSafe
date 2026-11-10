@@ -155,6 +155,19 @@ For production, `circuitBreaker()` fails fast while a model is down,
 `budget({ usage: lm, maxCost })` stops a runaway loop with a
 `BudgetExceededError`.
 
+## Governance
+
+```ts
+import { wrapLM, redact, auditLogger, configure, FileCache } from '@ts-dspy/core';
+
+const lm = wrapLM(provider, redact()); // PII becomes [EMAIL_1] before it leaves the process
+configure({
+  lm,
+  cache: new FileCache({ directory: '.cache/llm', ttlMs: 86_400_000 }),
+  callbacks: [auditLogger({ sink: process.stdout })], // one JSON line per call, no content
+});
+```
+
 ## Evaluation and optimizers
 
 ```ts

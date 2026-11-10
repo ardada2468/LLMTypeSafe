@@ -1,4 +1,5 @@
 import type * as NodeVM from 'node:vm';
+import type { Worker } from 'node:worker_threads';
 import { Module } from '../core/module';
 import { type Prediction } from '../core/prediction';
 import { TsDspyError } from '../core/errors';
@@ -416,7 +417,7 @@ async function runInWorker(
     timeoutMs: number,
     options: RunSandboxedOptions
 ): Promise<SandboxResult | undefined> {
-    let WorkerClass: typeof import('node:worker_threads').Worker;
+    let WorkerClass: typeof Worker;
     try {
         ({ Worker: WorkerClass } = await import('node:worker_threads'));
     } catch {
@@ -433,7 +434,7 @@ async function runInWorker(
         `parentPort.postMessage(main(require('node:vm'), ...workerData));`;
 
     return new Promise((resolve) => {
-        let worker: import('node:worker_threads').Worker;
+        let worker: Worker;
         try {
             worker = new WorkerClass(source, {
                 eval: true,

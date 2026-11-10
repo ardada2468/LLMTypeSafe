@@ -85,6 +85,11 @@ Or skip the class entirely: `new Predict('question -> answer, confidence: float'
   embedders included.
 - **Integrations** — MCP tools in agents and programs served over MCP,
   OpenTelemetry tracing.
+- **Governance** — `redact()` keeps personal data out of prompts, and
+  `auditLogger()` writes a structured record of every module, model and tool
+  call.
+- **Caching** — in-memory LRU with TTL, an on-disk `FileCache`, or your own
+  store.
 - **Testing** — `MockLM` and record/replay `CassetteLM`, no network needed.
 
 ## Packages
@@ -193,17 +198,17 @@ Or zod schemas, which need no decorators and infer their own types — see
 
 ### Modules
 
-| Module                                        | What it does                                                                                                                              |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `Predict`                                     | One call, validated against the signature.                                                                                                |
-| `ChainOfThought`                              | Adds a leading `reasoning` output, so the model thinks before it answers — in the same call.                                              |
-| `ReAct`                                       | A tool-using agent over any signature; see [Tools](#tools). (`RespAct` is a deprecated alias.)                                            |
-| `BestOfN(module, { n, rewardFn, threshold })` | Runs a module up to `n` times at a sampling temperature and returns the first prediction whose reward reaches `threshold`, else the best. |
-| `Refine(module, { n, rewardFn, threshold })`  | `BestOfN`, plus model-written advice after each miss, passed to the next attempt as a hint.                                               |
-| `Parallel({ concurrency })`                   | `.run([[module, inputs], …])` runs different modules side by side; results in input order.                                                |
-| `MultiChainComparison(sig, { m })`            | Compares `m` reasoning attempts and produces a `rationale` plus the outputs.                                                              |
-| `ProgramOfThought(sig)` _(experimental)_      | The model writes JavaScript, run in a fresh `node:vm` context, with errors fed back. Not a security boundary.                             |
-| `Retrieve({ k })`                             | Returns `{ passages }` from the configured retriever — see [Retrieval](#retrieval).                                                       |
+| Module                                        | What it does                                                                                                                                    |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Predict`                                     | One call, validated against the signature.                                                                                                      |
+| `ChainOfThought`                              | Adds a leading `reasoning` output, so the model thinks before it answers — in the same call.                                                    |
+| `ReAct`                                       | A tool-using agent over any signature; see [Tools](#tools). (`RespAct` is a deprecated alias.)                                                  |
+| `BestOfN(module, { n, rewardFn, threshold })` | Runs a module up to `n` times at a sampling temperature and returns the first prediction whose reward reaches `threshold`, else the best.       |
+| `Refine(module, { n, rewardFn, threshold })`  | `BestOfN`, plus model-written advice after each miss, passed to the next attempt as a hint.                                                     |
+| `Parallel({ concurrency })`                   | `.run([[module, inputs], …])` runs different modules side by side; results in input order.                                                      |
+| `MultiChainComparison(sig, { m })`            | Compares `m` reasoning attempts and produces a `rationale` plus the outputs.                                                                    |
+| `ProgramOfThought(sig)` _(experimental)_      | The model writes JavaScript, run on a memory-limited worker thread in a fresh `node:vm` context, with errors fed back. Not a security boundary. |
+| `Retrieve({ k })`                             | Returns `{ passages }` from the configured retriever — see [Retrieval](#retrieval).                                                             |
 
 Every module accepts per-call options that are passed through to the provider SDK:
 
@@ -820,6 +825,12 @@ as structured data, so several tools can run in one turn. Both paths run the
 same tools and emit the same events; pass `forceTextMode: true` to keep a
 tool-capable model on the adapter loop.
 
+Set `toolTimeoutMs` to bound how long any one tool may run: a tool that
+overruns is reported to the model as a failed call, which it may retry or work
+around, instead of hanging the agent. A call that failed can be retried; one
+that already succeeded with the same arguments is refused, so the agent cannot
+loop on it.
+
 Tool descriptions are what the model uses to decide when to call each tool, so
 they earn the detail. Never pass model output to `eval()` — see
 [`examples/utils.ts`](examples/utils.ts) for a bounded arithmetic evaluator.
@@ -967,6 +978,86 @@ const redisCache: Cache = {
 configure({ cache: redisCache });
 ```
 
+Two more options ship with core. `MemoryCache` takes a `ttlMs`, for answers that
+go stale or data that may only be kept for a bounded time; and `FileCache`
+persists to a directory, so an evaluation or optimizer run interrupted at row
+400 resumes without paying for the first 399 again:
+
+```ts
+import { configure, FileCache, MemoryCache } from '@ts-dspy/core';
+
+configure({ cache: new MemoryCache({ maxSize: 10_000, ttlMs: 15 * 60_000 }) });
+configure({ cache: new FileCache({ directory: '.cache/llm', ttlMs: 86_400_000 }) });
+```
+
+`FileCache` writes atomically, so processes sharing the directory never read a
+half-written entry. It stores replies in plain text: give the directory the
+access controls the prompts deserve. A cache that fails — Redis down, disk full
+— reads as a miss and never fails the call or loses a reply.
+
+### Governance
+
+Two pieces for deployments that have to answer for what they send and what
+they ran.
+
+**`redact()`** keeps personal data out of prompts. Emails, phone numbers, US
+social security numbers, payment card numbers (Luhn-checked) and IP addresses —
+plus patterns of your own — are replaced with placeholders before the request
+leaves the process, and put back into the reply:
+
+```ts
+import { wrapLM, redact, retry } from '@ts-dspy/core';
+
+const lm = wrapLM(
+  new OpenAILM({ apiKey }),
+  redact({
+    patterns: [{ name: 'account', pattern: /ACC-\d+/ }],
+    onRedact: (counts) => metrics.increment('pii.redacted', counts),
+  }),
+  retry()
+);
+
+// The provider sees: "Email [EMAIL_1] about [ACCOUNT_1]."
+// The caller gets the reply with the real values restored.
+```
+
+Put it outermost, so the cache, retries, fallback models and traces beneath it
+only ever see redacted text. The same value always maps to the same
+placeholder within a call, so the model can still tell two mentions apart.
+Tool-call arguments are restored too — tools need real values. Streams are not
+restored (a placeholder can be split across chunks); pass `restore: false` to
+leave placeholders everywhere. Pattern matching is a safety net, not a
+guarantee: it does not find names or addresses.
+
+**`auditLogger()`** is a callback that writes one structured record per module
+call, model call and tool call — when, how long, which model, how many tokens,
+what it cost, whether it failed — and nothing of the prompts unless you ask:
+
+```ts
+import { createWriteStream } from 'node:fs';
+import { auditLogger, configure } from '@ts-dspy/core';
+
+configure({
+  callbacks: [
+    auditLogger({
+      sink: createWriteStream('audit.jsonl', { flags: 'a' }), // or (record) => queue.send(record)
+      base: { service: 'support-api', env: 'prod' },
+    }),
+  ],
+});
+
+await program.forward(inputs, { metadata: { userId: 'u_42', requestId } });
+// {"service":"support-api","env":"prod","timestamp":"…","event":"lm","callId":"…",
+//  "parentCallId":"…","durationMs":812,"status":"ok","method":"chat",
+//  "models":["openai/gpt-5.2"],"totalTokens":431,"cost":0.0021,
+//  "metadata":{"userId":"u_42","requestId":"…"}}
+```
+
+`options.metadata` is how a record is attributed to a user, tenant or request.
+`parentCallId` links a model call to the module call that made it. Failures
+are recorded by error class and HTTP status; `includeContent: true` adds
+inputs, outputs and error messages. A sink that throws never fails the program.
+
 ## Integrations
 
 **MCP** — [`@ts-dspy/mcp`](packages/mcp) turns any Model Context Protocol
@@ -1020,24 +1111,25 @@ export OPENAI_API_KEY="sk-..."
 npm run example:openai
 ```
 
-| Script              | File                                                                | Shows                                                 |
-| ------------------- | ------------------------------------------------------------------- | ----------------------------------------------------- |
-| `example:openai`    | [`basic-usage.ts`](examples/basic-usage.ts)                         | `Predict`, `ChainOfThought`, typed fields, validation |
-| `example:anthropic` | [`basic-anthropic-example.ts`](examples/basic-anthropic-example.ts) | The same on Claude                                    |
-| `example:gemini`    | [`basic-gemini-example.ts`](examples/basic-gemini-example.ts)       | The same on Gemini                                    |
-| `example:zod`       | [`zod-signature.ts`](examples/zod-signature.ts)                     | Zod signatures with inferred types                    |
-| `example:ollama`    | [`ollama-local.ts`](examples/ollama-local.ts)                       | A local model through `OpenAICompatibleLM`            |
-| `example:tools`     | [`tool-demo.ts`](examples/tool-demo.ts)                             | `ReAct` with tools                                    |
-| `example:optimizer` | [`optimizer.ts`](examples/optimizer.ts)                             | `LabeledFewShot`, `BootstrapFewShot` with a teacher   |
-| `example:save-load` | [`composition-save-load.ts`](examples/composition-save-load.ts)     | Composite programs, `save`/`load`, `settings.context` |
-| `example:rag`       | [`rag-knn.ts`](examples/rag-knn.ts)                                 | `InMemoryVectorStore`, `Retrieve`, `KNNFewShot`       |
-| `example:mipro`     | [`mipro.ts`](examples/mipro.ts)                                     | `MIPROv2`                                             |
-| `example:gepa`      | [`gepa.ts`](examples/gepa.ts)                                       | `GEPA` with a feedback metric                         |
-| `example:refine`    | [`refine.ts`](examples/refine.ts)                                   | `BestOfN` and `Refine`                                |
-| `example:streamify` | [`streamify.ts`](examples/streamify.ts)                             | Streaming a multi-step program                        |
-| `example:mcp`       | [`mcp-react.ts`](examples/mcp-react.ts)                             | MCP server tools in `ReAct`                           |
-| `example:otel`      | [`otel-tracing.ts`](examples/otel-tracing.ts)                       | OpenTelemetry spans to the console                    |
-| `example:ai-sdk`    | [`ai-sdk.ts`](examples/ai-sdk.ts)                                   | `AISDKLM` via the AI Gateway (`AI_GATEWAY_API_KEY`)   |
+| Script               | File                                                                | Shows                                                        |
+| -------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `example:openai`     | [`basic-usage.ts`](examples/basic-usage.ts)                         | `Predict`, `ChainOfThought`, typed fields, validation        |
+| `example:anthropic`  | [`basic-anthropic-example.ts`](examples/basic-anthropic-example.ts) | The same on Claude                                           |
+| `example:gemini`     | [`basic-gemini-example.ts`](examples/basic-gemini-example.ts)       | The same on Gemini                                           |
+| `example:zod`        | [`zod-signature.ts`](examples/zod-signature.ts)                     | Zod signatures with inferred types                           |
+| `example:ollama`     | [`ollama-local.ts`](examples/ollama-local.ts)                       | A local model through `OpenAICompatibleLM`                   |
+| `example:tools`      | [`tool-demo.ts`](examples/tool-demo.ts)                             | `ReAct` with tools                                           |
+| `example:optimizer`  | [`optimizer.ts`](examples/optimizer.ts)                             | `LabeledFewShot`, `BootstrapFewShot` with a teacher          |
+| `example:save-load`  | [`composition-save-load.ts`](examples/composition-save-load.ts)     | Composite programs, `save`/`load`, `settings.context`        |
+| `example:rag`        | [`rag-knn.ts`](examples/rag-knn.ts)                                 | `InMemoryVectorStore`, `Retrieve`, `KNNFewShot`              |
+| `example:mipro`      | [`mipro.ts`](examples/mipro.ts)                                     | `MIPROv2`                                                    |
+| `example:gepa`       | [`gepa.ts`](examples/gepa.ts)                                       | `GEPA` with a feedback metric                                |
+| `example:refine`     | [`refine.ts`](examples/refine.ts)                                   | `BestOfN` and `Refine`                                       |
+| `example:streamify`  | [`streamify.ts`](examples/streamify.ts)                             | Streaming a multi-step program                               |
+| `example:mcp`        | [`mcp-react.ts`](examples/mcp-react.ts)                             | MCP server tools in `ReAct`                                  |
+| `example:otel`       | [`otel-tracing.ts`](examples/otel-tracing.ts)                       | OpenTelemetry spans to the console                           |
+| `example:ai-sdk`     | [`ai-sdk.ts`](examples/ai-sdk.ts)                                   | `AISDKLM` via the AI Gateway (`AI_GATEWAY_API_KEY`)          |
+| `example:production` | [`production.ts`](examples/production.ts)                           | Redaction, budget, circuit breaker, audit log — runs offline |
 
 Each example checks for the key it needs and explains how to set it.
 

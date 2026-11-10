@@ -36,12 +36,12 @@ Things worth knowing when you assess a report, or deploy the library:
   or validation bypass — a value reaching your code with the wrong type, or
   model-controlled keys altering object prototypes — is a vulnerability.
 - **`ProgramOfThought` is not a security boundary.** It runs model-written
-  JavaScript in a `node:vm` context, which Node documents as not being a
-  sandbox. Do not expose it to untrusted prompts without real isolation (a
-  container, a separate process with dropped privileges, or a remote sandbox).
-  The time limit bounds CPU, not memory: generated code that allocates without
-  end can exhaust the host process's heap. Escapes from `node:vm` itself are
-  out of scope.
+  JavaScript in a `node:vm` context on a worker thread with a heap limit and a
+  hard timeout — which contains runaway loops and allocation, but Node
+  documents `node:vm` as not being a sandbox. Do not expose it to untrusted
+  prompts without real isolation (a container, a separate process with dropped
+  privileges, or a remote sandbox). Escapes from `node:vm` itself are out of
+  scope.
 - **Tools run with your process's privileges.** A `ReAct` agent calls the tools
   you hand it with arguments the model chose. Arguments of a tool declared with
   a Zod schema are validated before it runs; MCP tools validate their own. Either
@@ -53,6 +53,12 @@ Things worth knowing when you assess a report, or deploy the library:
 - **Secrets.** API keys are passed to provider SDKs and are never written to
   traces, cassettes, cache keys or error messages. A code path that leaks one
   is a vulnerability.
+- **Personal data.** `redact()` replaces common identifiers with placeholders
+  before a request leaves the process. It is pattern matching, not a
+  guarantee, and does not cover images. `auditLogger()` and `@ts-dspy/otel`
+  record no prompt, completion or error-message content unless asked to.
+- **Caches and cassettes** store prompts and replies in plain text. Protect a
+  `FileCache` directory or a cassette file as you would the data in them.
 - **Telemetry.** `@ts-dspy/otel` does not record prompt or completion content
   unless `captureContent` is set. The library itself sends no telemetry.
 

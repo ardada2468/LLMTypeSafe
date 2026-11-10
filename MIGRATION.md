@@ -383,6 +383,28 @@ if you relied on the old behaviour.
   `OPENAI_PROJECT_ID` from the environment. Pass `organization` / `project`
   explicitly if your endpoint wants them.
 
+- **Anthropic streaming honours `maxTokens`.** A `maxTokens` set on the
+  constructor used to apply to non-streaming calls only, with streaming fixed
+  at 64,000. It now caps both. Leave it unset to keep the two defaults.
+- **Stream final chunks carry `metadata`.** OpenAI and Gemini now put
+  `finishReason` (and `toolCalls`, when there are any) on the final chunk, as
+  Anthropic does. Code comparing that chunk for exact equality needs updating.
+
+## ProgramOfThought
+
+- Generated code now runs on a **worker thread** with a 128MB heap limit, and
+  is terminated on timeout or abort. Pass `isolation: 'inline'` for the old
+  in-thread behaviour, or `memoryLimitMb` to change the limit. A subclass that
+  overrides `execute(code)` keeps working; it now also receives the call's
+  `signal`.
+- Captured output is capped at 64,000 characters.
+
+## Optimizers
+
+- `GEPA` counts the feedback call as well as the scoring call against
+  `maxMetricCalls`, so the same budget buys fewer iterations — and matches
+  what a judge-model metric actually costs.
+
 ## Caching and cassettes
 
 - **Cache keys** now include `tools` and `toolChoice` when present. Cached

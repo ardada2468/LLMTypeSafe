@@ -52,6 +52,11 @@ export interface CassetteEntry {
     request: CassetteRequest;
     /** A string for `chat` entries; the decoded value for `structured` ones. */
     response: unknown;
+    /**
+     * Set when the call named no model of its own, so `request.model` is the
+     * recorder's default — which is what a replay must adopt as its own.
+     */
+    defaultModel?: boolean;
 }
 
 /** Keep only the options that affect the reply, in a stable order. */
@@ -148,7 +153,12 @@ export function readCassette(file: string): CassetteEntry[] {
             throw new Error(`Cassette ${file} entry ${index} has no valid \`request\``);
         }
         const request = (entry as any).request as CassetteRequest;
-        return { key: hashRequest(request), request, response: (entry as any).response };
+        return {
+            key: hashRequest(request),
+            request,
+            response: (entry as any).response,
+            ...((entry as any).defaultModel === true ? { defaultModel: true } : {}),
+        };
     });
 }
 
@@ -163,6 +173,7 @@ export function writeCassette(file: string, entries: readonly CassetteEntry[]): 
         key: hashRequest(entry.request),
         request: entry.request,
         response: entry.response,
+        ...(entry.defaultModel ? { defaultModel: true } : {}),
     }));
 
     // Write beside the target and rename over it, so an interrupted run leaves

@@ -154,6 +154,12 @@ export interface ReActOptions {
      * or when a provider's tool mode misbehaves on a particular model.
      */
     forceTextMode?: boolean;
+    /**
+     * Longest one tool call may run, in milliseconds. A tool that exceeds it
+     * is reported to the model as a failed call — which it may retry or work
+     * around — instead of hanging the agent. Unset, tools run unbounded.
+     */
+    toolTimeoutMs?: number;
 }
 
 /** What a ReAct run returns on top of the signature's own outputs. */
@@ -208,6 +214,7 @@ export class ReAct<TSignature extends SignatureSource = typeof Signature> extend
 
     private tools: Record<string, NormalizedTool>;
     private maxSteps: number;
+    private readonly toolTimeoutMs?: number;
     private onEvent?: (event: ReActEvent) => void;
     private forceTextMode: boolean;
     private adapter?: Adapter;
@@ -228,6 +235,21 @@ export class ReAct<TSignature extends SignatureSource = typeof Signature> extend
             this.tools[name] = normalizeTool(name, tool);
         }
         this.maxSteps = options.maxSteps ?? 6;
+        if (!Number.isInteger(this.maxSteps) || this.maxSteps < 1) {
+            throw new RangeError(
+                `maxSteps must be a positive integer, received ${String(options.maxSteps)}`
+            );
+        }
+        const toolTimeoutMs = options.toolTimeoutMs;
+        if (
+            toolTimeoutMs !== undefined &&
+            !(Number.isFinite(toolTimeoutMs) && toolTimeoutMs > 0)
+        ) {
+            throw new RangeError(
+                `toolTimeoutMs must be a positive number, received ${String(toolTimeoutMs)}`
+            );
+        }
+        this.toolTimeoutMs = toolTimeoutMs;
         this.onEvent = options.onEvent;
         this.forceTextMode = options.forceTextMode ?? false;
         this.adapter = options.adapter;
@@ -675,7 +697,7 @@ export class ReAct<TSignature extends SignatureSource = typeof Signature> extend
 
             // `Tool.call` validates Zod-declared arguments and reports the
             // call to any registered callbacks.
-            const result = await tool.tool.call(args);
+            const result = await this.withToolTimeout(toolName, tool.tool.call(args));
             const output = typeof result === 'string' ? result : stringifyResult(result);
             this.emit({ type: 'tool_result', step, tool: toolName, output });
             return output;
@@ -683,6 +705,22 @@ export class ReAct<TSignature extends SignatureSource = typeof Signature> extend
             onError?.();
             return this.reportToolError(toolName, error, step);
         }
+    }
+
+    /** Race a tool call against `toolTimeoutMs`, when one is set. */
+    private withToolTimeout<T>(toolName: string, call: Promise<T>): Promise<T> {
+        const limit = this.toolTimeoutMs;
+        if (limit === undefined) return call;
+        let timer: ReturnType<typeof setTimeout>;
+        const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(
+                () => reject(new Error(`Tool ${toolName} timed out after ${limit}ms.`)),
+                limit
+            );
+        });
+        // The abandoned call may still reject later; that must not go unhandled.
+        call.catch(() => {});
+        return Promise.race([call, timeout]).finally(() => clearTimeout(timer));
     }
 
     private reportToolError(toolName: string, error: unknown, step: number): string {

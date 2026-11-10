@@ -713,6 +713,14 @@ configure({ lm })</code></pre>
       and <code>budget({ usage, maxCost, maxTokens, maxRequests })</code> throws
       <code>BudgetExceededError</code> once a spending limit is reached.
     </p>
+    <p>
+      For governance, <code>redact()</code> replaces emails, phone numbers,
+      card numbers and your own patterns with placeholders before a request
+      leaves the process and restores them in the reply, and the
+      <code>auditLogger({ sink })</code> callback writes one structured record
+      per module, model and tool call &mdash; timing, model, tokens, cost and
+      outcome, with no prompt content unless asked.
+    </p>
   </section>
 
   <section id="more-modules">
@@ -1424,6 +1432,8 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
           <tr><td class="sym">Tool</td><td class="path">class</td><td class="note">A named, described, schema-typed tool for <code>ReAct</code>.</td></tr>
           <tr><td class="sym">BaseLM</td><td class="path">class</td><td class="note">Base for providers.</td></tr>
           <tr><td class="sym">wrapLM / retry / fallback / defaults / rateLimit</td><td class="path">function</td><td class="note">LM middleware.</td></tr>
+          <tr><td class="sym">redact / auditLogger</td><td class="path">function</td><td class="note">Governance: PII redaction middleware and a structured audit-trail callback.</td></tr>
+          <tr><td class="sym">MemoryCache / FileCache</td><td class="path">class</td><td class="note">Response caches: in-memory LRU with TTL, or one file per entry on disk.</td></tr>
           <tr><td class="sym">circuitBreaker / concurrencyLimit / budget</td><td class="path">function</td><td class="note">Production guards: fail fast, bound in-flight calls, cap spend.</td></tr>
           <tr><td class="sym">Prediction</td><td class="path">class</td><td class="note">Result wrapper; <code>getLMUsage()</code> for per-call usage.</td></tr>
           <tr><td class="sym">Example</td><td class="path">class</td><td class="note">Labelled data point for demos, evaluation and optimizers.</td></tr>

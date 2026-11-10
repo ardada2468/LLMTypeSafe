@@ -309,3 +309,28 @@ describe('CassetteLM', () => {
         });
     });
 });
+
+describe('CassetteLM default model', () => {
+    it('replays default-model calls even when the first recorded call overrode the model', async () => {
+        const { mkdtempSync, rmSync } = await import('node:fs');
+        const { tmpdir } = await import('node:os');
+        const { join } = await import('node:path');
+        const dir = mkdtempSync(join(tmpdir(), 'cassette-'));
+        try {
+            const path = join(dir, 'c.json');
+            const live = new MockLM({ responses: ['A', 'B'] });
+            const recorder = CassetteLM.record(path, live);
+            await recorder.chat([{ role: 'user', content: 'a' }], { model: 'other-model' });
+            await recorder.chat([{ role: 'user', content: 'b' }]);
+
+            const replay = CassetteLM.replay(path);
+            expect(replay.getModelName()).toBe('mock-model');
+            await expect(replay.chat([{ role: 'user', content: 'b' }])).resolves.toBe('B');
+            await expect(
+                replay.chat([{ role: 'user', content: 'a' }], { model: 'other-model' })
+            ).resolves.toBe('A');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
