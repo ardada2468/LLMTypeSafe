@@ -220,4 +220,40 @@ describe('runSandboxed', () => {
             output: '2',
         });
     });
+
+    it('survives code that allocates without end', async () => {
+        const result = await runSandboxed(
+            'const a = []; while (true) { a.push(new Array(1000).fill(a.length)); }',
+            { timeoutMs: 20_000, memoryLimitMb: 32 }
+        );
+        expect(result.error).toMatch(/out of memory|timed out/);
+    }, 30_000);
+
+    it('terminates the run when its signal aborts', async () => {
+        const controller = new AbortController();
+        const run = runSandboxed('while (true) {}', {
+            timeoutMs: 20_000,
+            signal: controller.signal,
+        });
+        setTimeout(() => controller.abort(), 100);
+        const started = Date.now();
+        await expect(run).resolves.toEqual({ output: '', error: 'The run was cancelled.' });
+        expect(Date.now() - started).toBeLessThan(5000);
+    });
+
+    it('gives the worker nothing of the host environment', async () => {
+        process.env.TSDSPY_SANDBOX_PROBE = 'secret';
+        try {
+            const result = await runSandboxed('typeof process + " " + typeof require');
+            expect(result).toEqual({ output: 'undefined undefined' });
+        } finally {
+            delete process.env.TSDSPY_SANDBOX_PROBE;
+        }
+    });
+
+    it('still runs inline when asked', async () => {
+        await expect(runSandboxed('6 * 7', { isolation: 'inline' })).resolves.toEqual({
+            output: '42',
+        });
+    });
 });

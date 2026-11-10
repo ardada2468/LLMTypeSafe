@@ -254,6 +254,7 @@ export class GeminiLM extends BaseLM {
         const startedAt = Date.now();
 
         let last: GenerateContentResponse | undefined;
+        const toolCalls: ToolCall[] = [];
         try {
             const stream = await this.withRetries(options, () =>
                 this.client.models.generateContentStream({
@@ -271,6 +272,7 @@ export class GeminiLM extends BaseLM {
                 // reply can. Without this the stream simply ended early and
                 // looked like a short answer.
                 this.assertNotFiltered(chunk);
+                toolCalls.push(...toolCallsOf(chunk));
                 const thoughts = thoughtsOf(chunk);
                 if (thoughts) {
                     // Thought summaries are not answer text, so they travel in metadata.
@@ -289,7 +291,15 @@ export class GeminiLM extends BaseLM {
         }
 
         this.recordUsageFrom(last, startedAt, options);
-        yield { content: '', done: true, usage: streamUsage(last) };
+        yield {
+            content: '',
+            done: true,
+            usage: streamUsage(last),
+            metadata: {
+                ...(last ? { finishReason: finishReasonOf(last, toolCalls.length > 0) } : {}),
+                ...(toolCalls.length > 0 ? { toolCalls } : {}),
+            },
+        };
     }
 
     getCapabilities(): ModelCapabilities {

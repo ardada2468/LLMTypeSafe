@@ -133,6 +133,7 @@ export class AnthropicRefusalError extends ContentFilterError {}
 export class AnthropicLM extends BaseLM {
     private readonly client: Anthropic;
     private readonly defaultMaxTokens: number;
+    private readonly streamingMaxTokens: number;
     private readonly baseURL?: string;
     private readonly thinking?: AnthropicThinking | false;
     private readonly effort?: AnthropicEffort;
@@ -148,6 +149,9 @@ export class AnthropicLM extends BaseLM {
             maxRetries: config.maxRetries,
         });
         this.defaultMaxTokens = config.maxTokens ?? DEFAULT_MAX_TOKENS;
+        // An explicit cap is a cap: it applies to streaming too, where the
+        // default is otherwise the roomier one.
+        this.streamingMaxTokens = config.maxTokens ?? DEFAULT_STREAMING_MAX_TOKENS;
         this.baseURL = config.baseURL;
         this.thinking = config.thinking;
         this.effort = config.effort;
@@ -281,7 +285,7 @@ export class AnthropicLM extends BaseLM {
 
         const stream = this.client.messages.stream(
             this.buildRequest(messages, options, {
-                maxTokens: DEFAULT_STREAMING_MAX_TOKENS,
+                maxTokens: this.streamingMaxTokens,
                 extra: toolParams(options, String(options?.model ?? this.model)),
             }),
             requestOptions(options)
@@ -337,6 +341,7 @@ export class AnthropicLM extends BaseLM {
         const toolCalls = toolCallsOf(final);
         const reasoning = reasoningOf(final);
         const metadata = {
+            finishReason: finishReasonOf(final.stop_reason),
             ...(toolCalls.length > 0 ? { toolCalls } : {}),
             ...(reasoning ? { reasoning } : {}),
         };

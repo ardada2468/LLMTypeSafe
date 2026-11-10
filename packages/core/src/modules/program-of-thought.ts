@@ -16,6 +16,13 @@ export interface ProgramOfThoughtOptions extends PredictOptions {
     maxIters?: number;
     /** Wall-clock budget for one run of the generated code. Defaults to 5000ms. */
     timeoutMs?: number;
+    /**
+     * Where generated code runs: a worker thread with its own heap limit
+     * (`'worker'`, the default) or the calling thread (`'inline'`).
+     */
+    isolation?: 'worker' | 'inline';
+    /** Heap limit for the worker, in megabytes. Defaults to 128. */
+    memoryLimitMb?: number;
 }
 
 /** Outcome of running generated code in {@link runSandboxed}. */
@@ -42,6 +49,9 @@ export interface SandboxResult {
  * If no generation runs cleanly within `maxIters`, a `TsDspyError` is thrown
  * carrying the last error, as DSPy raises.
  *
+ * The code runs on a worker thread with a heap limit and a hard timeout, so
+ * a runaway loop or allocation costs one failed attempt, not the process.
+ *
  * @experimental **The sandbox is not a security boundary.** `node:vm` gives
  * the code an empty global scope — no `require`, `process`, `import()`,
  * `fetch` or timers — and a synchronous timeout, but Node documents that it
@@ -56,10 +66,18 @@ export class ProgramOfThought extends Module {
     readonly generateOutput: ChainOfThought;
     readonly maxIters: number;
     readonly timeoutMs: number;
+    readonly isolation: 'worker' | 'inline';
+    readonly memoryLimitMb: number;
 
     constructor(signature: SignatureLike, options: ProgramOfThoughtOptions = {}) {
         super(signature, options.lm);
-        const { maxIters = 3, timeoutMs = 5000, ...predictOptions } = options;
+        const {
+            maxIters = 3,
+            timeoutMs = 5000,
+            isolation = 'worker',
+            memoryLimitMb = 128,
+            ...predictOptions
+        } = options;
         if (!Number.isInteger(maxIters) || maxIters < 1) {
             throw new RangeError(
                 `maxIters must be a positive integer, received ${String(maxIters)}`
@@ -67,6 +85,8 @@ export class ProgramOfThought extends Module {
         }
         this.maxIters = maxIters;
         this.timeoutMs = timeoutMs;
+        this.isolation = isolation;
+        this.memoryLimitMb = memoryLimitMb;
 
         const inputs = Object.keys(getInputFieldConfigs(signature));
         const outputs = Object.keys(getOutputFieldConfigs(signature));
@@ -118,7 +138,7 @@ export class ProgramOfThought extends Module {
     ): Promise<Prediction & Record<string, any>> {
         let generated = await this.codeGenerate.forward(inputs, options);
         let code = extractCode(String(generated.generated_code ?? ''));
-        let result = await this.execute(code);
+        let result = await this.execute(code, options?.signal);
 
         for (
             let iteration = 1;
@@ -130,9 +150,10 @@ export class ProgramOfThought extends Module {
                 options
             );
             code = extractCode(String(generated.generated_code ?? ''));
-            result = await this.execute(code);
+            result = await this.execute(code, options?.signal);
         }
 
+        options?.signal?.throwIfAborted();
         if (result.error !== undefined) {
             throw new TsDspyError(
                 `ProgramOfThought: no generated code ran successfully in ${this.maxIters} ` +
@@ -147,8 +168,13 @@ export class ProgramOfThought extends Module {
     }
 
     /** Run `code` in the sandbox. Overridable, e.g. to route it to a real isolate. */
-    protected execute(code: string): Promise<SandboxResult> {
-        return runSandboxed(code, { timeoutMs: this.timeoutMs });
+    protected execute(code: string, signal?: AbortSignal): Promise<SandboxResult> {
+        return runSandboxed(code, {
+            timeoutMs: this.timeoutMs,
+            isolation: this.isolation,
+            memoryLimitMb: this.memoryLimitMb,
+            signal,
+        });
     }
 }
 
@@ -328,17 +354,30 @@ interface SandboxHooks {
  * microtasks have drained can never settle, and is reported as timed out.
  * **Not a security boundary** — see {@link ProgramOfThought}.
  *
- * `node:vm` is imported on first use, so loading this library never requires
- * it — on an edge runtime without it, only running code fails.
+ * By default the context lives in a `worker_threads` worker with a heap limit
+ * (`memoryLimitMb`), which the host terminates on timeout or abort — so code
+ * that allocates without end, or spins, cannot take the host process down or
+ * block its event loop. `isolation: 'inline'` runs it on the calling thread
+ * instead, as does a runtime without `worker_threads`.
+ *
+ * `node:vm` and `node:worker_threads` are imported on first use, so loading
+ * this library never requires them — on an edge runtime without them, only
+ * running code fails.
  */
 export async function runSandboxed(
     code: string,
-    options: { timeoutMs?: number } = {}
+    options: RunSandboxedOptions = {}
 ): Promise<SandboxResult> {
     const requested = options.timeoutMs ?? 5000;
     // NaN would reach node:vm as its timeout and be rejected there.
     const timeoutMs = Number.isFinite(requested) && requested > 0 ? requested : 5000;
     if (code.trim() === '') return { output: '', error: 'No code was generated.' };
+    if (options.signal?.aborted) return { output: '', error: 'The run was cancelled.' };
+
+    if ((options.isolation ?? 'worker') === 'worker') {
+        const isolated = await runInWorker(code, timeoutMs, options);
+        if (isolated) return isolated;
+    }
 
     let vm: typeof NodeVM;
     try {
@@ -346,12 +385,134 @@ export async function runSandboxed(
     } catch {
         return { output: '', error: 'node:vm is not available in this runtime.' };
     }
+    return sandboxMain(vm, code, timeoutMs, SANDBOX_PRELUDE, FINISH, HOUSEKEEPING_MS);
+}
 
+/** Options for {@link runSandboxed}. */
+export interface RunSandboxedOptions {
+    /** Budget for the code's own execution. Defaults to 5000ms. */
+    timeoutMs?: number;
+    /**
+     * `'worker'` (default) runs the code on a worker thread with its own heap
+     * limit; `'inline'` runs it on the calling thread, which is faster to start
+     * but lets runaway allocation exhaust the host's heap.
+     */
+    isolation?: 'worker' | 'inline';
+    /** Heap limit for the worker, in megabytes. Defaults to 128. */
+    memoryLimitMb?: number;
+    /** Terminates the worker when aborted. */
+    signal?: AbortSignal;
+}
+
+/** Slack the host allows a worker beyond `timeoutMs` to start up and report. */
+const WORKER_GRACE_MS = 2000;
+
+/**
+ * Run the sandbox on a worker thread. Resolves `undefined` when workers are
+ * not available, so the caller can fall back to running inline.
+ */
+async function runInWorker(
+    code: string,
+    timeoutMs: number,
+    options: RunSandboxedOptions
+): Promise<SandboxResult | undefined> {
+    let WorkerClass: typeof import('node:worker_threads').Worker;
+    try {
+        ({ Worker: WorkerClass } = await import('node:worker_threads'));
+    } catch {
+        return undefined;
+    }
+
+    const requested = options.memoryLimitMb ?? 128;
+    const memoryLimitMb = Number.isFinite(requested) && requested >= 8 ? requested : 128;
+    // The worker is a plain script: the sandbox routine travels as source,
+    // which is why `sandboxMain` may not reference anything outside itself.
+    const source =
+        `const { parentPort, workerData } = require('node:worker_threads');\n` +
+        `const main = ${sandboxMain.toString()};\n` +
+        `parentPort.postMessage(main(require('node:vm'), ...workerData));`;
+
+    return new Promise((resolve) => {
+        let worker: import('node:worker_threads').Worker;
+        try {
+            worker = new WorkerClass(source, {
+                eval: true,
+                workerData: [code, timeoutMs, SANDBOX_PRELUDE, FINISH, HOUSEKEEPING_MS],
+                // Nothing of the host's: no environment, no arguments, no stdio.
+                env: {},
+                argv: [],
+                execArgv: [],
+                stdin: false,
+                stdout: true,
+                stderr: true,
+                resourceLimits: {
+                    maxOldGenerationSizeMb: memoryLimitMb,
+                    maxYoungGenerationSizeMb: Math.max(4, Math.floor(memoryLimitMb / 4)),
+                    stackSizeMb: 4,
+                },
+            });
+        } catch {
+            resolve(undefined);
+            return;
+        }
+
+        let settled = false;
+        const settle = (result: SandboxResult) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            options.signal?.removeEventListener('abort', onAbort);
+            void worker.terminate();
+            resolve(result);
+        };
+        const onAbort = () => settle({ output: '', error: 'The run was cancelled.' });
+        const timer = setTimeout(
+            () =>
+                settle({
+                    output: '',
+                    error: `Script execution timed out after ${timeoutMs}ms.`,
+                }),
+            timeoutMs + WORKER_GRACE_MS
+        );
+
+        options.signal?.addEventListener('abort', onAbort, { once: true });
+        worker.once('message', (result: SandboxResult) => settle(result));
+        worker.once('error', (error: Error & { code?: string }) =>
+            settle({
+                output: '',
+                error:
+                    error.code === 'ERR_WORKER_OUT_OF_MEMORY'
+                        ? `The code ran out of memory (limit ${memoryLimitMb}MB). ` +
+                          'Use less memory: avoid building large arrays or strings.'
+                        : `The code could not be run: ${error.message}`,
+            })
+        );
+        worker.once('exit', () =>
+            settle({ output: '', error: 'The code stopped without producing a result.' })
+        );
+    });
+}
+
+/**
+ * The sandbox itself: run `code` in a fresh context and read back the result.
+ *
+ * **Self-contained by contract** — it is also shipped to a worker thread as
+ * source text (`toString()`), so it must not reference any binding outside
+ * its own parameters and body: no imports, no module constants, no helpers.
+ */
+function sandboxMain(
+    vm: typeof NodeVM,
+    code: string,
+    timeoutMs: number,
+    prelude: string,
+    finishName: string,
+    housekeepingMs: number
+): SandboxResult {
     const sandbox = vm.createContext(
         {},
         { codeGeneration: { strings: false, wasm: false }, microtaskMode: 'afterEvaluate' }
     );
-    const { state, stash } = vm.runInContext(SANDBOX_PRELUDE, sandbox) as SandboxHooks;
+    const { state, stash } = vm.runInContext(prelude, sandbox) as SandboxHooks;
 
     const startedAt = Date.now();
     const evaluate = (script: string | NodeVM.Script, timeout: number) => {
@@ -366,7 +527,7 @@ export async function runSandboxed(
     // used up its whole budget can still report what happened.
     const housekeeping = (kind: 'collect' | 'error') => {
         try {
-            evaluate(`${FINISH}('${kind}')`, HOUSEKEEPING_MS);
+            evaluate(`${finishName}('${kind}')`, housekeepingMs);
         } catch {
             // Out of time; report what was collected before.
         }
@@ -400,7 +561,7 @@ export async function runSandboxed(
     try {
         // Evaluating also drains the context's microtask queue, which is what
         // settles a promise completion value — within the remaining budget.
-        evaluate(`${FINISH}('value')`, remaining());
+        evaluate(`${finishName}('value')`, remaining());
     } catch (error) {
         return failure(error);
     }

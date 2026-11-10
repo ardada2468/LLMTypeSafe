@@ -256,11 +256,13 @@ export class OpenAILM extends BaseLM {
         const startedAt = Date.now();
 
         let usage = usageOf(undefined);
+        let finishReason: string | null | undefined;
+        const pendingCalls: Array<{ id?: string; name: string; arguments: string }> = [];
 
         try {
             const stream = await this.client.chat.completions.create(
                 {
-                    ...this.buildRequest(messages, options),
+                    ...this.buildRequest(messages, options, toolParams(options)),
                     stream: true,
                     stream_options: { include_usage: true },
                 } as ChatCompletionCreateParamsStreaming,
@@ -274,6 +276,15 @@ export class OpenAILM extends BaseLM {
                 const choice = chunk.choices[0];
                 if (choice?.finish_reason === 'content_filter') {
                     assertNotFiltered(choice.finish_reason);
+                }
+                if (choice?.finish_reason) finishReason = choice.finish_reason;
+                // Tool calls arrive in fragments keyed by index: the id and
+                // name once, the argument JSON a few characters at a time.
+                for (const delta of choice?.delta?.tool_calls ?? []) {
+                    const call = (pendingCalls[delta.index] ??= { name: '', arguments: '' });
+                    if (delta.id) call.id = delta.id;
+                    if (delta.function?.name) call.name += delta.function.name;
+                    if (delta.function?.arguments) call.arguments += delta.function.arguments;
                 }
                 const reasoning = reasoningOf(choice?.delta);
                 if (reasoning) {
@@ -295,7 +306,25 @@ export class OpenAILM extends BaseLM {
             latencyMs: Date.now() - startedAt,
             model: options?.model,
         });
-        yield { content: '', done: true, usage: streamUsage(usage) };
+        const toolCalls = fromOpenAIToolCalls(
+            pendingCalls
+                .filter((call) => call !== undefined)
+                .map((call) => ({
+                    id: call.id,
+                    function: { name: call.name, arguments: call.arguments },
+                }))
+        );
+        yield {
+            content: '',
+            done: true,
+            usage: streamUsage(usage),
+            // As the other providers do: the assembled calls and why the model
+            // stopped, so a truncated stream is not mistaken for a complete one.
+            metadata: {
+                finishReason: finishReasonOf(finishReason),
+                ...(toolCalls.length > 0 ? { toolCalls } : {}),
+            },
+        };
     }
 
     async listModels(): Promise<string[]> {

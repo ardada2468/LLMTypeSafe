@@ -1048,3 +1048,34 @@ describe('GeminiLM tool-call round trip', () => {
         expect(toLMError(new Error('boom'))).not.toBeInstanceOf(TimeoutError);
     });
 });
+
+describe('GeminiLM streaming tool calls', () => {
+    it('collects function calls and the finish reason on the final chunk', async () => {
+        mocks.generateContentStream.mockResolvedValue(
+            (async function* () {
+                yield {
+                    candidates: [
+                        {
+                            content: {
+                                parts: [{ functionCall: { name: 'add', args: { a: 1 } } }],
+                            },
+                            finishReason: 'STOP',
+                        },
+                    ],
+                    usageMetadata: {},
+                };
+            })()
+        );
+        const chunks = [];
+        for await (const chunk of new GeminiLM({ apiKey: 'k' }).chatStream(
+            [{ role: 'user', content: 'Hi' }],
+            { tools: [{ name: 'add', description: 'd', parameters: { type: 'object' } }] }
+        )) {
+            chunks.push(chunk);
+        }
+        expect(chunks.at(-1)?.metadata).toEqual({
+            finishReason: 'tool_calls',
+            toolCalls: [{ name: 'add', arguments: { a: 1 } }],
+        });
+    });
+});

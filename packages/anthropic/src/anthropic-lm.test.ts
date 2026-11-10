@@ -371,6 +371,7 @@ describe('AnthropicLM', () => {
                 toolInputDelta: { index: 1, partialJson: '{"a":' },
             });
             expect(chunks.at(-1)?.metadata).toEqual({
+                finishReason: 'tool_calls',
                 toolCalls: [{ id: 'toolu_1', name: 'add', arguments: { a: 1 } }],
             });
         });
@@ -903,7 +904,7 @@ describe('AnthropicLM thinking', () => {
             metadata: { reasoningDelta: 'hmm' },
         });
         expect(chunks[1]).toEqual({ content: 'Hi', done: false });
-        expect(chunks.at(-1)?.metadata).toEqual({ reasoning: 'hmm' });
+        expect(chunks.at(-1)?.metadata).toMatchObject({ reasoning: 'hmm' });
         expect(mocks.stream.mock.calls[0][0].thinking).toEqual({ type: 'adaptive' });
     });
 });
@@ -1086,5 +1087,26 @@ describe('AnthropicLM request compatibility', () => {
         await expect(new AnthropicLM({ apiKey: 'k' }).generate('Hi')).rejects.toMatchObject({
             retryAfterMs: 7000,
         });
+    });
+});
+
+describe('AnthropicLM streaming limits', () => {
+    it('applies an explicit maxTokens to streaming as well', async () => {
+        mocks.stream.mockReturnValue({
+            async *[Symbol.asyncIterator]() {},
+            finalMessage: async () => ({
+                content: [{ type: 'text', text: 'ok' }],
+                stop_reason: 'max_tokens',
+                usage: {},
+            }),
+        });
+        const chunks = [];
+        for await (const chunk of new AnthropicLM({ apiKey: 'k', maxTokens: 4096 }).chatStream([
+            { role: 'user', content: 'Hi' },
+        ])) {
+            chunks.push(chunk);
+        }
+        expect(mocks.stream.mock.calls.at(-1)![0].max_tokens).toBe(4096);
+        expect(chunks.at(-1)?.metadata).toMatchObject({ finishReason: 'length' });
     });
 });

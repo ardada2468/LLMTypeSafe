@@ -235,6 +235,7 @@ export type {
 export { MultiChainComparison } from './modules/multi-chain-comparison';
 export type { MultiChainComparisonOptions, Completion } from './modules/multi-chain-comparison';
 export { ProgramOfThought, runSandboxed, extractCode } from './modules/program-of-thought';
+export type { RunSandboxedOptions } from './modules/program-of-thought';
 export type { ProgramOfThoughtOptions, SandboxResult } from './modules/program-of-thought';
 export { Retrieve } from './modules/retrieve';
 export type { RetrieveOptions, RetrieveOutput } from './modules/retrieve';

@@ -922,3 +922,69 @@ describe('OpenAILM refusals and empty responses', () => {
         });
     });
 });
+
+describe('OpenAILM streaming tool calls', () => {
+    it('sends the tools and assembles streamed call fragments on the final chunk', async () => {
+        mocks.create.mockResolvedValue(
+            (async function* () {
+                yield {
+                    choices: [
+                        {
+                            delta: {
+                                tool_calls: [
+                                    {
+                                        index: 0,
+                                        id: 'call_1',
+                                        function: { name: 'add', arguments: '{"a":' },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                };
+                yield {
+                    choices: [
+                        {
+                            delta: {
+                                tool_calls: [{ index: 0, function: { arguments: '1}' } }],
+                            },
+                        },
+                    ],
+                };
+                yield { choices: [{ delta: {}, finish_reason: 'tool_calls' }] };
+            })()
+        );
+        const tools = [
+            { name: 'add', description: 'd', parameters: { type: 'object' } },
+        ] as any;
+
+        const chunks = [];
+        for await (const chunk of new OpenAILM({ apiKey: 'k' }).chatStream(
+            [{ role: 'user', content: 'Hi' }],
+            { tools }
+        )) {
+            chunks.push(chunk);
+        }
+
+        expect(mocks.create.mock.calls.at(-1)![0].tools).toHaveLength(1);
+        expect(chunks.at(-1)?.metadata).toEqual({
+            finishReason: 'tool_calls',
+            toolCalls: [
+                { id: 'call_1', name: 'add', arguments: { a: 1 }, rawArguments: '{"a":1}' },
+            ],
+        });
+    });
+
+    it('reports a truncated stream as such', async () => {
+        mocks.create.mockResolvedValue(
+            (async function* () {
+                yield { choices: [{ delta: { content: 'par' }, finish_reason: 'length' }] };
+            })()
+        );
+        const chunks = [];
+        for await (const chunk of new OpenAILM({ apiKey: 'k' }).generateStream('Hi')) {
+            chunks.push(chunk);
+        }
+        expect(chunks.at(-1)?.metadata).toEqual({ finishReason: 'length' });
+    });
+});
