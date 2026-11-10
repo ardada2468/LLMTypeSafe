@@ -150,6 +150,11 @@ const lm = wrapLM(primary, rateLimit({ requestsPerMinute: 500 }), retry(), fallb
 
 Middleware is `(request, next) => Promise<unknown>`, outermost first.
 
+For production, `circuitBreaker()` fails fast while a model is down,
+`concurrencyLimit({ maxConcurrent })` bounds calls in flight, and
+`budget({ usage: lm, maxCost })` stops a runaway loop with a
+`BudgetExceededError`.
+
 ## Evaluation and optimizers
 
 ```ts

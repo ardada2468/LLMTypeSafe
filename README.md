@@ -76,7 +76,8 @@ Or skip the class entirely: `new Predict('question -> answer, confidence: float'
   cache or callbacks for one async scope, safely under concurrency.
 - **Observability** — callbacks for module, LM, tool and adapter events, exact
   per-call token usage and cost, tracing, and OpenTelemetry spans.
-- **LM middleware** — `wrapLM(lm, retry(), fallback([...]), rateLimit(...))`.
+- **LM middleware** — `wrapLM(lm, retry(), fallback([...]), rateLimit(...))`, plus
+  `circuitBreaker`, `concurrencyLimit` and a `budget` cap for production.
 - **Streaming** — per-field streaming from any module, and `streamify()` for
   whole programs.
 - **Providers** — OpenAI (and any OpenAI-compatible server), Anthropic,
@@ -360,7 +361,7 @@ prediction.getLMUsage();
 ### LM middleware
 
 `wrapLM(lm, ...middleware)` returns a model whose calls pass through each
-middleware in turn, outermost first. Four ship with core:
+middleware in turn, outermost first. Four cover the common cases:
 
 ```ts
 import { wrapLM, retry, fallback, defaults, rateLimit } from '@ts-dspy/core';
@@ -377,6 +378,32 @@ const lm = wrapLM(
 A middleware is `(request, next) => Promise<unknown>`: inspect or rewrite the
 request, call `next` (or not), and return the result — enough for logging,
 redaction, routing or a custom cache.
+
+Three more guard a production deployment:
+
+```ts
+import { wrapLM, budget, circuitBreaker, concurrencyLimit, fallback } from '@ts-dspy/core';
+
+const primary = new OpenAILM({ apiKey });
+const lm = wrapLM(
+  primary,
+  budget({ usage: primary, maxCost: 25, maxRequests: 10_000 }), // hard stop for a runaway loop
+  concurrencyLimit({ maxConcurrent: 16 }), // at most 16 calls in flight; the rest queue
+  fallback([new AnthropicLM({ apiKey: anthropicKey })]),
+  circuitBreaker({ failureThreshold: 5, resetTimeoutMs: 30_000 }) // fail fast while OpenAI is down
+);
+```
+
+- `circuitBreaker` opens after `failureThreshold` consecutive rate-limit,
+  timeout or 5xx failures and rejects with `CircuitOpenError` without calling
+  the model, so a `fallback` outside it takes over at once instead of waiting
+  out a timeout per request. After `resetTimeoutMs` it lets one probe through.
+  `onStateChange` reports transitions for alerting.
+- `concurrencyLimit` bounds calls in flight (a stream holds its slot until it
+  ends), where `rateLimit` spaces out when calls start.
+- `budget` throws `BudgetExceededError` once `maxRequests`, `maxTokens` or
+  `maxCost` is reached. Limits are checked before each call, so calls already
+  in flight can overshoot; `maxCost` needs `configure({ pricing })`.
 
 ### Streaming
 

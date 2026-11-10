@@ -15,9 +15,13 @@ concurrency:
   group: npm-downloads-chart
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   update-chart:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
 

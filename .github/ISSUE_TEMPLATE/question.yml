@@ -1,0 +1,15 @@
+name: Question
+description: Ask how to do something with ts-dspy.
+labels: [question]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to do, and what have you tried?
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Package versions

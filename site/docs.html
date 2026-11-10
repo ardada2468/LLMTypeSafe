@@ -687,7 +687,7 @@ out.getLMUsage()
     <h3>LM middleware</h3>
     <p>
       <code>wrapLM(lm, ...middleware)</code> returns a model whose calls pass
-      through each middleware in turn. Four ship with core:
+      through each middleware in turn. Four cover the common cases:
     </p>
     <pre class="code"><code><span class="kw">import</span> { wrapLM, retry, fallback, defaults, rateLimit } <span class="kw">from</span> <span class="s">'@ts-dspy/core'</span>
 
@@ -703,6 +703,15 @@ configure({ lm })</code></pre>
       A middleware is <code>(request, next) =&gt; Promise&lt;unknown&gt;</code>: inspect
       or rewrite the request, call <code>next</code> any number of times, or
       short-circuit.
+    </p>
+    <p>
+      Three more guard a production deployment:
+      <code>circuitBreaker({ failureThreshold, resetTimeoutMs })</code> rejects
+      with <code>CircuitOpenError</code> while a model keeps failing, so a
+      <code>fallback</code> outside it takes over at once;
+      <code>concurrencyLimit({ maxConcurrent })</code> bounds calls in flight;
+      and <code>budget({ usage, maxCost, maxTokens, maxRequests })</code> throws
+      <code>BudgetExceededError</code> once a spending limit is reached.
     </p>
   </section>
 
@@ -1415,6 +1424,7 @@ it(<span class="s">'rejects a non-numeric urgency'</span>, <span class="kw">asyn
           <tr><td class="sym">Tool</td><td class="path">class</td><td class="note">A named, described, schema-typed tool for <code>ReAct</code>.</td></tr>
           <tr><td class="sym">BaseLM</td><td class="path">class</td><td class="note">Base for providers.</td></tr>
           <tr><td class="sym">wrapLM / retry / fallback / defaults / rateLimit</td><td class="path">function</td><td class="note">LM middleware.</td></tr>
+          <tr><td class="sym">circuitBreaker / concurrencyLimit / budget</td><td class="path">function</td><td class="note">Production guards: fail fast, bound in-flight calls, cap spend.</td></tr>
           <tr><td class="sym">Prediction</td><td class="path">class</td><td class="note">Result wrapper; <code>getLMUsage()</code> for per-call usage.</td></tr>
           <tr><td class="sym">Example</td><td class="path">class</td><td class="note">Labelled data point for demos, evaluation and optimizers.</td></tr>
           <tr><td class="sym">configure</td><td class="path">function</td><td class="note">Set global defaults.</td></tr>

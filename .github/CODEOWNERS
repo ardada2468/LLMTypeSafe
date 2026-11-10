@@ -1,0 +1,7 @@
+# Every change needs a review from a maintainer.
+* @ardada2468
+
+# Release and supply-chain surface: review with extra care.
+/.github/ @ardada2468
+/.changeset/config.json @ardada2468
+/scripts/ @ardada2468

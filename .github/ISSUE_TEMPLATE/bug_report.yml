@@ -1,0 +1,47 @@
+name: Bug report
+description: Something behaves differently from what the docs say.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: >-
+        The smallest code that shows it. `MockLM` from `@ts-dspy/core/testing`
+        lets a reproduction run without an API key. Remove any secrets.
+      render: ts
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Package versions
+      description: Output of `npm ls --depth=0 | grep ts-dspy`.
+      placeholder: '@ts-dspy/core@0.7.0, @ts-dspy/openai@0.7.0'
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime
+      placeholder: Node 22.11, macOS 15, ESM
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Provider and model
+      placeholder: OpenAI gpt-5.2
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output
+      description: Stack trace or error message, with secrets removed.
+      render: text

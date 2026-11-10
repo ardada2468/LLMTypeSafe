@@ -107,6 +107,21 @@ export type {
     RateLimitOptions,
 } from './core/middleware';
 
+export {
+    circuitBreaker,
+    concurrencyLimit,
+    budget,
+    CircuitOpenError,
+    BudgetExceededError,
+} from './core/resilience';
+export type {
+    CircuitState,
+    CircuitBreakerOptions,
+    ConcurrencyLimitOptions,
+    BudgetOptions,
+    BudgetLimit,
+} from './core/resilience';
+
 // Contracts
 export { Tool } from './core/tool';
 export type { ToolOptions, ToolInit, ToolParameters } from './core/tool';
