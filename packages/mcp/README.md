@@ -37,7 +37,7 @@ try {
 description and JSON Schema unchanged. Calling one runs `tools/call`: text
 content is joined, images, audio and resources are described rather than
 dropped, and an `isError` result throws `McpToolError` — which `ReAct` turns
-into an observation, so the model reads the server's message and can retry.
+into an observation, so the model reads the server's message and can retry. Pass `timeoutMs` to change how long one tool call may take (the MCP SDK's default is 60 seconds).
 
 `include` / `exclude` filter by the tool's name on the server; `prefix` renames
 the tools ts-dspy sees (to keep two servers' `search` tools apart) while calls

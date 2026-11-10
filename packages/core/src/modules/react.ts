@@ -10,6 +10,7 @@ import {
     type SignatureSource,
 } from '../core/signature';
 import type {
+    ChatMessage,
     ILanguageModel,
     LLMCallOptions,
     ToolCall,
@@ -18,7 +19,7 @@ import type {
 import type { SignatureOutput } from '../types/signature';
 import { getInputFieldConfigs, getOutputFieldConfigs } from '../utils/schema';
 import { contentToText } from '../utils/content';
-import { TsDspyError, ValidationError } from '../core/errors';
+import { ContextLengthError, TsDspyError, ValidationError } from '../core/errors';
 import { type TraceSpan } from '../core/trace';
 import { Tool } from '../core/tool';
 import { invokeLM, providerOptions } from '../core/lm-call';
@@ -127,7 +128,9 @@ export type ReActEvent =
     | { type: 'tool_result'; step: number; tool: string; output: string }
     | { type: 'tool_error'; step: number; tool: string; error: unknown }
     | { type: 'repeated_tool_call'; step: number; tool: string; input: string }
-    | { type: 'parse_failed'; step: number; error: unknown };
+    | { type: 'parse_failed'; step: number; error: unknown }
+    /** The oldest step was dropped because the prompt outgrew the context window. */
+    | { type: 'trajectory_truncated'; attempt: number };
 
 export interface ReActOptions {
     /**
@@ -344,9 +347,11 @@ export class ReAct<TSignature extends SignatureSource = typeof Signature> extend
         for (let step = 0; step < this.maxSteps; step++) {
             let decision: Record<string, any>;
             try {
-                decision = await this.react.forward(
-                    { ...inputs, trajectory: formatTrajectory(trajectory) },
-                    stepOptions
+                decision = await this.withTrajectoryThatFits(trajectory, () =>
+                    this.react.forward(
+                        { ...inputs, trajectory: formatTrajectory(trajectory) },
+                        stepOptions
+                    )
                 );
             } catch (error) {
                 // As in DSPy: a step the model could not get right ends the
@@ -422,11 +427,50 @@ export class ReAct<TSignature extends SignatureSource = typeof Signature> extend
         steps: number,
         options: LLMCallOptions
     ): Promise<Record<string, any>> {
-        const extracted = await this.extract.forward(
-            { ...inputs, trajectory: formatTrajectory(trajectory) },
-            options
+        const extracted = await this.withTrajectoryThatFits(trajectory, () =>
+            this.extract.forward(
+                { ...inputs, trajectory: formatTrajectory(trajectory) },
+                options
+            )
         );
         return { ...extracted.toObject(), trajectory, steps };
+    }
+
+    /** The native-loop counterpart of {@link withTrajectoryThatFits}. */
+    private async withConversationThatFits<T>(
+        messages: ChatMessage[],
+        call: () => Promise<T>
+    ): Promise<T> {
+        for (let attempt = 0; ; attempt++) {
+            try {
+                return await call();
+            } catch (error) {
+                if (!(error instanceof ContextLengthError) || attempt >= 3) throw error;
+                if (!dropOldestToolTurn(messages)) throw error;
+                this.emit({ type: 'trajectory_truncated', attempt: attempt + 1 });
+            }
+        }
+    }
+
+    /**
+     * Run a call that sends the trajectory, and if the prompt no longer fits
+     * the model's context window, drop the oldest step and try again — up to
+     * three times, as DSPy does. A long-running agent then loses its earliest
+     * observations rather than the whole run.
+     */
+    private async withTrajectoryThatFits<T>(
+        trajectory: Record<string, unknown>,
+        call: () => Promise<T>
+    ): Promise<T> {
+        for (let attempt = 0; ; attempt++) {
+            try {
+                return await call();
+            } catch (error) {
+                if (!(error instanceof ContextLengthError) || attempt >= 3) throw error;
+                if (!dropOldestStep(trajectory)) throw error;
+                this.emit({ type: 'trajectory_truncated', attempt: attempt + 1 });
+            }
+        }
     }
 
     /**
@@ -508,22 +552,24 @@ export class ReAct<TSignature extends SignatureSource = typeof Signature> extend
         };
 
         for (let step = 0; step < this.maxSteps; step++) {
-            const result = await invokeLM(
-                {
-                    lm,
-                    method: 'chatWithTools',
-                    traceText: messages
-                        .map((m) => `${m.role}: ${contentToText(m.content)}`)
-                        .join('\n\n'),
-                    // A snapshot for callbacks: the loop keeps appending to
-                    // `messages`, which would rewrite the event after the fact.
-                    messages: [...messages],
-                    options: callOptions,
-                    span,
-                    moduleId: this.moduleId,
-                },
-                () => lm.chatWithTools!(messages, callOptions),
-                (reply) => reply.content ?? ''
+            const result = await this.withConversationThatFits(messages, () =>
+                invokeLM(
+                    {
+                        lm,
+                        method: 'chatWithTools',
+                        traceText: messages
+                            .map((m) => `${m.role}: ${contentToText(m.content)}`)
+                            .join('\n\n'),
+                        // A snapshot for callbacks: the loop keeps appending to
+                        // `messages`, which would rewrite the event after the fact.
+                        messages: [...messages],
+                        options: callOptions,
+                        span,
+                        moduleId: this.moduleId,
+                    },
+                    () => lm.chatWithTools!(messages, callOptions),
+                    (reply) => reply.content ?? ''
+                )
             );
             const text = result.content ?? '';
             if (text.trim().length > 0) {
@@ -845,6 +891,52 @@ function schemaProperties(tool: NormalizedTool): Record<string, unknown> {
 }
 
 /** Stable, human-readable rendering of a tool call's arguments. */
+/**
+ * Remove the oldest step's `thought_n` / `tool_name_n` / `tool_args_n` /
+ * `observation_n` from a trajectory. Returns false when no whole step is left
+ * to drop — one step that is too large on its own cannot be fixed this way.
+ */
+function dropOldestStep(trajectory: Record<string, unknown>): boolean {
+    const indices = [
+        ...new Set(
+            Object.keys(trajectory)
+                .map((key) => /_(\d+)$/.exec(key)?.[1])
+                .filter((index): index is string => index !== undefined)
+                .map(Number)
+        ),
+    ].sort((a, b) => a - b);
+    if (indices.length < 2) return false;
+    const oldest = indices[0];
+    for (const key of Object.keys(trajectory)) {
+        if (key.endsWith(`_${oldest}`)) delete trajectory[key];
+    }
+    return true;
+}
+
+/**
+ * Remove the oldest assistant tool-call turn and the tool results answering
+ * it — together, since a result without its call (or the reverse) is rejected
+ * by every provider. Returns false when there is no such turn to drop.
+ */
+function dropOldestToolTurn(messages: ChatMessage[]): boolean {
+    const start = messages.findIndex(
+        (message) => message.role === 'assistant' && (message.toolCalls?.length ?? 0) > 0
+    );
+    if (start === -1) return false;
+    let end = start + 1;
+    while (end < messages.length && messages[end]!.role === 'tool') end++;
+    // Keep the most recent exchange: dropping the only one would discard
+    // everything the agent has learned.
+    const later = messages
+        .slice(end)
+        .some(
+            (message) => message.role === 'assistant' && (message.toolCalls?.length ?? 0) > 0
+        );
+    if (!later) return false;
+    messages.splice(start, end - start);
+    return true;
+}
+
 function describeArguments(args: Record<string, unknown>): string {
     const keys = Object.keys(args ?? {});
     // The untyped-tool shape reads best as its bare string. Any other single

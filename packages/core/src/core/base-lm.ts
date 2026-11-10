@@ -100,6 +100,23 @@ export abstract class BaseLM implements ILanguageModel {
     }
 
     /**
+     * The text of a chat result, for `chat()` implementations built on
+     * `chatWithTools()`. Throws when the reply was cut off by the token limit
+     * before producing any text — a thinking model that spent its whole budget
+     * reasoning, typically. Returned as `''` that is indistinguishable from an
+     * answer, and fails later as a baffling validation error.
+     */
+    protected textOf(result: ChatResult): string {
+        if (result.finishReason === 'length' && result.content.trim() === '') {
+            throw new LMError(
+                this.provider,
+                'The reply was cut off by the token limit before any text was produced; raise maxTokens.'
+            );
+        }
+        return result.content;
+    }
+
+    /**
      * Default structured-output implementation: ask for JSON in the prompt and
      * parse the reply. Providers with a native JSON-schema mode should override
      * this — the native path constrains decoding, this one only requests it.

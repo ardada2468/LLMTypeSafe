@@ -7,6 +7,8 @@ import { exactMatch, tokenF1 } from '../evaluate/metrics';
 import { Predict } from '../modules/predict';
 import { MockLM } from '../testing/mock-lm';
 import { COPRO } from './copro';
+import { BootstrapFewShot } from './bootstrap-few-shot';
+import { KNNFewShot } from './knn-few-shot';
 import { MIPROv2 } from './mipro';
 import { BootstrapFewShotWithRandomSearch } from './random-search';
 import {
@@ -184,6 +186,31 @@ describe('optimizers', () => {
                     numCandidatePrograms: -3,
                 })
         ).toThrow(RangeError);
+    });
+});
+
+describe('tracing programs that run per-call copies', () => {
+    it('bootstraps demos through a KNNFewShot program', async () => {
+        const trainset = doublingSet([1, 2, 3, 4]);
+        const embedder = {
+            embed: async (texts: string[]) => texts.map((t) => [t.length, 1]),
+        };
+        const program = new KNNFewShot({ k: 1, embedder, trainset }).compile(
+            new Predict(
+                QA,
+                doublingLM(() => true)
+            )
+        );
+
+        const optimizer = new BootstrapFewShot({
+            metric: exactAnswer,
+            maxBootstrappedDemos: 2,
+        });
+        const compiled = await optimizer.compile(program, { trainset });
+
+        const [[path, predictor]] = compiled.namedPredictors();
+        expect(path).toBe('program');
+        expect(predictor.getDemos().length).toBeGreaterThan(0);
     });
 });
 

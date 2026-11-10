@@ -618,12 +618,26 @@ function copyValue(value: unknown, seen: Map<object, unknown>): unknown {
     return value;
 }
 
+/** Each copy's source, so a copy can be recognised as "the same predictor". */
+const copiedFrom = new WeakMap<object, object>();
+
+/**
+ * The module `copy` was copied from (via `deepCopy`, `withDemos`, `withLM`…),
+ * or `undefined` for one built directly. Follow it repeatedly to walk a chain
+ * of copies. Tracing uses this to attribute a call made by a per-call copy of
+ * a predictor to the predictor it stands in for.
+ */
+export function copySourceOf(copy: object): object | undefined {
+    return copiedFrom.get(copy);
+}
+
 /** Module fields a deep copy shares by reference: configuration, not state. */
 const SHARED_FIELDS = new Set<PropertyKey>(['lm', 'signature', 'forward']);
 
 function copyModule(module: Module, seen: Map<object, unknown>): Module {
     const copy = Object.create(Object.getPrototypeOf(module)) as Module;
     seen.set(module, copy);
+    copiedFrom.set(copy, module);
 
     // Every own property, enumerable or not, so the instrumented `forward`
     // and any non-enumerable state a subclass keeps come along.
@@ -651,6 +665,7 @@ function copyModule(module: Module, seen: Map<object, unknown>): Module {
  */
 export function cloneModule<M extends Module>(module: M, patch: Record<string, unknown>): M {
     const copy = Object.create(Object.getPrototypeOf(module)) as M;
+    copiedFrom.set(copy, module);
     Object.defineProperties(copy, Object.getOwnPropertyDescriptors(module));
     Object.assign(copy, patch);
     return copy;

@@ -19,7 +19,8 @@ Production hardening. See MIGRATION.md ("0.7 → 0.8") for the behaviour changes
 - Governance: `redact()` middleware replaces emails, phone numbers, SSNs, card numbers, IP addresses and custom patterns with placeholders before a request leaves the process, and restores them in the reply. `auditLogger()` is a callback writing one structured record per module, model and tool call, with no content unless asked.
 - Caching: `MemoryCache` takes a `ttlMs`; new on-disk `FileCache`.
 - `ProgramOfThought` runs generated code on a worker thread with a heap limit (`memoryLimitMb`) and a hard timeout, terminated on abort. `isolation: 'inline'` keeps the old behaviour.
-- `ReAct` takes `toolTimeoutMs`, and validates `maxSteps`.
+- `ReAct` takes `toolTimeoutMs`, validates `maxSteps`, and recovers from a context-length overflow by dropping its oldest step (up to three times), emitting a `trajectory_truncated` event.
+- `copySourceOf(module)` exposes copy lineage; optimizers use it to trace programs that run per-call copies of their predictors, so `BootstrapFewShot`, `SIMBA` and `GEPA` now work over a `KNNFewShot` program.
 
 **Fixed in core**
 
@@ -41,6 +42,7 @@ Production hardening. See MIGRATION.md ("0.7 → 0.8") for the behaviour changes
 - Anthropic: structured-output schemas are stripped of unsupported constraints; `temperature` / `top_p` are sent only to models that accept them; a forced tool choice becomes `auto` on models that reject one; a cancelled call raises `TimeoutError`; `retryAfterMs` is populated.
 - Gemini: function-call thought signatures and ids survive a tool round trip; timeouts and cancellations raise `TimeoutError`; no more SDK `console.warn` on tool-calling turns.
 - Streaming: OpenAI and Gemini streams carry the assembled tool calls, and every provider reports `finishReason`, on the final chunk's `metadata`. Anthropic streaming honours an explicit `maxTokens`.
+- Every provider's `chat()` raises an `LMError` when the token limit cut the reply off before any text was produced, instead of returning `''`.
 - AI SDK: per-call `providerOptions` are honoured.
-- MCP: `serveProgram` cancels the program when the client cancels the call.
+- MCP: `mcpTools` takes `timeoutMs`; `serveProgram` cancels the program when the client cancels the call.
 - OTel: error messages are recorded only with `captureContent`; token usage is recorded on failed spans; Gemini is reported as `gcp.gemini`.

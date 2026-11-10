@@ -151,7 +151,7 @@ export class OpenAILM extends BaseLM {
     }
 
     async chat(messages: ChatMessage[], options?: LLMCallOptions): Promise<string> {
-        return (await this.chatWithTools(messages, options)).content;
+        return this.textOf(await this.chatWithTools(messages, options));
     }
 
     async chatWithTools(

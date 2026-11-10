@@ -825,6 +825,11 @@ as structured data, so several tools can run in one turn. Both paths run the
 same tools and emit the same events; pass `forceTextMode: true` to keep a
 tool-capable model on the adapter loop.
 
+A long run can outgrow the model's context window. When a step fails with a
+`ContextLengthError`, the agent drops its oldest step and tries again, up to
+three times, so it loses its earliest observations rather than the whole run
+(a `trajectory_truncated` event reports it).
+
 Set `toolTimeoutMs` to bound how long any one tool may run: a tool that
 overruns is reported to the model as a failed call, which it may retry or work
 around, instead of hanging the agent. A call that failed can be retried; one

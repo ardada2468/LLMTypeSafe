@@ -354,6 +354,10 @@ if you relied on the old behaviour.
   The `retry()` middleware does not retry a call whose own signal aborted.
 - **OpenAI refusals are `ContentFilterError`** (`category: 'refusal'`), not an
   empty string. A response with no `choices` is an `LMError`.
+- **An empty reply cut off by the token limit is an `LMError`**, not `''`.
+  This is what a thinking model returns when it spends its whole `maxTokens`
+  reasoning; raise `maxTokens`. A truncated reply that has text is returned
+  as before.
 - **`retry()` also retries dropped connections** (`ECONNRESET`, DNS failures,
   `fetch failed`). Pass `retryOn` to restore the narrower policy.
 - **Optimizers throw when every example fails at the provider** — a bad key or

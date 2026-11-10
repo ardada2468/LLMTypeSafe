@@ -3,8 +3,10 @@ import { z } from 'zod';
 import { ChatAdapter } from '../adapters/chat';
 import { JSONAdapter } from '../adapters/json';
 import { XMLAdapter } from '../adapters/xml';
-import { ValidationError } from '../core/errors';
+import { ContextLengthError, ValidationError } from '../core/errors';
 import { signature } from '../core/signature';
+import { BaseLM } from '../core/base-lm';
+import type { ChatMessage, ChatResult } from '../types/language-model';
 import { MockLM } from '../test-utils';
 import { parsePartialJson } from '../utils/partial-json';
 import { extractLabelledFields } from '../utils/parsing';
@@ -202,6 +204,104 @@ describe('ReAct', () => {
         expect(trajectory.observation_0).toContain('ETIMEDOUT');
         expect(trajectory.observation_1).toBe('payload');
         expect(trajectory.observation_2).toContain('already made this tool call');
+    });
+});
+
+describe('ReAct context overflow', () => {
+    it('drops the oldest step and carries on when the prompt outgrows the window', async () => {
+        const step = (tool: string, input: string) =>
+            JSON.stringify({
+                next_thought: 't',
+                next_tool_name: tool,
+                next_tool_args: JSON.stringify({ input }),
+            });
+        const script = [
+            step('fetch', 'a'),
+            step('fetch', 'b'),
+            step('finish', ''),
+            JSON.stringify({ reasoning: 'r', answer: 'done' }),
+        ];
+        const prompts: string[] = [];
+        const lm = new MockLM({
+            respond: (messages) => {
+                const prompt = messages.map((m) => String(m.content)).join('\n');
+                // Pretend the window holds one observation, not two.
+                if ((prompt.match(/BIG-OBSERVATION/g) ?? []).length > 1) {
+                    throw new ContextLengthError('mock', 'prompt is too long', { status: 400 });
+                }
+                prompts.push(prompt);
+                return script.shift()!;
+            },
+        });
+        const events: string[] = [];
+        const agent = new ReAct('question -> answer', {
+            tools: { fetch: { description: 'fetch', function: () => 'BIG-OBSERVATION' } },
+            lm,
+            adapter: new JSONAdapter(),
+            onEvent: (event) => events.push(event.type),
+        });
+
+        const result = await agent.forward({ question: 'Q' });
+        expect(result.answer).toBe('done');
+        expect(events).toContain('trajectory_truncated');
+        expect(result.trajectory.observation_0).toBeUndefined();
+        expect(result.trajectory.observation_1).toBe('BIG-OBSERVATION');
+    });
+});
+
+describe('ReAct context overflow (native tool calling)', () => {
+    it('drops the oldest tool exchange, keeping calls and results paired', async () => {
+        const seen: ChatMessage[][] = [];
+        class NativeLM extends BaseLM {
+            private turn = 0;
+            constructor() {
+                super('fake', 'm');
+            }
+            async chat(messages: ChatMessage[]) {
+                return (await this.chatWithTools(messages)).content;
+            }
+            async chatWithTools(messages: ChatMessage[]): Promise<ChatResult> {
+                if (messages.filter((m) => m.role === 'tool').length > 1) {
+                    throw new ContextLengthError('fake', 'too long', { status: 400 });
+                }
+                seen.push([...messages]);
+                this.turn += 1;
+                if (this.turn <= 2) {
+                    return {
+                        content: '',
+                        finishReason: 'tool_calls',
+                        toolCalls: [
+                            {
+                                id: `c${this.turn}`,
+                                name: 'fetch',
+                                arguments: { input: `q${this.turn}` },
+                            },
+                        ],
+                    };
+                }
+                return { content: '[[ ## answer ## ]]\ndone', finishReason: 'stop' };
+            }
+            getCapabilities() {
+                return { ...new MockLM().getCapabilities(), supportsFunctionCalling: true };
+            }
+        }
+
+        const agent = new ReAct('question -> answer', {
+            tools: {
+                fetch: { description: 'fetch', function: (input: string) => `result ${input}` },
+            },
+            lm: new NativeLM(),
+        });
+        const result = await agent.forward({ question: 'Q' });
+
+        expect(result.answer).toBe('done');
+        const last = seen.at(-1)!;
+        const toolTurns = last.filter((m) => m.role === 'tool');
+        expect(toolTurns).toHaveLength(1);
+        expect(toolTurns[0]!.toolCallId).toBe('c2');
+        expect(last.filter((m) => m.toolCalls?.length).map((m) => m.toolCalls![0]!.id)).toEqual(
+            ['c2']
+        );
     });
 });
 

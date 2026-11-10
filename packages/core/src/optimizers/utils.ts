@@ -13,7 +13,7 @@
 import { Example } from '../core/example';
 import { LMError, TsDspyError } from '../core/errors';
 import { type Prediction } from '../core/prediction';
-import { type Module } from '../core/module';
+import { copySourceOf, type Module } from '../core/module';
 import { context, getCallbacks } from '../core/config';
 import { type Callback } from '../core/callbacks';
 import { signature } from '../core/signature';
@@ -248,7 +248,15 @@ export async function runWithTrace(
     const trace: MetricTraceStep[] = [];
     const recorder: Callback = {
         onModuleStart(event) {
-            const path = paths.get(event.instance);
+            // A program may run a per-call copy of its predictors (KNNFewShot
+            // does, to give each query its own demos); such a call belongs to
+            // the predictor the copy was made from.
+            let instance: object | undefined = event.instance;
+            let path = paths.get(instance);
+            for (let hops = 0; path === undefined && instance && hops < 16; hops++) {
+                instance = copySourceOf(instance);
+                if (instance) path = paths.get(instance);
+            }
             if (path !== undefined)
                 open.set(event.callId, { path, inputs: { ...event.inputs } });
         },

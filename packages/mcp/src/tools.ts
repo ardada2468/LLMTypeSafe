@@ -21,6 +21,12 @@ export interface McpToolsOptions {
      * the tool's original name.
      */
     prefix?: string;
+    /**
+     * Longest one tool call may take, in milliseconds. Defaults to the MCP
+     * SDK's own limit (60 seconds); raise it for slow tools, lower it to keep
+     * an agent responsive.
+     */
+    timeoutMs?: number;
 }
 
 /** A tool backed by an MCP server: takes the JSON arguments, resolves to the result's text. */
@@ -74,7 +80,7 @@ export async function mcpTools(
 
     return definitions
         .filter((tool) => (!include || include.has(tool.name)) && !exclude.has(tool.name))
-        .map((definition) => toTool(client, definition, prefix));
+        .map((definition) => toTool(client, definition, prefix, options.timeoutMs));
 }
 
 /** `tools/list` is paginated; follow the cursor until the server stops sending one. */
@@ -89,7 +95,12 @@ async function listAllTools(client: Client): Promise<McpToolDefinition[]> {
     return tools;
 }
 
-function toTool(client: Client, definition: McpToolDefinition, prefix: string): McpTool {
+function toTool(
+    client: Client,
+    definition: McpToolDefinition,
+    prefix: string,
+    timeoutMs?: number
+): McpTool {
     const serverName = definition.name;
     return new Tool<Record<string, unknown>, string>({
         name: `${prefix}${serverName}`,
@@ -101,10 +112,14 @@ function toTool(client: Client, definition: McpToolDefinition, prefix: string): 
         // could only reject calls the server would have accepted.
         parameters: definition.inputSchema as Record<string, unknown>,
         fn: async (args) => {
-            const result = await client.callTool({
-                name: serverName,
-                arguments: isRecord(args) ? args : {},
-            });
+            const result = await client.callTool(
+                {
+                    name: serverName,
+                    arguments: isRecord(args) ? args : {},
+                },
+                undefined,
+                timeoutMs !== undefined ? { timeout: timeoutMs } : undefined
+            );
             const text = mcpResultToText(result);
             if (result.isError === true) {
                 throw new McpToolError(serverName, text || 'the tool reported an error');

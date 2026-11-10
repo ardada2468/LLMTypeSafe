@@ -988,3 +988,25 @@ describe('OpenAILM streaming tool calls', () => {
         expect(chunks.at(-1)?.metadata).toEqual({ finishReason: 'length' });
     });
 });
+
+describe('OpenAILM truncated replies', () => {
+    it('raises when the token limit cut the reply off before any text', async () => {
+        mocks.create.mockResolvedValue({
+            choices: [{ message: { content: '' }, finish_reason: 'length' }],
+            usage: {},
+        });
+        await expect(
+            new OpenAILM({ apiKey: 'k' }).chat([{ role: 'user', content: 'x' }])
+        ).rejects.toThrow(/cut off by the token limit/);
+    });
+
+    it('still returns a partial reply that has text', async () => {
+        mocks.create.mockResolvedValue({
+            choices: [{ message: { content: 'partial' }, finish_reason: 'length' }],
+            usage: {},
+        });
+        await expect(
+            new OpenAILM({ apiKey: 'k' }).chat([{ role: 'user', content: 'x' }])
+        ).resolves.toBe('partial');
+    });
+});
