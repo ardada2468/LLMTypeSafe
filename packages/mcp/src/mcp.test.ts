@@ -287,6 +287,39 @@ describe('serveProgram', () => {
         await client.close();
     });
 
+    it('cancels the program when the client cancels the call', async () => {
+        let seen: AbortSignal | undefined;
+        class Slow extends Module {
+            signature = signature({
+                input: z.object({ question: z.string() }),
+                output: z.object({ answer: z.string() }),
+            });
+            async forward(_inputs: Record<string, any>, options?: { signal?: AbortSignal }) {
+                seen = options?.signal;
+                await new Promise((_, reject) =>
+                    options?.signal?.addEventListener('abort', () =>
+                        reject(new Error('stopped'))
+                    )
+                );
+                return new Prediction({ answer: 'never' });
+            }
+        }
+        const client = await connect(serveProgram(new Slow(), { name: 'slow' }));
+        const controller = new AbortController();
+        const call = client.callTool(
+            { name: 'slow', arguments: { question: 'q' } },
+            undefined,
+            { signal: controller.signal }
+        );
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        controller.abort();
+
+        await expect(call).rejects.toThrow();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(seen?.aborted).toBe(true);
+        await client.close();
+    });
+
     it('reports a failing program as an isError result', async () => {
         const lm = new MockLM({ respond: () => 'this is not in the expected format' });
         const client = await connect(

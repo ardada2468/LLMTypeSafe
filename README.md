@@ -369,7 +369,7 @@ import { wrapLM, retry, fallback, defaults, rateLimit } from '@ts-dspy/core';
 const lm = wrapLM(
   new OpenAILM({ apiKey }),
   rateLimit({ requestsPerMinute: 500 }),
-  retry({ maxRetries: 4, initialDelayMs: 500 }), // rate limits, timeouts, 5xx
+  retry({ maxRetries: 4, initialDelayMs: 500 }), // rate limits, timeouts, 5xx, dropped connections
   fallback([new AnthropicLM({ apiKey: anthropicKey })]), // tried when OpenAI fails
   defaults({ temperature: 0 }) // unless a call sets its own
 );
@@ -523,6 +523,22 @@ An example whose program or metric throws is recorded as a zero with the error
 attached and the run continues — an evaluation that dies on row 40 of 500 tells
 you nothing. Usage is collected exactly from the calls the run makes, so other
 work on the same model is never counted.
+
+That is the wrong default for a revoked key or an outage, where every remaining
+row fails the same way. `maxErrors` stops the run once more than that many
+examples have failed, `failureScore` sets what a failed example scores (default
+`0`), and aborting `callOptions.signal` cancels the run:
+
+```ts
+await evaluate(program, dataset, exactMatch, {
+  maxErrors: 10,
+  callOptions: { signal: controller.signal },
+});
+```
+
+Optimizers apply the same judgement on their own: a candidate whose every
+example failed with a provider error ends the compile with an error, instead of
+scoring zero and spending the rest of the budget.
 
 ### Optimizers
 

@@ -2,6 +2,7 @@ import {
     BaseLM,
     ContentFilterError,
     LMError,
+    TimeoutError,
     classify,
     contentToText,
     mergeRequestBody,
@@ -199,7 +200,7 @@ export class GeminiLM extends BaseLM {
         const toolCalls = toolCallsOf(response);
         const reasoning = thoughtsOf(response);
         return {
-            content: response.text ?? '',
+            content: textOf(response),
             ...(toolCalls.length > 0 ? { toolCalls } : {}),
             finishReason: finishReasonOf(response, toolCalls.length > 0),
             ...(reasoning ? { reasoning } : {}),
@@ -275,7 +276,7 @@ export class GeminiLM extends BaseLM {
                     // Thought summaries are not answer text, so they travel in metadata.
                     yield { content: '', done: false, metadata: { reasoningDelta: thoughts } };
                 }
-                const text = chunk.text;
+                const text = textOf(chunk);
                 if (text) {
                     yield { content: text, done: false };
                 }
@@ -588,8 +589,16 @@ function toGeminiParts(message: ChatMessage): Part[] {
         const text = contentToText(message.content);
         if (text) parts.push({ text });
         for (const call of message.toolCalls) {
+            // Gemini 3 rejects a replayed function call that has lost the
+            // thought signature it was issued with.
+            const signature = call.providerMetadata?.thoughtSignature;
             parts.push({
-                functionCall: { name: call.name, args: call.arguments ?? {} },
+                functionCall: {
+                    ...(call.id ? { id: call.id } : {}),
+                    name: call.name,
+                    args: call.arguments ?? {},
+                },
+                ...(typeof signature === 'string' ? { thoughtSignature: signature } : {}),
             });
         }
         return parts;
@@ -656,17 +665,37 @@ function isFunctionResponses(parts: Part[] | undefined): boolean {
 /** Extract the `functionCall` parts of a response. Gemini sends `args` already parsed. */
 function toolCallsOf(response: GenerateContentResponse): ToolCall[] {
     const parts = response.candidates?.[0]?.content?.parts ?? [];
-    const calls = parts
-        .map((part) => part.functionCall)
-        .filter((call): call is NonNullable<typeof call> => Boolean(call?.name));
+    return parts.flatMap((part) => {
+        const call = part.functionCall;
+        if (!call?.name) return [];
+        return [
+            {
+                // Gemini omits `id` on the Gemini API and populates it on some Vertex
+                // configurations; `ToolCall.id` is optional precisely for this.
+                ...(call.id ? { id: call.id } : {}),
+                name: call.name,
+                arguments: (call.args ?? {}) as Record<string, unknown>,
+                ...(part.thoughtSignature
+                    ? { providerMetadata: { thoughtSignature: part.thoughtSignature } }
+                    : {}),
+            },
+        ];
+    });
+}
 
-    return calls.map((call) => ({
-        // Gemini omits `id` on the Gemini API and populates it on some Vertex
-        // configurations; `ToolCall.id` is optional precisely for this.
-        ...(call.id ? { id: call.id } : {}),
-        name: call.name!,
-        arguments: (call.args ?? {}) as Record<string, unknown>,
-    }));
+/**
+ * The answer text of a response or stream chunk. The SDK's own `.text` getter
+ * returns the same thing but logs a `console.warn` whenever the response also
+ * holds non-text parts — that is, on every tool-calling turn.
+ */
+function textOf(response: GenerateContentResponse): string {
+    const parts = response.candidates?.[0]?.content?.parts;
+    // No parts to read: the getter has nothing to warn about either.
+    if (!parts?.length) return response.text ?? '';
+    return parts
+        .filter((part) => typeof part.text === 'string' && !part.thought)
+        .map((part) => part.text)
+        .join('');
 }
 
 /** Translate tool declarations into the `generateContent` config shape. */
@@ -760,6 +789,17 @@ export function toLMError(error: unknown): LMError {
     if (error instanceof LMError) return error;
     const message = error instanceof Error ? error.message : String(error);
     const status = statusOf(error);
+
+    // An elapsed per-request timeout and a cancelled signal both surface as an
+    // abort with no status; left as a plain LMError they are indistinguishable
+    // from a bug and never retried.
+    if (
+        status === undefined &&
+        error instanceof Error &&
+        (error.name === 'AbortError' || error.name === 'TimeoutError')
+    ) {
+        return new TimeoutError('gemini', message, { cause: error });
+    }
 
     const ErrorClass = classify(status, { message });
     return new ErrorClass('gemini', message, { cause: error, status });

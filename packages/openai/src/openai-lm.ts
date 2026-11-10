@@ -8,6 +8,7 @@ import {
     imageToUrl,
     mergeRequestBody,
     providerOptionsFor,
+    retryAfterMsFrom,
     type ChatMessage,
     type ChatResult,
     type FinishReason,
@@ -19,7 +20,7 @@ import {
     type ToolCall,
     type UsageStats,
 } from '@ts-dspy/core';
-import OpenAI, { APIConnectionTimeoutError, APIError } from 'openai';
+import OpenAI, { APIConnectionTimeoutError, APIError, APIUserAbortError } from 'openai';
 import type {
     ChatCompletionContentPart,
     ChatCompletionContentPartImage,
@@ -54,8 +55,10 @@ export interface OpenAIProviderOptions {
 export interface OpenAIConfig {
     apiKey?: string;
     model?: string;
-    organization?: string;
-    project?: string;
+    /** `null` stops the SDK reading `OPENAI_ORG_ID` from the environment. */
+    organization?: string | null;
+    /** `null` stops the SDK reading `OPENAI_PROJECT_ID` from the environment. */
+    project?: string | null;
     /** Override for Azure, a proxy, or any OpenAI-compatible endpoint. */
     baseURL?: string;
     /** Default per-request timeout in milliseconds. */
@@ -169,8 +172,7 @@ export class OpenAILM extends BaseLM {
                 model: options?.model,
             });
 
-            const choice = completion.choices[0];
-            assertNotFiltered(choice?.finish_reason);
+            const choice = usableChoice(completion.choices);
 
             const toolCalls = fromOpenAIToolCalls(choice?.message?.tool_calls);
             const reasoning = reasoningOf(choice?.message);
@@ -215,8 +217,7 @@ export class OpenAILM extends BaseLM {
                 model: options?.model,
             });
 
-            const choice = completion.choices[0];
-            assertNotFiltered(choice?.finish_reason);
+            const choice = usableChoice(completion.choices);
 
             if (choice?.finish_reason === 'length') {
                 throw new LMError(
@@ -597,12 +598,40 @@ function assertNotFiltered(finishReason: string | null | undefined): void {
     });
 }
 
+/**
+ * Throw when the reply carries no usable choice, or the model refused.
+ *
+ * A refusal arrives as `finish_reason: 'stop'` with `content: null` and the
+ * explanation in `message.refusal`; read as an ordinary reply it is an empty
+ * string, which a structured call then reports as invalid JSON and a repair
+ * loop retries for nothing. An empty `choices` array is what Azure returns for
+ * a prompt its filter blocked.
+ */
+function usableChoice<C extends { finish_reason?: string | null; message?: unknown }>(
+    choices: readonly C[] | undefined
+): C {
+    const choice = choices?.[0];
+    if (!choice) {
+        throw new LMError('openai', 'The response contained no choices.');
+    }
+    assertNotFiltered(choice.finish_reason);
+    const refusal = (choice.message as { refusal?: unknown } | undefined)?.refusal;
+    if (typeof refusal === 'string' && refusal !== '') {
+        throw new ContentFilterError('openai', `The model refused: ${refusal}`, {
+            category: 'refusal',
+        });
+    }
+    return choice;
+}
+
 /** Map an OpenAI SDK failure onto the core error hierarchy. */
 export function toLMError(error: unknown): LMError {
     if (error instanceof LMError) return error;
     // Checked before APIError: this is a subclass of it, and it carries no
     // status of its own to classify by.
-    if (error instanceof APIConnectionTimeoutError) {
+    // A call cancelled through its signal is the other half of TimeoutError's
+    // contract ("timed out or was aborted").
+    if (error instanceof APIConnectionTimeoutError || error instanceof APIUserAbortError) {
         return new TimeoutError('openai', error.message, { cause: error });
     }
     if (error instanceof APIError) {
@@ -612,7 +641,11 @@ export function toLMError(error: unknown): LMError {
             type: error.type,
             message: error.message,
         });
-        return new ErrorClass('openai', error.message, { cause: error, status: error.status });
+        return new ErrorClass('openai', error.message, {
+            cause: error,
+            status: error.status,
+            retryAfterMs: retryAfterMsFrom(error.headers),
+        });
     }
     const message = error instanceof Error ? error.message : String(error);
     return new LMError('openai', message, { cause: error });

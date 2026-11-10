@@ -11,7 +11,9 @@ import {
 import {
     AnthropicLM,
     AnthropicRefusalError,
+    acceptsSamplingParams,
     toAnthropicMessages,
+    toAnthropicSchema,
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_MAX_TOKENS,
 } from './anthropic-lm';
@@ -40,6 +42,11 @@ const mocks = vi.hoisted(() => {
         stream: vi.fn(),
         MockAPIError,
         MockAPIConnectionTimeoutError,
+        MockAPIUserAbortError: class MockAPIUserAbortError extends Error {
+            constructor() {
+                super('Request was aborted.');
+            }
+        },
     };
 });
 
@@ -52,6 +59,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
     },
     APIError: mocks.MockAPIError,
     APIConnectionTimeoutError: mocks.MockAPIConnectionTimeoutError,
+    APIUserAbortError: mocks.MockAPIUserAbortError,
 }));
 
 function message(text: string, extra: Record<string, unknown> = {}) {
@@ -184,7 +192,7 @@ describe('AnthropicLM', () => {
 
         it('never sends temperature and top_p together', async () => {
             mocks.create.mockResolvedValue(message('ok'));
-            await new AnthropicLM({ apiKey: 'k' }).generate('Hi', {
+            await new AnthropicLM({ apiKey: 'k', model: 'claude-sonnet-4-5' }).generate('Hi', {
                 temperature: 0.5,
                 topP: 0.9,
             });
@@ -196,7 +204,9 @@ describe('AnthropicLM', () => {
 
         it('falls back to top_p when only top_p is given', async () => {
             mocks.create.mockResolvedValue(message('ok'));
-            await new AnthropicLM({ apiKey: 'k' }).generate('Hi', { topP: 0.9 });
+            await new AnthropicLM({ apiKey: 'k', model: 'claude-sonnet-4-5' }).generate('Hi', {
+                topP: 0.9,
+            });
 
             expect(mocks.create.mock.calls[0][0].top_p).toBe(0.9);
         });
@@ -785,7 +795,11 @@ describe('AnthropicLM thinking', () => {
 
     it('lets a call disable thinking and restores sampling', async () => {
         mocks.create.mockResolvedValue(message('ok'));
-        await new AnthropicLM({ apiKey: 'k', thinking: {} }).generate('Q', {
+        await new AnthropicLM({
+            apiKey: 'k',
+            model: 'claude-sonnet-4-5',
+            thinking: {},
+        }).generate('Q', {
             temperature: 0.3,
             providerOptions: { anthropic: { thinking: false } },
         });
@@ -809,7 +823,9 @@ describe('AnthropicLM thinking', () => {
 
     it('omits thinking entirely by default', async () => {
         mocks.create.mockResolvedValue(message('ok'));
-        await new AnthropicLM({ apiKey: 'k' }).generate('Q', { temperature: 0.5 });
+        await new AnthropicLM({ apiKey: 'k', model: 'claude-sonnet-4-5' }).generate('Q', {
+            temperature: 0.5,
+        });
         const body = mocks.create.mock.calls[0][0];
         expect(body).not.toHaveProperty('thinking');
         expect(body.temperature).toBe(0.5);
@@ -983,5 +999,92 @@ describe('AnthropicLM cached and reasoning tokens', () => {
             reasoningTokens: 35,
         });
         expect(lm.getUsage()).toMatchObject({ cachedTokens: 300, reasoningTokens: 35 });
+    });
+});
+
+describe('AnthropicLM request compatibility', () => {
+    const ok = {
+        content: [{ type: 'text', text: '{"n":1}' }],
+        stop_reason: 'end_turn',
+        usage: {},
+    };
+
+    it('sends sampling parameters only to models that accept them', async () => {
+        expect(acceptsSamplingParams('claude-sonnet-4-5')).toBe(true);
+        expect(acceptsSamplingParams('claude-opus-4-6')).toBe(true);
+        expect(acceptsSamplingParams('claude-3-5-haiku-latest')).toBe(true);
+        expect(acceptsSamplingParams('claude-opus-4-7')).toBe(false);
+        expect(acceptsSamplingParams('claude-opus-5')).toBe(false);
+        expect(acceptsSamplingParams('claude-sonnet-5-5')).toBe(false);
+        expect(acceptsSamplingParams('claude-fable-5-2')).toBe(false);
+
+        mocks.create.mockResolvedValue(ok);
+        await new AnthropicLM({ apiKey: 'k' }).generate('Hi', { temperature: 1, topP: 0.9 });
+        const body = mocks.create.mock.calls.at(-1)![0];
+        expect(body.temperature).toBeUndefined();
+        expect(body.top_p).toBeUndefined();
+    });
+
+    it('downgrades a forced tool choice on models that reject one', async () => {
+        mocks.create.mockResolvedValue(ok);
+        const tools = [{ name: 't', description: 'd', parameters: { type: 'object' } }] as any;
+
+        await new AnthropicLM({ apiKey: 'k', model: 'claude-opus-5-5' }).chatWithTools(
+            [{ role: 'user', content: 'Hi' }],
+            { tools, toolChoice: 'required' }
+        );
+        expect(mocks.create.mock.calls.at(-1)![0].tool_choice).toEqual({ type: 'auto' });
+
+        await new AnthropicLM({ apiKey: 'k', model: 'claude-opus-5' }).chatWithTools(
+            [{ role: 'user', content: 'Hi' }],
+            { tools, toolChoice: 'required' }
+        );
+        expect(mocks.create.mock.calls.at(-1)![0].tool_choice).toEqual({ type: 'any' });
+    });
+
+    it('strips schema constraints structured output rejects, but not field names', async () => {
+        const schema = {
+            type: 'object',
+            additionalProperties: false,
+            required: ['n', 'minimum'],
+            properties: {
+                n: { type: 'integer', minimum: -5, maximum: 5 },
+                s: { type: 'string', minLength: 3, maxLength: 10, pattern: '^a' },
+                arr: { type: 'array', items: { type: 'number', multipleOf: 2 }, minItems: 3 },
+                one: { type: 'array', items: { type: 'string' }, minItems: 1 },
+                minimum: { type: 'string' },
+            },
+        };
+        expect(toAnthropicSchema(schema)).toEqual({
+            type: 'object',
+            additionalProperties: false,
+            required: ['n', 'minimum'],
+            properties: {
+                n: { type: 'integer' },
+                s: { type: 'string', pattern: '^a' },
+                arr: { type: 'array', items: { type: 'number' } },
+                one: { type: 'array', items: { type: 'string' }, minItems: 1 },
+                minimum: { type: 'string' },
+            },
+        });
+
+        mocks.create.mockResolvedValue(ok);
+        await new AnthropicLM({ apiKey: 'k' }).generateStructured('p', schema);
+        const sent = mocks.create.mock.calls.at(-1)![0].output_config.format.schema;
+        expect(sent.properties.n).toEqual({ type: 'integer' });
+    });
+
+    it('maps a cancelled call to TimeoutError and reads retry-after', async () => {
+        mocks.create.mockRejectedValue(new mocks.MockAPIUserAbortError());
+        await expect(new AnthropicLM({ apiKey: 'k' }).generate('Hi')).rejects.toBeInstanceOf(
+            TimeoutError
+        );
+
+        const limited = new MockAPIError(429, 'slow down', 'rate_limit_error');
+        (limited as any).headers = new Headers({ 'retry-after': '7' });
+        mocks.create.mockRejectedValue(limited);
+        await expect(new AnthropicLM({ apiKey: 'k' }).generate('Hi')).rejects.toMatchObject({
+            retryAfterMs: 7000,
+        });
     });
 });

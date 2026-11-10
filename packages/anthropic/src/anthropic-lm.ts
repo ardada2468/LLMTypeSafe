@@ -4,6 +4,7 @@ import {
     LMError,
     TimeoutError,
     classify,
+    retryAfterMsFrom,
     contentToText,
     mergeRequestBody,
     normalizeImageSource,
@@ -18,7 +19,11 @@ import {
     type ToolCall,
     type UsageStats,
 } from '@ts-dspy/core';
-import Anthropic, { APIConnectionTimeoutError, APIError } from '@anthropic-ai/sdk';
+import Anthropic, {
+    APIConnectionTimeoutError,
+    APIError,
+    APIUserAbortError,
+} from '@anthropic-ai/sdk';
 import type {
     Base64ImageSource,
     ContentBlockParam,
@@ -179,7 +184,7 @@ export class AnthropicLM extends BaseLM {
             message = await this.client.messages.create(
                 this.buildRequest(messages, options, {
                     maxTokens: this.defaultMaxTokens,
-                    extra: toolParams(options),
+                    extra: toolParams(options, String(options?.model ?? this.model)),
                 }),
                 requestOptions(options)
             );
@@ -222,7 +227,7 @@ export class AnthropicLM extends BaseLM {
                         output_config: {
                             format: {
                                 type: 'json_schema',
-                                schema: schema as Record<string, unknown>,
+                                schema: toAnthropicSchema(schema) as Record<string, unknown>,
                             },
                         },
                     },
@@ -277,7 +282,7 @@ export class AnthropicLM extends BaseLM {
         const stream = this.client.messages.stream(
             this.buildRequest(messages, options, {
                 maxTokens: DEFAULT_STREAMING_MAX_TOKENS,
-                extra: toolParams(options),
+                extra: toolParams(options, String(options?.model ?? this.model)),
             }),
             requestOptions(options)
         );
@@ -391,8 +396,12 @@ export class AnthropicLM extends BaseLM {
             messages: cachePrompt ? markConversationPrefix(converted) : converted,
             ...(system ? { system: cachePrompt ? cachedSystem(system) : system } : {}),
             // Thinking requires the default sampling: the API rejects a
-            // non-default temperature or top_p alongside it.
-            ...(thinking && thinking.type !== 'disabled' ? {} : samplingParams(options)),
+            // non-default temperature or top_p alongside it. Current models
+            // reject the parameters outright, thinking or not.
+            ...((thinking && thinking.type !== 'disabled') ||
+            !acceptsSamplingParams(String(options?.model ?? this.model))
+                ? {}
+                : samplingParams(options)),
             ...(options?.stopSequences ? { stop_sequences: options.stopSequences } : {}),
             ...(thinking ? { thinking } : {}),
             ...request.extra,
@@ -702,8 +711,72 @@ function mergeBlocks(
     return [...left, ...right];
 }
 
+/**
+ * Whether a model still takes `temperature` / `top_p`. Claude Opus 4.7 and
+ * everything since answers them with a 400, so they are sent only to the
+ * models known to accept them — an unrecognised (newer) id gets none, which
+ * every model accepts. Modules such as `BestOfN` set a temperature themselves,
+ * so sending it on would fail calls the user never configured.
+ */
+export function acceptsSamplingParams(model: string): boolean {
+    if (/claude-(?:instant|2|3)/.test(model)) return true;
+    const four = /claude-(?:opus|sonnet|haiku)-4(?:[-.@](\d+))?/.exec(model);
+    if (!four) return false;
+    const minor = four[1];
+    // No minor is 4.0; eight digits are a snapshot date, also 4.0.
+    return minor === undefined || minor.length >= 8 || Number(minor) <= 6;
+}
+
+/**
+ * Whether a model accepts a forced tool choice (`any` or a named tool). The
+ * listed models answer one with a 400; they get `auto` instead, which leaves
+ * the decision to the model.
+ */
+export function acceptsForcedToolChoice(model: string): boolean {
+    return !/claude-(?:opus-5-5|sonnet-5-5|(?:fable|mythos)-5-[12])/.test(model);
+}
+
+const UNSUPPORTED_SCHEMA_KEYWORDS = new Set([
+    'minimum',
+    'maximum',
+    'exclusiveMinimum',
+    'exclusiveMaximum',
+    'multipleOf',
+    'minLength',
+    'maxLength',
+    'maxItems',
+    'uniqueItems',
+]);
+
+/**
+ * Remove the JSON Schema constraints structured output does not support —
+ * numeric bounds, string lengths, array limits beyond `minItems` of 0 or 1 —
+ * which the API rejects with a 400. Zod emits them for something as ordinary
+ * as `z.number().int()`. Nothing is lost: the reply is validated against the
+ * full signature afterwards.
+ */
+export function toAnthropicSchema(schema: unknown, parentIsProperties = false): unknown {
+    if (Array.isArray(schema)) return schema.map((item) => toAnthropicSchema(item));
+    if (schema === null || typeof schema !== 'object') return schema;
+
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(schema)) {
+        // Inside `properties` the keys are field names, not keywords: a field
+        // called `minimum` must survive.
+        if (!parentIsProperties) {
+            if (UNSUPPORTED_SCHEMA_KEYWORDS.has(key)) continue;
+            if (key === 'minItems' && value !== 0 && value !== 1) continue;
+        }
+        const isPropertyMap =
+            !parentIsProperties &&
+            (key === 'properties' || key === '$defs' || key === 'definitions');
+        out[key] = toAnthropicSchema(value, isPropertyMap);
+    }
+    return out;
+}
+
 /** Translate tool declarations into the Messages API request shape. */
-function toolParams(options?: LLMCallOptions): Record<string, unknown> {
+function toolParams(options?: LLMCallOptions, model = ''): Record<string, unknown> {
     if (!options?.tools?.length) return {};
 
     const params: Record<string, unknown> = {
@@ -716,7 +789,12 @@ function toolParams(options?: LLMCallOptions): Record<string, unknown> {
 
     const choice = options.toolChoice;
     if (choice !== undefined) {
-        if (typeof choice === 'object') {
+        if (
+            (typeof choice === 'object' || choice === 'required') &&
+            !acceptsForcedToolChoice(model)
+        ) {
+            params.tool_choice = { type: 'auto' };
+        } else if (typeof choice === 'object') {
             params.tool_choice = { type: 'tool', name: choice.name };
         } else if (choice === 'required') {
             // Anthropic spells "you must call some tool" as `any`.
@@ -780,7 +858,7 @@ function toLMError(error: unknown): LMError {
     // Checked before APIError: this is a subclass of it, and a client-side
     // timeout carries neither a status nor a `type`. The `timeout_error` type
     // only ever covers a server-side gateway timeout.
-    if (error instanceof APIConnectionTimeoutError) {
+    if (error instanceof APIConnectionTimeoutError || error instanceof APIUserAbortError) {
         return new TimeoutError('anthropic', error.message, { cause: error });
     }
     if (error instanceof APIError) {
@@ -794,6 +872,7 @@ function toLMError(error: unknown): LMError {
         return new ErrorClass('anthropic', error.message, {
             cause: error,
             status: error.status,
+            retryAfterMs: retryAfterMsFrom(error.headers),
         });
     }
     const message = error instanceof Error ? error.message : String(error);

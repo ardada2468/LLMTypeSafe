@@ -168,6 +168,12 @@ export interface ToolCall {
     arguments: Record<string, unknown>;
     /** The unparsed argument payload, when the provider sent one (OpenAI only). */
     rawArguments?: string;
+    /**
+     * Opaque provider data that must accompany this call when the conversation
+     * is replayed — Gemini's `thoughtSignature`, for one. Set and read only by
+     * the provider that produced it; pass the call back unchanged.
+     */
+    providerMetadata?: Record<string, unknown>;
 }
 
 export interface ChatMessage {

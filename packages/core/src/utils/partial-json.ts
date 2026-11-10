@@ -119,6 +119,9 @@ function candidateStarts(text: string): number[] {
         const char = text[i];
         if (char === '{' || char === '[') {
             starts.push(i);
+            // Each candidate is a fresh parse, and this runs on every streamed
+            // chunk: a reply that is mostly brackets must not make it quadratic.
+            if (starts.length >= MAX_CANDIDATES) break;
         }
     }
 
@@ -141,6 +144,9 @@ function hasContent(value: unknown): boolean {
     }
     return true;
 }
+
+/** A preamble holds a stray bracket or two before the document, not dozens. */
+const MAX_CANDIDATES = 32;
 
 /** Nesting beyond this is not a real payload. */
 const MAX_DEPTH = 256;

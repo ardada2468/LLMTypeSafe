@@ -337,3 +337,67 @@ new Predict('question, question -> answer'); // throws: duplicate field name
 
 String signatures also gained features: quoted descriptions, `name?:` optional
 markers, and `signature('q -> a', 'instructions')`.
+
+---
+
+# 0.7 → 0.8
+
+0.8 is a hardening release: no API was removed, but several behaviours that
+were wrong, or silently lossy, are now strict. Each is listed with what to do
+if you relied on the old behaviour.
+
+## Errors
+
+- **Cancelled calls are `TimeoutError`.** OpenAI, Anthropic and Gemini used to
+  surface an aborted `signal` (and Gemini a timed-out request) as a plain
+  `LMError`. They now raise `TimeoutError`, as its documentation always said.
+  The `retry()` middleware does not retry a call whose own signal aborted.
+- **OpenAI refusals are `ContentFilterError`** (`category: 'refusal'`), not an
+  empty string. A response with no `choices` is an `LMError`.
+- **`retry()` also retries dropped connections** (`ECONNRESET`, DNS failures,
+  `fetch failed`). Pass `retryOn` to restore the narrower policy.
+- **Optimizers throw when every example fails at the provider** — a bad key or
+  an outage — instead of returning an unoptimised program with a score of 0.
+
+## Parsing
+
+- **Numbers.** `1,5` is no longer read as `15`, and `0x10` no longer as `16`;
+  both fail validation. Thousands separators (`1,234.5`) still work.
+- **Arrays.** A `string[]` value that starts with `[` but is not valid JSON
+  fails validation instead of being split on commas into fragments.
+- **`ChatAdapter` markers** are recognised only at the start of a line, as in
+  DSPy. A reply that puts two markers on one line no longer parses as two
+  fields.
+- **Text fields** accept a nested JSON object or array and store its JSON text.
+- **`XMLAdapter`** falls back to label parsing when a reply contains none of the
+  signature's tags, rather than reporting every field missing.
+
+## Providers
+
+- **Anthropic sampling.** `temperature` and `topP` are sent only to models that
+  accept them (Claude Opus 4.6 / Sonnet 4.6 and earlier). Newer models reject
+  them, so they are dropped rather than failing the call.
+- **Anthropic forced tool choice.** `toolChoice: 'required'` or a named tool
+  becomes `auto` on models that reject a forced choice.
+- **`OpenAICompatibleLM`** no longer forwards `OPENAI_ORG_ID` /
+  `OPENAI_PROJECT_ID` from the environment. Pass `organization` / `project`
+  explicitly if your endpoint wants them.
+
+## Caching and cassettes
+
+- **Cache keys** now include `tools` and `toolChoice` when present. Cached
+  entries for tool-calling requests are not reused; everything else is.
+- **Cassette keys** now include `tools`, `toolChoice` and `providerOptions`
+  when present. Re-record cassettes whose calls used any of them.
+
+## Observability
+
+- **OpenTelemetry error messages** are recorded only with
+  `captureContent: true`, because they quote model output. Without it a failed
+  span carries `error.type` and a status naming the error class.
+- **`gen_ai.provider.name`** for Gemini is now `gcp.gemini`.
+
+## ReAct
+
+- The repeat guard no longer blocks retrying a tool call that **failed**; it
+  still refuses to repeat one that succeeded.

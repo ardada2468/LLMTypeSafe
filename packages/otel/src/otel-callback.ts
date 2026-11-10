@@ -196,10 +196,15 @@ export class OpenTelemetryCallback implements Callback {
         this.spans.delete(event.callId);
 
         try {
-            if (event.error !== undefined) {
-                recordError(span, event.error);
-            } else {
+            // Annotate failures too: a refusal or a truncated reply was still
+            // billed, and its tokens belong on the span.
+            try {
                 annotate(span);
+            } catch {
+                // An attribute we could not compute must not lose the span.
+            }
+            if (event.error !== undefined) {
+                recordError(span, event.error, this.captureContent);
             }
         } finally {
             span.end(event.endTime);
@@ -261,7 +266,9 @@ function moduleClassName(event: ModuleStartEvent): string {
  */
 function providerOf(lm: unknown): string | undefined {
     const provider = (lm as { provider?: unknown }).provider;
-    return typeof provider === 'string' && provider.length > 0 ? provider : undefined;
+    if (typeof provider !== 'string' || provider.length === 0) return undefined;
+    // The GenAI semantic conventions' well-known name for the Gemini API.
+    return provider === 'gemini' ? 'gcp.gemini' : provider;
 }
 
 function requestAttributes(options: LLMCallOptions | undefined): Attributes {
@@ -350,17 +357,30 @@ function outputMessages(outputs: unknown): unknown[] {
     return [{ role: 'assistant', content: outputs }];
 }
 
-function recordError(span: Span, error: unknown): void {
-    if (error instanceof Error) {
-        span.recordException(error);
-        span.setAttribute('error.type', error.constructor.name || error.name);
-    } else {
-        span.recordException(String(error));
-        span.setAttribute('error.type', '_OTHER');
+/**
+ * Mark a span failed. Error messages are content: a validation failure quotes
+ * the model's reply, and a provider's "not valid JSON" error embeds it whole.
+ * So without `captureContent` only the error's type (and HTTP status, when
+ * there is one) is recorded — never the message or the stack.
+ */
+function recordError(span: Span, error: unknown, captureContent: boolean): void {
+    const type =
+        error instanceof Error ? error.constructor.name || error.name || 'Error' : '_OTHER';
+    span.setAttribute('error.type', type);
+
+    if (captureContent) {
+        span.recordException(error instanceof Error ? error : String(error));
+        span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: error instanceof Error ? error.message : String(error),
+        });
+        return;
     }
+
+    const status = (error as { status?: unknown } | null)?.status;
     span.setStatus({
         code: SpanStatusCode.ERROR,
-        message: error instanceof Error ? error.message : String(error),
+        message: typeof status === 'number' ? `${type} (HTTP ${status})` : type,
     });
 }
 

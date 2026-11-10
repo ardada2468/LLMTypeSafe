@@ -5,10 +5,10 @@
 The `@ts-dspy/*` packages are versioned together. Security fixes land on the
 latest minor release line; older lines are not patched.
 
-| Version | Supported |
-| ------- | --------- |
-| 0.7.x   | Yes       |
-| < 0.7   | No        |
+| Version              | Supported |
+| -------------------- | --------- |
+| Latest minor release | Yes       |
+| Anything older       | No        |
 
 ## Reporting a vulnerability
 
@@ -39,11 +39,14 @@ Things worth knowing when you assess a report, or deploy the library:
   JavaScript in a `node:vm` context, which Node documents as not being a
   sandbox. Do not expose it to untrusted prompts without real isolation (a
   container, a separate process with dropped privileges, or a remote sandbox).
-  Escapes from `node:vm` itself are out of scope.
+  The time limit bounds CPU, not memory: generated code that allocates without
+  end can exhaust the host process's heap. Escapes from `node:vm` itself are
+  out of scope.
 - **Tools run with your process's privileges.** A `ReAct` agent calls the tools
-  you hand it with arguments the model chose. Arguments are validated against
-  each tool's schema, but authorisation — whether _this_ request may perform
-  _that_ action — is the tool author's responsibility.
+  you hand it with arguments the model chose. Arguments of a tool declared with
+  a Zod schema are validated before it runs; MCP tools validate their own. Either
+  way, authorisation — whether _this_ request may perform _that_ action — is
+  the tool author's responsibility.
 - **Prompt injection** against an application built on this library is an
   application-level concern, not a library vulnerability, unless the library
   makes it materially worse than calling the provider directly.

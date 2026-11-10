@@ -17,6 +17,11 @@ const mocks = vi.hoisted(() => {
         constructed: vi.fn(),
         MockAPIError,
         MockAPIConnectionTimeoutError,
+        MockAPIUserAbortError: class MockAPIUserAbortError extends Error {
+            constructor() {
+                super('Request was aborted.');
+            }
+        },
     };
 });
 
@@ -29,6 +34,7 @@ vi.mock('openai', () => ({
     },
     APIError: mocks.MockAPIError,
     APIConnectionTimeoutError: mocks.MockAPIConnectionTimeoutError,
+    APIUserAbortError: mocks.MockAPIUserAbortError,
 }));
 
 /** Answer each request with one vector per input, `[batchOffset + i]`. */

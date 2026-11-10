@@ -565,6 +565,21 @@ describe('AISDKLM', () => {
         expect(call.providerOptions).toEqual({ openai: { reasoningEffort: 'low' } });
     });
 
+    it('merges per-call provider options over the configured ones', async () => {
+        const model = mockModel([textResult('ok')]);
+        const lm = new AISDKLM({
+            model,
+            providerOptions: { openai: { reasoningEffort: 'low', user: 'u' } },
+        });
+        await lm.chat([{ role: 'user', content: 'hi' }], {
+            providerOptions: { openai: { reasoningEffort: 'high' }, anthropic: { x: 1 } },
+        } as any);
+        expect(model.doGenerateCalls[0].providerOptions).toEqual({
+            openai: { reasoningEffort: 'high', user: 'u' },
+            anthropic: { x: 1 },
+        });
+    });
+
     it('attributes usage and cache hits to the bound model when a per-call model is ignored', async () => {
         configure({ trackUsage: true, cache: true });
         try {

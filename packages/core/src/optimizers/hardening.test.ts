@@ -164,7 +164,7 @@ describe('optimizers', () => {
             maxBootstrappedDemos: 0,
             maxLabeledDemos: 0,
             numCandidatePrograms: 3,
-            teacher: new Predict(QA, teacher),
+            teacher,
         });
         await optimizer.compile(
             new Predict(

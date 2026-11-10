@@ -39,6 +39,11 @@ const mocks = vi.hoisted(() => {
         list: vi.fn(),
         MockAPIError,
         MockAPIConnectionTimeoutError,
+        MockAPIUserAbortError: class MockAPIUserAbortError extends Error {
+            constructor() {
+                super('Request was aborted.');
+            }
+        },
     };
 });
 
@@ -52,6 +57,7 @@ vi.mock('openai', () => ({
     },
     APIError: mocks.MockAPIError,
     APIConnectionTimeoutError: mocks.MockAPIConnectionTimeoutError,
+    APIUserAbortError: mocks.MockAPIUserAbortError,
 }));
 
 function completion(content: string, extra: Record<string, unknown> = {}) {
@@ -866,6 +872,53 @@ describe('OpenAILM', () => {
                 metadata: { reasoningDelta: 'thinking' },
             });
             expect(chunks[1]).toEqual({ content: 'answer', done: false });
+        });
+    });
+});
+
+describe('OpenAILM refusals and empty responses', () => {
+    const refusal = {
+        choices: [
+            {
+                finish_reason: 'stop',
+                message: { content: null, refusal: "I'm sorry, I can't help with that." },
+            },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+    };
+
+    it('raises a refusal as ContentFilterError instead of an empty reply', async () => {
+        mocks.create.mockResolvedValue(refusal);
+        const lm = new OpenAILM({ apiKey: 'k' });
+
+        await expect(lm.chat([{ role: 'user', content: 'x' }])).rejects.toMatchObject({
+            name: 'ContentFilterError',
+            category: 'refusal',
+        });
+        await expect(lm.generateStructured('x', { type: 'object' })).rejects.toBeInstanceOf(
+            ContentFilterError
+        );
+    });
+
+    it('raises on a response with no choices', async () => {
+        mocks.create.mockResolvedValue({ choices: [], usage: {} });
+        await expect(
+            new OpenAILM({ apiKey: 'k' }).chat([{ role: 'user', content: 'x' }])
+        ).rejects.toThrow(/no choices/);
+    });
+
+    it('maps a cancelled call to TimeoutError and reads retry-after', async () => {
+        mocks.create.mockRejectedValue(new mocks.MockAPIUserAbortError());
+        await expect(new OpenAILM({ apiKey: 'k' }).generate('x')).rejects.toBeInstanceOf(
+            TimeoutError
+        );
+
+        const limited = new MockAPIError(429, 'slow down');
+        (limited as any).headers = new Headers({ 'retry-after-ms': '1500' });
+        mocks.create.mockRejectedValue(limited);
+        await expect(new OpenAILM({ apiKey: 'k' }).generate('x')).rejects.toMatchObject({
+            name: 'RateLimitError',
+            retryAfterMs: 1500,
         });
     });
 });

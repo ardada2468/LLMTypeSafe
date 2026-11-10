@@ -4,10 +4,11 @@ import {
     ContextLengthError,
     LMError,
     RateLimitError,
+    TimeoutError,
     imagePart,
     textPart,
 } from '@ts-dspy/core';
-import { GeminiLM, toGeminiContents, DEFAULT_GEMINI_MODEL } from './gemini-lm';
+import { GeminiLM, toGeminiContents, toLMError, DEFAULT_GEMINI_MODEL } from './gemini-lm';
 
 const mocks = vi.hoisted(() => ({
     generateContent: vi.fn(),
@@ -990,5 +991,60 @@ describe('GeminiLM cached and reasoning tokens', () => {
                 new GeminiLM({ apiKey: 'k', model }).getCapabilities().maxContextLength
             ).toBe(1_000_000);
         }
+    });
+});
+
+describe('GeminiLM tool-call round trip', () => {
+    it('keeps the thought signature and id of a function call across turns', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const parts = [
+            {
+                functionCall: { id: 'call-1', name: 'get_weather', args: { city: 'Paris' } },
+                thoughtSignature: 'c2ln',
+            },
+        ];
+        mocks.generateContent.mockResolvedValue({
+            // The real getter warns when the response holds non-text parts.
+            get text() {
+                console.warn('there are non-text parts functionCall in the response');
+                return undefined;
+            },
+            candidates: [{ content: { parts }, finishReason: 'STOP' }],
+            usageMetadata: {},
+        });
+
+        const result = await new GeminiLM({ apiKey: 'k' }).chatWithTools(
+            [{ role: 'user', content: 'Weather?' }],
+            {
+                tools: [
+                    { name: 'get_weather', description: 'd', parameters: { type: 'object' } },
+                ],
+            }
+        );
+
+        expect(warn).not.toHaveBeenCalled();
+        expect(result.content).toBe('');
+        expect(result.toolCalls).toEqual([
+            {
+                id: 'call-1',
+                name: 'get_weather',
+                arguments: { city: 'Paris' },
+                providerMetadata: { thoughtSignature: 'c2ln' },
+            },
+        ]);
+
+        const { contents } = toGeminiContents([
+            { role: 'assistant', content: '', toolCalls: result.toolCalls },
+        ]);
+        expect(contents[0]!.parts).toEqual(parts);
+        warn.mockRestore();
+    });
+
+    it('classifies a timeout or cancellation as TimeoutError', () => {
+        const aborted = Object.assign(new Error('This operation was aborted'), {
+            name: 'AbortError',
+        });
+        expect(toLMError(aborted)).toBeInstanceOf(TimeoutError);
+        expect(toLMError(new Error('boom'))).not.toBeInstanceOf(TimeoutError);
     });
 });

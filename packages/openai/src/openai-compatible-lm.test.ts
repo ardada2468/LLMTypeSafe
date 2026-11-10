@@ -35,6 +35,11 @@ const mocks = vi.hoisted(() => {
         list: vi.fn(),
         MockAPIError,
         MockAPIConnectionTimeoutError,
+        MockAPIUserAbortError: class MockAPIUserAbortError extends Error {
+            constructor() {
+                super('Request was aborted.');
+            }
+        },
         constructed: [] as unknown[],
     };
 });
@@ -51,6 +56,7 @@ vi.mock('openai', () => ({
     },
     APIError: mocks.MockAPIError,
     APIConnectionTimeoutError: mocks.MockAPIConnectionTimeoutError,
+    APIUserAbortError: mocks.MockAPIUserAbortError,
 }));
 
 function completion(content: string, extra: Record<string, unknown> = {}) {
@@ -300,6 +306,20 @@ describe('OpenAICompatibleLM', () => {
 
             await expect(lm.generate('Hi')).rejects.toThrow(LMError);
             expect(lm.getUsage().errorCount).toBe(1);
+        });
+    });
+});
+
+describe('OpenAICompatibleLM environment isolation', () => {
+    it('does not let the SDK read the OpenAI organization or project from the environment', () => {
+        mocks.constructed.length = 0;
+        new OpenAICompatibleLM({ baseURL: 'http://localhost:11434/v1', model: 'llama3.2' });
+        expect(mocks.constructed.at(-1)).toMatchObject({ organization: null, project: null });
+
+        new OpenAICompatibleLM({ baseURL: 'http://x/v1', model: 'm', organization: 'org-1' });
+        expect(mocks.constructed.at(-1)).toMatchObject({
+            organization: 'org-1',
+            project: null,
         });
     });
 });

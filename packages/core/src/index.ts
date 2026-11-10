@@ -187,6 +187,7 @@ export {
     ContentFilterError,
     TimeoutError,
     classify,
+    retryAfterMsFrom,
 } from './core/errors';
 export type { FieldValidationIssue, ErrorDiscriminators, LMErrorClass } from './core/errors';
 

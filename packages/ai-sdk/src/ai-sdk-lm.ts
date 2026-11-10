@@ -327,8 +327,24 @@ export class AISDKLM extends BaseLM {
             ...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
             ...(options?.signal ? { abortSignal: options.signal } : {}),
             ...(this.headers ? { headers: this.headers } : {}),
-            ...(this.providerOptions ? { providerOptions: this.providerOptions } : {}),
+            ...this.providerOptionsFor(options),
         };
+    }
+
+    /** Constructor-level provider options with the call's own merged over them, per provider. */
+    private providerOptionsFor(options: LLMCallOptions | undefined) {
+        const perCall = options?.providerOptions as
+            Record<string, Record<string, unknown>> | undefined;
+        if (!perCall)
+            return this.providerOptions ? { providerOptions: this.providerOptions } : {};
+
+        const merged: Record<string, Record<string, unknown>> = {
+            ...(this.providerOptions as Record<string, Record<string, unknown>> | undefined),
+        };
+        for (const [provider, value] of Object.entries(perCall)) {
+            merged[provider] = { ...merged[provider], ...value };
+        }
+        return { providerOptions: merged as typeof this.providerOptions };
     }
 
     /**

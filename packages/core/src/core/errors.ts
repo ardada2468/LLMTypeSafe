@@ -139,7 +139,7 @@ export class TimeoutError extends LMError {}
 export type LMErrorClass = new (
     provider: string,
     message: string,
-    options?: { cause?: unknown; status?: number }
+    options?: { cause?: unknown; status?: number; retryAfterMs?: number }
 ) => LMError;
 
 /** Provider-reported discriminators, as far as each SDK supplies them. */
@@ -208,4 +208,35 @@ export function classify(
     }
 
     return LMError;
+}
+
+/**
+ * Read how long a provider asked callers to wait from a response's headers:
+ * `retry-after-ms` (milliseconds), or `retry-after` as seconds or an HTTP
+ * date. Accepts a `Headers` object or a plain record; returns `undefined`
+ * when neither header is present or parseable.
+ */
+export function retryAfterMsFrom(headers: unknown): number | undefined {
+    const read = (name: string): string | undefined => {
+        if (headers === null || typeof headers !== 'object') return undefined;
+        if (typeof (headers as Headers).get === 'function') {
+            return (headers as Headers).get(name) ?? undefined;
+        }
+        for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+            if (key.toLowerCase() === name && typeof value === 'string') return value;
+        }
+        return undefined;
+    };
+
+    const millis = Number(read('retry-after-ms'));
+    if (Number.isFinite(millis) && millis > 0) return millis;
+
+    const raw = read('retry-after');
+    if (raw === undefined) return undefined;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds)) return seconds > 0 ? seconds * 1000 : undefined;
+    const date = Date.parse(raw);
+    if (Number.isNaN(date)) return undefined;
+    const wait = date - Date.now();
+    return wait > 0 ? wait : undefined;
 }

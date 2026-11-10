@@ -252,8 +252,33 @@ describe('OpenTelemetryCallback', () => {
         expect(spans()).toHaveLength(15);
     });
 
-    it('records errors with recordException and an ERROR status', async () => {
+    it('records the error type but not its message unless content capture is on', async () => {
         const callback = setup();
+        // A validation failure quotes the model's reply in its message.
+        const lm = new MockLM({ responses: ['My SSN is 123-45-6789'] });
+        const predict = new Predict('question -> answer: int', lm);
+
+        await expect(
+            traced(callback, () => predict.forward({ question: 'q' }))
+        ).rejects.toThrow();
+
+        const [moduleSpan] = byName('ts-dspy.module Predict');
+        expect(moduleSpan.status).toEqual({
+            code: SpanStatusCode.ERROR,
+            message: 'ValidationError',
+        });
+        expect(moduleSpan.attributes['error.type']).toBe('ValidationError');
+        expect(moduleSpan.events).toHaveLength(0);
+        const recorded = spans().map((span) => ({
+            status: span.status,
+            attributes: span.attributes,
+            events: span.events,
+        }));
+        expect(JSON.stringify(recorded)).not.toContain('123-45-6789');
+    });
+
+    it('records the exception in full when content capture is on', async () => {
+        const callback = setup(true);
         const lm = new ScriptedLM([]);
         const predict = new Predict('question -> answer', lm);
 
@@ -269,8 +294,7 @@ describe('OpenTelemetryCallback', () => {
                 message: 'script exhausted',
             });
             expect(span.attributes['error.type']).toBe('Error');
-            const [exception] = span.events;
-            expect(exception.name).toBe('exception');
+            const exception = span.events.find((event) => event.name === 'exception')!;
             expect(exception.attributes?.['exception.message']).toBe('script exhausted');
         }
     });

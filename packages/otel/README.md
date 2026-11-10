@@ -57,6 +57,11 @@ with `captureContent: true`, which records them as `gen_ai.input.messages`,
 and `ts-dspy.module.inputs` / `outputs`. Base64 image payloads are omitted even
 then.
 
+Error messages count as content — a validation failure quotes the model's reply
+— so without `captureContent` a failed span carries only `error.type` and a
+status naming the error class (and HTTP status). With it, the exception is
+recorded in full. Token usage is recorded on failed spans either way.
+
 Requires Node.js 22+. Ships ESM and CommonJS.
 
 Full documentation: <https://github.com/ardada2468/LLMTypeSafe#readme>

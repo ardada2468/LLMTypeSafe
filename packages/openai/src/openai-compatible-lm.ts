@@ -117,6 +117,10 @@ export class OpenAICompatibleLM extends OpenAILM {
         super({
             ...config,
             apiKey: config.apiKey ?? PLACEHOLDER_API_KEY,
+            // As with the key: OpenAI's organization and project ids must not
+            // be picked up from the environment and sent to another host.
+            organization: config.organization ?? null,
+            project: config.project ?? null,
         });
 
         const structured = config.supportsStructuredOutput ?? false;

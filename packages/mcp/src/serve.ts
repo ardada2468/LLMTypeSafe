@@ -87,9 +87,17 @@ export function serveProgram(program: Module, options: ServeProgramOptions): Mcp
                 `Run the ${program.constructor.name} program.`,
             inputSchema,
         },
-        async (args: Record<string, unknown>): Promise<CallToolResult> => {
+        async (
+            args: Record<string, unknown>,
+            extra?: { signal?: AbortSignal }
+        ): Promise<CallToolResult> => {
             try {
-                const prediction = await program.forward(reviveInputs(args, historyFields));
+                // A client that cancels or times out must stop the program too,
+                // or an abandoned request keeps spending tokens to the end.
+                const prediction = await program.forward(
+                    reviveInputs(args, historyFields),
+                    extra?.signal ? { signal: extra.signal } : undefined
+                );
                 return {
                     content: [{ type: 'text', text: JSON.stringify(prediction.toObject()) }],
                 };
