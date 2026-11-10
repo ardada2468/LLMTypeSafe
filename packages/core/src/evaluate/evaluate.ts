@@ -28,7 +28,8 @@ const DEFAULT_CONCURRENCY = 4;
 async function runPooled<T, R>(
     items: readonly T[],
     limit: number,
-    worker: (item: T, index: number) => Promise<R>
+    worker: (item: T, index: number) => Promise<R>,
+    signal?: AbortSignal
 ): Promise<R[]> {
     if (items.length === 0) return [];
 
@@ -37,6 +38,7 @@ async function runPooled<T, R>(
 
     const settled = await mapWithConcurrency([...items], (item, index) => worker(item, index), {
         concurrency: lanes,
+        signal,
     });
 
     return settled.map((result) => {
@@ -128,7 +130,20 @@ export async function evaluate(
     metric: Metric,
     options: EvaluateOptions = {}
 ): Promise<EvaluationReport> {
-    const { concurrency = DEFAULT_CONCURRENCY, inputKeys, callOptions, onResult } = options;
+    const {
+        concurrency = DEFAULT_CONCURRENCY,
+        inputKeys,
+        callOptions,
+        onResult,
+        maxErrors,
+        failureScore = 0,
+    } = options;
+    // Cancelling the calls (`callOptions.signal`) cancels the run: without
+    // this every remaining row would start, fail at once and score zero.
+    const userSignal = callOptions?.signal;
+    const stop = new AbortController();
+    const signal = userSignal ? AbortSignal.any([userSignal, stop.signal]) : stop.signal;
+    let errors = 0;
 
     const prepared = dataset.map((example) =>
         inputKeys ? example.withInputs(...inputKeys) : example
@@ -141,52 +156,68 @@ export async function evaluate(
     // exactly the calls this evaluation made — whichever models they went to —
     // and nothing a concurrent job did on a shared model.
     const { result: results, usage } = await collectUsage(() =>
-        runPooled(prepared, concurrency, async (example, index) => {
-            const exampleStartedAt = Date.now();
-            let inputs: Record<string, any> = {};
-            // Held outside the try so a metric that throws still reports what the
-            // model produced — otherwise debugging your own metric is guesswork.
-            let prediction: Prediction | undefined;
-            let result: EvaluationResult;
+        runPooled(
+            prepared,
+            concurrency,
+            async (example, index) => {
+                const exampleStartedAt = Date.now();
+                let inputs: Record<string, any> = {};
+                // Held outside the try so a metric that throws still reports what the
+                // model produced — otherwise debugging your own metric is guesswork.
+                let prediction: Prediction | undefined;
+                let result: EvaluationResult;
 
-            try {
-                inputs = example.getInputs();
-                prediction = await runProgram(program, inputs, callOptions);
-                const verdict = await metric(example, prediction);
-                const score = metricScore(verdict);
-                const feedback = metricFeedback(verdict);
+                try {
+                    inputs = example.getInputs();
+                    prediction = await runProgram(program, inputs, callOptions);
+                    const verdict = await metric(example, prediction);
+                    const score = metricScore(verdict);
+                    const feedback = metricFeedback(verdict);
 
-                result = {
-                    index,
-                    example,
-                    inputs,
-                    expected: safeOutputs(example),
-                    prediction,
-                    score,
-                    ...(feedback !== undefined ? { feedback } : {}),
-                    durationMs: Date.now() - exampleStartedAt,
-                };
-            } catch (error) {
-                result = {
-                    index,
-                    example,
-                    inputs,
-                    expected: safeOutputs(example),
-                    prediction,
-                    score: 0,
-                    error: toError(error),
-                    durationMs: Date.now() - exampleStartedAt,
-                };
-            }
+                    result = {
+                        index,
+                        example,
+                        inputs,
+                        expected: safeOutputs(example),
+                        prediction,
+                        score,
+                        ...(feedback !== undefined ? { feedback } : {}),
+                        durationMs: Date.now() - exampleStartedAt,
+                    };
+                } catch (error) {
+                    if (userSignal?.aborted) throw userSignal.reason ?? error;
+                    result = {
+                        index,
+                        example,
+                        inputs,
+                        expected: safeOutputs(example),
+                        prediction,
+                        score: failureScore,
+                        error: toError(error),
+                        durationMs: Date.now() - exampleStartedAt,
+                    };
+                    errors += 1;
+                    if (maxErrors !== undefined && errors > maxErrors && !stop.signal.aborted) {
+                        stop.abort(
+                            new TsDspyError(
+                                `Evaluation stopped: ${errors} examples failed, more than the ` +
+                                    `maxErrors limit of ${maxErrors}. First failure: ${result.error!.message}`,
+                                { cause: result.error }
+                            )
+                        );
+                    }
+                }
 
-            try {
-                onResult?.(result);
-            } catch {
-                // A reporting hook must not be able to change a score.
-            }
+                try {
+                    onResult?.(result);
+                } catch {
+                    // A reporting hook must not be able to change a score.
+                }
 
-            return result;
-        })
+                return result;
+            },
+            signal
+        )
     );
 
     const report = toEvaluationUsage(usage, Date.now() - startedAt);

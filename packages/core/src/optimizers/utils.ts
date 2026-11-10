@@ -11,6 +11,7 @@
  * copies of one program without anyone holding a reference into another copy.
  */
 import { Example } from '../core/example';
+import { LMError, TsDspyError } from '../core/errors';
 import { type Prediction } from '../core/prediction';
 import { type Module } from '../core/module';
 import { context, getCallbacks } from '../core/config';
@@ -154,6 +155,23 @@ export interface EvaluateProgramOptions {
     concurrency?: number;
     inputKeys?: string[];
     callOptions?: LLMCallOptions;
+    /** Score for an example whose program or metric threw. Default `0`. */
+    failureScore?: number;
+}
+
+/**
+ * The part of the student's call options that is about transport rather than
+ * sampling. Proposer and reflection calls get only these: a student tuned with
+ * `{ maxTokens: 8, stopSequences: ['\n'] }` must not have every proposed
+ * instruction cut to eight tokens.
+ */
+export function transportOptions(options: LLMCallOptions | undefined): LLMCallOptions {
+    const { timeout, retries, signal } = options ?? {};
+    return {
+        ...(timeout !== undefined ? { timeout } : {}),
+        ...(retries !== undefined ? { retries } : {}),
+        ...(signal !== undefined ? { signal } : {}),
+    };
 }
 
 /**
@@ -174,7 +192,22 @@ export async function evaluateProgram(
         concurrency: lanes(options.concurrency),
         inputKeys: options.inputKeys,
         callOptions: options.callOptions,
+        failureScore: options.failureScore,
     });
+    // Every example failing at the provider is an outage or a bad key, not a
+    // weak candidate. Scoring it zero would let a whole compile "succeed"
+    // after issuing every scheduled call and learning nothing.
+    if (
+        report.errorCount === report.count &&
+        report.results.every((result) => result.error instanceof LMError)
+    ) {
+        const first = report.results[0]!.error as LMError;
+        throw new TsDspyError(
+            `Every one of ${report.count} examples failed with a provider error, so there ` +
+                `is nothing to optimise against. First failure: ${first.message}`,
+            { cause: first }
+        );
+    }
     return {
         score: report.score,
         scores: report.results.map((result) => result.score),
@@ -504,7 +537,11 @@ export async function buildDemoSet(
     const budget =
         plan.kind === 'bootstrap'
             ? maxBoot
-            : 1 + Math.floor(options.sizeRng() * Math.max(1, maxBoot));
+            : // Zero means zero: a shuffled candidate must not bootstrap one
+              // demo (and pay the teacher for it) when none were asked for.
+              maxBoot <= 0
+              ? 0
+              : 1 + Math.floor(options.sizeRng() * maxBoot);
     const result = await bootstrapTraces(program, trainset, metric, {
         maxBootstrappedDemos: budget,
         seed: plan.seed,
@@ -678,7 +715,7 @@ export async function proposeInstructions(
                     tip: tip ? `${tip}\n(${position})` : position,
                 },
                 {
-                    ...options.callOptions,
+                    ...transportOptions(options.callOptions),
                     ...(options.lm ? { lm: options.lm } : {}),
                     temperature: options.temperature ?? 1,
                 }

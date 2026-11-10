@@ -21,6 +21,7 @@ import {
     stepToDemo,
     type BaseOptimizerOptions,
     type CompileConfig,
+    transportOptions,
 } from './utils';
 import { resolveExampleInputs } from './types';
 import { mapWithConcurrency } from '../utils/pool';
@@ -310,7 +311,7 @@ export class SIMBA {
                     module_names: paths.join('\n'),
                 },
                 {
-                    ...this.options.callOptions,
+                    ...transportOptions(this.options.callOptions),
                     ...(this.options.promptModel ? { lm: this.options.promptModel } : {}),
                 }
             );

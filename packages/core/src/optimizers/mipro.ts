@@ -377,7 +377,18 @@ export class MIPROv2 {
             }
         }
 
-        const best = build(bestCfg);
+        // The search space is built from fresh demo sets, so the student's own
+        // demos (from an earlier compile, or hand-written) are not in it. Score
+        // the student as given, and hand it back if nothing found beats it.
+        let best = build(bestCfg);
+        const studentHasDemos = base.namedPredictors().some(([, p]) => p.getDemos().length > 0);
+        if (demoSets.length > 0 && studentHasDemos) {
+            const asGiven = await fullEval(base);
+            if (asGiven.score > bestScore) {
+                bestScore = asGiven.score;
+                best = base.deepCopy();
+            }
+        }
         this.results = {
             bestScore,
             best: Object.fromEntries(

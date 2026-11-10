@@ -202,7 +202,7 @@ describe('string signatures', () => {
         const fields: Record<string, any> = toSignatureClass(
             'question -> constructor, toString'
         ).getOutputFields();
-        expect(fields.constructor.description).toBe('Output field: constructor');
-        expect(fields.toString.type).toBe('string');
+        expect(fields['constructor'].description).toBe('Output field: constructor');
+        expect(fields['toString'].type).toBe('string');
     });
 });

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ChatMessage, LLMCallOptions } from '../types/language-model';
 
@@ -16,6 +16,11 @@ const KEYED_OPTIONS = [
     'stopSequences',
     'temperature',
     'topP',
+    // What the model may call, and provider-specific switches such as a
+    // reasoning effort, change the reply as surely as a temperature does.
+    'tools',
+    'toolChoice',
+    'providerOptions',
 ] as const;
 
 /** A recorded `chat` (or `generate`) call. */
@@ -160,5 +165,9 @@ export function writeCassette(file: string, entries: readonly CassetteEntry[]): 
         response: entry.response,
     }));
 
-    writeFileSync(file, `${JSON.stringify(serialisable, null, 2)}\n`, 'utf8');
+    // Write beside the target and rename over it, so an interrupted run leaves
+    // the previous cassette intact rather than a truncated one.
+    const temporary = `${file}.${process.pid}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify(serialisable, null, 2)}\n`, 'utf8');
+    renameSync(temporary, file);
 }

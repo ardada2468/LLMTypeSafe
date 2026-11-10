@@ -88,6 +88,13 @@ export class BootstrapFewShotWithRandomSearch {
         if (typeof options?.metric !== 'function') {
             throw new Error('BootstrapFewShotWithRandomSearch requires a metric function.');
         }
+        const count = options.numCandidatePrograms;
+        if (count !== undefined && !(Number.isInteger(count) && count >= 0)) {
+            throw new RangeError(
+                'BootstrapFewShotWithRandomSearch requires numCandidatePrograms to be a ' +
+                    'non-negative integer.'
+            );
+        }
         this.options = options;
     }
 

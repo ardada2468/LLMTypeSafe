@@ -38,8 +38,14 @@ function toNumber(value: unknown): number | undefined {
     return undefined;
 }
 
+/**
+ * A record of own enumerable keys — not a `Date`, `Map` or class instance,
+ * which have none and would all compare equal to one another.
+ */
 function isPlainObject(value: unknown): value is Record<string, any> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
 }
 
 /** Deep, order-sensitive comparison honouring `normalize` and `tolerance`. */
@@ -65,6 +71,13 @@ function valuesMatch(expected: unknown, actual: unknown, options: MetricOptions)
         if (!Array.isArray(expected) || !Array.isArray(actual)) return false;
         if (expected.length !== actual.length) return false;
         return expected.every((item, index) => valuesMatch(item, actual[index], options));
+    }
+
+    if (expected instanceof Date || actual instanceof Date) {
+        const left =
+            expected instanceof Date ? expected.getTime() : Date.parse(String(expected));
+        const right = actual instanceof Date ? actual.getTime() : Date.parse(String(actual));
+        return left === right;
     }
 
     if (isPlainObject(expected) || isPlainObject(actual)) {
@@ -178,11 +191,25 @@ export const fieldAccuracy: Metric = fieldAccuracyMetric({ normalize: true });
  */
 function tokenize(value: unknown): string[] {
     if (value === null || value === undefined) return [];
-    const text = Array.isArray(value) ? value.join(' ') : String(value);
+    const text = tokenText(value);
     return text
         .toLowerCase()
         .split(/[^\p{L}\p{N}]+/u)
         .filter((token) => token.length > 0);
+}
+
+/** Text to tokenize; objects by their JSON, since `String({})` is `[object Object]` for all. */
+function tokenText(value: unknown): string {
+    if (Array.isArray(value)) return value.map(tokenText).join(' ');
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === 'object' && value !== null) {
+        try {
+            return JSON.stringify(value) ?? String(value);
+        } catch {
+            return String(value);
+        }
+    }
+    return String(value);
 }
 
 /** Multiset token overlap between two token lists. */

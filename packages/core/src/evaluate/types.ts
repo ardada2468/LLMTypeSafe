@@ -180,4 +180,13 @@ export interface EvaluateOptions {
      * only: anything it throws is swallowed and never affects a score.
      */
     onResult?: (result: EvaluationResult) => void;
+    /**
+     * Give up once more than this many examples have failed, rejecting with a
+     * `TsDspyError` whose `cause` is the first failure. Unset, a run always
+     * completes — which is right for a flaky row, and wrong for a revoked API
+     * key, where every remaining call is wasted.
+     */
+    maxErrors?: number;
+    /** Score recorded for an example whose program or metric threw. Default `0`. */
+    failureScore?: number;
 }

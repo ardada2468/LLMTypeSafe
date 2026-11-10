@@ -17,6 +17,7 @@ import {
     sampleMinibatch,
     type BaseOptimizerOptions,
     type CompileConfig,
+    transportOptions,
 } from './utils';
 import { resolveExampleInputs } from './types';
 
@@ -324,6 +325,16 @@ export class GEPA {
         };
 
         let state = await this.loadState(paths, valset.length);
+        // A checkpoint is only this run's if it started from this program:
+        // otherwise a re-run after editing the student would silently return
+        // the old run's instructions.
+        const seedInstructions = state?.candidates?.[0]?.instructions;
+        if (seedInstructions && JSON.stringify(seedInstructions) !== JSON.stringify(original)) {
+            throw new TsDspyError(
+                `GEPA state in ${o.logDir} was written for a program with different ` +
+                    'instructions. Use a fresh logDir.'
+            );
+        }
         const resumed = state !== undefined;
         const rng = countingRng(o.seed ?? 0, state?.rngDraws ?? 0);
         state ??= {
@@ -552,7 +563,7 @@ export class GEPA {
         const lm = this.options.reflectionLM;
         const prompt = buildReflectionPrompt(current, renderRecords(records));
         const messages: ChatMessage[] = [{ role: 'user', content: prompt }];
-        const options = providerOptions(this.options.callOptions);
+        const options = providerOptions(transportOptions(this.options.callOptions));
         try {
             const reply = await invokeLM(
                 { lm, method: 'chat', traceText: prompt, messages, options },
